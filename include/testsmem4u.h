@@ -1,7 +1,11 @@
 // testsmem4u - Memory Testing Utility
-// C++ header definitions
+// Master header including Types and Platform abstractions
 
 #pragma once
+
+#include "Types.h"
+#include "Platform.h"
+#include "Logger.h"
 
 #include <cstdint>
 #include <cstddef>
@@ -11,32 +15,17 @@
 
 namespace testsmem4u {
 
-// Platform info
-struct PlatformInfo {
-    char os_name[32];
-    char arch[32];
-    uint32_t cpu_cores;
-    uint32_t page_size;
-};
-
-// Test result structure
-struct TestResult {
-    uint64_t errors = 0;
-    uint64_t bytes_tested = 0;
-    uint64_t cycles_completed = 0;
-};
-
-// Test configuration
-struct TestConfig {
-    uint8_t test_number = 0;
-    std::string function;
-    uint8_t pattern_mode = 0;
-    uint64_t pattern_param0 = 0;
-    uint64_t pattern_param1 = 0;
-    uint32_t time_percent = 0;
-    uint32_t parameter = 0;
-    uint32_t block_size_mb = 0;
-};
+// Constants for memory testing
+constexpr size_t WORD_SIZE = 8;
+constexpr size_t DEFAULT_PATTERN_WORDS = 256;
+constexpr size_t DEFAULT_VERIFY_WORDS = 256;
+constexpr size_t MEMORY_LOCK_CHUNK_SIZE = 64 * 1024 * 1024;
+constexpr size_t WORKING_SET_BUFFER = 64 * 1024 * 1024;
+constexpr uint64_t DEFAULT_PATTERN = 0xAAAAAAAA55555555ULL;
+constexpr uint64_t DEFAULT_PATTERN_ODD = 0xAAAAAAAAAAAAAAAAULL;
+constexpr uint64_t DEFAULT_PATTERN_EVEN = 0x5555555555555555ULL;
+constexpr uint32_t DEFAULT_PASSES = 2;
+constexpr uint32_t DEFAULT_DELAY_MS = 100;
 
 // Preset file structure
 struct PresetInfo {
@@ -49,25 +38,29 @@ struct PresetInfo {
     uint32_t memory_window_mb = 0;
     std::string test_sequence;
     std::map<uint32_t, TestConfig> test_configs;
-};
 
-// Memory region to test
-struct MemoryRegion {
-    uint8_t* base = nullptr;
-    size_t size = 0;
+    // TestMem5 extended fields
+    uint32_t channels = 2;
+    uint32_t interleave_type = 1;
+    uint32_t reserved_memory_mb = 256;
+    uint32_t lock_memory_granularity_mb = 16;
+    uint32_t single_dimm_width_bits = 64;
+    uint32_t operation_block_bytes = 64;
+    uint32_t debug_level = 1;
+    int32_t language = -1;
 };
 
 // Main configuration
 struct Config {
-    uint32_t memory_window_mb = 0;  // 0 = use percentage
-    uint32_t memory_window_percent = 85;  // Default 85% of RAM
-    uint32_t cycles = 0;  // 0 = infinite
+    uint32_t memory_window_mb = 0;
+    uint32_t memory_window_percent = 85;
+    uint32_t cycles = 0;
     uint32_t cores = 0;
     bool halt_on_error = false;
     bool use_locked_memory = true;
     bool debug_mode = false;
-    std::string preset_file;  // Path to preset file
-    PresetInfo preset;  // Loaded preset data
+    std::string preset_file;
+    PresetInfo preset;
 };
 
 // Overall test run result
@@ -78,37 +71,14 @@ struct RunResult {
     double duration_seconds = 0.0;
 };
 
-// Platform detection
-PlatformInfo detectPlatform();
-
-// Memory allocation
-bool allocateMemory(MemoryRegion& region, size_t size, bool lock);
-void freeMemory(MemoryRegion& region);
-
-// Parse test sequence
+// Parse test sequence helper
 std::vector<uint32_t> parseTestSequence(const std::string& sequence);
 
-// Configuration wizard
-Config runConfigWizard();
-
-// Test functions
-TestResult runSimpleTest(const MemoryRegion& region, const TestConfig& config, bool stop_on_error);
-TestResult runMirrorMove(const MemoryRegion& region, const TestConfig& config, bool stop_on_error);
-TestResult runMirrorMove128(const MemoryRegion& region, const TestConfig& config, bool stop_on_error);
-TestResult runRefreshStable(const MemoryRegion& region, const TestConfig& config, bool stop_on_error);
-TestResult runTest(const std::string& test_name, const MemoryRegion& region,
-                   const TestConfig& config, bool stop_on_error);
-
-// Test engine
-TestResult runSingleTest(int test_num, const MemoryRegion& region,
-                         const TestConfig& test_config, bool halt_on_error);
-RunResult runTests(const Config& config);
-
-// Default configurations
-std::map<uint32_t, TestConfig> getDefaultTestConfigs();
-
-// Preset file loading
+// Preset file operations
 PresetInfo loadPreset(const std::string& filepath);
 std::vector<std::string> listPresets(const std::string& directory);
+
+// UI / Wizard
+Config runConfigWizard();
 
 } // namespace testsmem4u

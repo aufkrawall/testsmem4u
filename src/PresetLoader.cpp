@@ -1,6 +1,3 @@
-// Preset file loader for testsmem4u
-// Parses memory test configuration files
-
 #include "testsmem4u.h"
 #include "Logger.h"
 #include <fstream>
@@ -12,19 +9,22 @@
 #include <windows.h>
 #else
 #include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <limits.h>
 #endif
 
 namespace testsmem4u {
 
-// Trim whitespace from string
 static std::string trim(const std::string& str) {
-    size_t start = str.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) return "";
-    size_t end = str.find_last_not_of(" \t\r\n");
+    size_t start = 0;
+    while (start < str.size() && (str[start] == ' ' || str[start] == '\t' || str[start] == '\r' || str[start] == '\n')) start++;
+    if (start >= str.size()) return "";
+    size_t end = str.size() - 1;
+    while (end > start && (str[end] == ' ' || str[end] == '\t' || str[end] == '\r' || str[end] == '\n')) end--;
     return str.substr(start, end - start + 1);
 }
 
-// Parse a key=value line
 static bool parseKeyValue(const std::string& line, std::string& key, std::string& value) {
     size_t pos = line.find('=');
     if (pos == std::string::npos) return false;
@@ -33,16 +33,14 @@ static bool parseKeyValue(const std::string& line, std::string& key, std::string
     return !key.empty();
 }
 
-// Parse hexadecimal value (with or without 0x prefix)
 static uint64_t parseHex(const std::string& str) {
     std::string s = trim(str);
     if (s.empty()) return 0;
-    
-    // Remove 0x prefix if present
+
     if (s.size() > 2 && (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))) {
         s = s.substr(2);
     }
-    
+
     try {
         return std::stoull(s, nullptr, 16);
     } catch (...) {
@@ -50,11 +48,10 @@ static uint64_t parseHex(const std::string& str) {
     }
 }
 
-// Parse decimal value
 static uint32_t parseUint(const std::string& str) {
     std::string s = trim(str);
     if (s.empty()) return 0;
-    
+
     try {
         return static_cast<uint32_t>(std::stoul(s));
     } catch (...) {
@@ -62,35 +59,96 @@ static uint32_t parseUint(const std::string& str) {
     }
 }
 
-// Load a preset file
+static bool isPathTraversalAttempt(const std::string& path) {
+    if (path.find("..") != std::string::npos) {
+        return true;
+    }
+    if (!path.empty() && path[0] == '/') {
+        return true;
+    }
+    if (path.size() >= 2 && path[1] == ':') {
+        return true;
+    }
+    return false;
+}
+
+static bool isValidPath(const std::string& path_str) {
+    if (path_str.empty()) return false;
+
+    if (isPathTraversalAttempt(path_str)) {
+        return false;
+    }
+
+    std::string full_path;
+#ifdef _WIN32
+    char buffer[MAX_PATH];
+    if (GetFullPathNameA(path_str.c_str(), MAX_PATH, buffer, nullptr) == 0) {
+        return false;
+    }
+    full_path = buffer;
+
+    char current_dir[MAX_PATH];
+    if (GetCurrentDirectoryA(MAX_PATH, current_dir) == 0) {
+        return false;
+    }
+
+    std::string full_current = current_dir;
+    if (full_current.back() != '\\') full_current += '\\';
+
+    if (full_path.size() < full_current.size()) return false;
+    if (full_path.substr(0, full_current.size()) != full_current) return false;
+#else
+    char buffer[PATH_MAX];
+    if (realpath(path_str.c_str(), buffer) == nullptr) {
+        return false;
+    }
+    full_path = buffer;
+
+    char current_dir[PATH_MAX];
+    if (getcwd(current_dir, sizeof(current_dir)) == nullptr) {
+        return false;
+    }
+
+    std::string full_current = current_dir;
+    if (full_current.back() != '/') full_current += '/';
+
+    if (full_path.size() < full_current.size()) return false;
+    if (full_path.substr(0, full_current.size()) != full_current) return false;
+#endif
+
+    return true;
+}
+
 PresetInfo loadPreset(const std::string& filepath) {
     PresetInfo preset;
-    
+
+    if (!isValidPath(filepath)) {
+        LOG_ERROR("Invalid preset path (path traversal attempt or invalid path): %s", filepath.c_str());
+        return preset;
+    }
+
     LOG_INFO("Loading preset file: %s", filepath.c_str());
-    
+
     std::ifstream file(filepath);
     if (!file.is_open()) {
         LOG_ERROR("Failed to open preset file: %s", filepath.c_str());
         return preset;
     }
-    
+
     std::string line;
     uint32_t current_test = UINT32_MAX;
-    
+
     while (std::getline(file, line)) {
         line = trim(line);
-        
-        // Skip empty lines and comments
+
         if (line.empty() || line[0] == ';' || line[0] == '#') continue;
-        
-        // Check for section headers
+
         if (line[0] == '[') {
             size_t end = line.find(']');
             if (end != std::string::npos) {
                 std::string section = trim(line.substr(1, end - 1));
-                
-                // Parse test section [Test0], [Test1], etc.
-                if (section.rfind("Test", 0) == 0) {
+
+                if (section.size() > 4 && section.substr(0, 4) == "Test") {
                     std::string test_num_str = section.substr(4);
                     try {
                         current_test = static_cast<uint32_t>(std::stoul(test_num_str));
@@ -109,12 +167,10 @@ PresetInfo loadPreset(const std::string& filepath) {
             }
             continue;
         }
-        
-        // Parse key=value pairs
+
         std::string key, value;
         if (!parseKeyValue(line, key, value)) continue;
-        
-        // Main section keys
+
         if (key == "Config Name") {
             preset.config_name = value;
             LOG_INFO("Preset name: %s", value.c_str());
@@ -135,14 +191,28 @@ PresetInfo loadPreset(const std::string& filepath) {
             preset.memory_window_mb = parseUint(value);
         } else if (key == "Test Sequence") {
             preset.test_sequence = value;
+        } else if (key == "Language") {
+            preset.language = static_cast<int32_t>(parseUint(value));
+        } else if (key == "Channels") {
+            preset.channels = parseUint(value);
+        } else if (key == "Interleave Type") {
+            preset.interleave_type = parseUint(value);
+        } else if (key == "Reserved Memory for Windows (Mb)") {
+            preset.reserved_memory_mb = parseUint(value);
+        } else if (key == "Lock Memory Granularity (Mb)") {
+            preset.lock_memory_granularity_mb = parseUint(value);
+        } else if (key == "Single DIMM width, bits") {
+            preset.single_dimm_width_bits = parseUint(value);
+        } else if (key == "Operation Block, byts") {
+            preset.operation_block_bytes = parseUint(value);
+        } else if (key == "Debug Level") {
+            preset.debug_level = parseUint(value);
         }
-        
-        // Per-test section keys
+
         if (current_test != UINT32_MAX && preset.test_configs.count(current_test)) {
             TestConfig& tc = preset.test_configs[current_test];
-            
+
             if (key == "Enable") {
-                // If Enable=0, we could skip this test, but keep it for now
             } else if (key == "Time (%)") {
                 tc.time_percent = parseUint(value);
             } else if (key == "Function") {
@@ -161,31 +231,30 @@ PresetInfo loadPreset(const std::string& filepath) {
             }
         }
     }
-    
+
     file.close();
-    
+
     LOG_INFO("Preset loaded: %u tests, %u cycles, window=%u MB",
              preset.tests, preset.cycles, preset.memory_window_mb);
     LOG_INFO("Test sequence: %s", preset.test_sequence.c_str());
-    
+
     return preset;
 }
 
-// List available preset files in a directory
 std::vector<std::string> listPresets(const std::string& directory) {
     std::vector<std::string> presets;
-    
+
 #ifdef _WIN32
     std::string search_path = directory + "\\*.cfg";
     WIN32_FIND_DATAA find_data;
     HANDLE handle = FindFirstFileA(search_path.c_str(), &find_data);
-    
+
     if (handle != INVALID_HANDLE_VALUE) {
         do {
             std::string filename = find_data.cFileName;
             if (filename.size() > 4) {
                 std::string ext = filename.substr(filename.size() - 4);
-                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                for (size_t i = 0; i < ext.size(); i++) ext[i] = static_cast<char>(tolower(ext[i]));
                 if (ext == ".cfg") {
                     presets.push_back(filename);
                 }
@@ -201,7 +270,7 @@ std::vector<std::string> listPresets(const std::string& directory) {
             std::string filename = entry->d_name;
             if (filename.size() > 4) {
                 std::string ext = filename.substr(filename.size() - 4);
-                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                for (size_t i = 0; i < ext.size(); i++) ext[i] = static_cast<char>(tolower(ext[i]));
                 if (ext == ".cfg") {
                     presets.push_back(filename);
                 }
@@ -210,7 +279,7 @@ std::vector<std::string> listPresets(const std::string& directory) {
         closedir(dir);
     }
 #endif
-    
+
     std::sort(presets.begin(), presets.end());
     return presets;
 }
