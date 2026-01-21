@@ -25,6 +25,8 @@ static void enableVirtualTerminal() {
         DWORD dwMode = 0;
         if (GetConsoleMode(hOut, &dwMode)) {
             dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            dwMode &= ~ENABLE_QUICK_EDIT_MODE; // Disable QuickEdit to prevent pausing on selection
+            dwMode |= ENABLE_EXTENDED_FLAGS; // Required when disabling QuickEdit
             SetConsoleMode(hOut, dwMode);
         }
     }
@@ -337,9 +339,12 @@ int main(int argc, char* argv[]) {
         std::cout << "Errors: " << res.total_errors << std::endl;
         std::cout << "Time: " << res.duration_seconds << "s" << std::endl;
 
+        // Ensure logger flushes all pending messages before exit
+        Logger::get().deinit();
         return res.total_errors == 0 ? 0 : 1;
     } catch (const std::exception& e) {
         std::cerr << "CRITICAL ERROR: " << e.what() << std::endl;
+        Logger::get().deinit();
         return 1;
     }
 }

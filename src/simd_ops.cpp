@@ -73,6 +73,18 @@ void flush_cache_line(void* ptr) {
     _mm_clflush(ptr);
 }
 
+void flush_cache_region(void* ptr, size_t bytes) {
+    // Cache line size is typically 64 bytes on modern x86
+    constexpr size_t CACHE_LINE_SIZE = 64;
+    uint8_t* p = static_cast<uint8_t*>(ptr);
+    uint8_t* end = p + bytes;
+    
+    for (; p < end; p += CACHE_LINE_SIZE) {
+        _mm_clflush(p);
+    }
+    _mm_sfence(); // Ensure all flushes complete before returning
+}
+
 #elif defined(__aarch64__) || defined(_M_ARM64)
 
 static SimdCapabilities detect_arm_capabilities() {
@@ -86,8 +98,24 @@ static SimdCapabilities detect_arm_capabilities() {
 
 void flush_cache_line(void* ptr) {
 #if defined(__GNUC__) || defined(__clang__)
-     __builtin_prefetch(ptr, 1, 3);
      __asm__ __volatile__("dc civac, %0" :: "r" (ptr) : "memory");
+#endif
+}
+
+void flush_cache_region(void* ptr, size_t bytes) {
+    // Cache line size is typically 64 bytes on ARM64
+    constexpr size_t CACHE_LINE_SIZE = 64;
+    uint8_t* p = static_cast<uint8_t*>(ptr);
+    uint8_t* end = p + bytes;
+    
+    for (; p < end; p += CACHE_LINE_SIZE) {
+#if defined(__GNUC__) || defined(__clang__)
+        __asm__ __volatile__("dc civac, %0" :: "r" (p) : "memory");
+#endif
+    }
+    // Data synchronization barrier
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("dsb sy" ::: "memory");
 #endif
 }
 
@@ -100,6 +128,12 @@ static SimdCapabilities detect_fallback_capabilities() {
 
 void flush_cache_line(void* ptr) {
     (void)ptr;
+}
+
+void flush_cache_region(void* ptr, size_t bytes) {
+    (void)ptr;
+    (void)bytes;
+    // No cache flush available on this platform
 }
 
 #endif
@@ -284,54 +318,42 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
 
 template<>
 void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt) {
-    SimdCapabilities caps = getCapabilities();
-    (void)caps;
     size_t i = 0;
 
-#if defined(__AVX512F__) && defined(__AVX512VL__)
-    if (use_nt && caps.has_nt_stores) {
-        __m256i v_param0 = _mm256_set1_epi64x(param0);
-        __m256i v_param1 = _mm256_set1_epi64x(param1);
+    // NOTE: AVX2 doesn't have native 64-bit integer multiply (_mm256_mullo_epi64 requires AVX512).
+    // Previous SIMD emulation was incorrect. For RAM testing, correctness > speed.
+    // AVX512 has _mm512_mullo_epi64, so use that if available.
+    
+#if defined(__AVX512F__)
+    SimdCapabilities caps = getCapabilities();
+    if (caps.has_avx512) {
+        __m512i v_param0 = _mm512_set1_epi64(param0);
+        __m512i v_param1 = _mm512_set1_epi64(param1);
+        __m512i v_idx = _mm512_set_epi64(7, 6, 5, 4, 3, 2, 1, 0);
+        __m512i v_idx_step = _mm512_set1_epi64(8);
 
-        __m256i v_idx = _mm256_set_epi64x(3, 2, 1, 0);
-        __m256i v_idx_step = _mm256_set1_epi64x(4);
-
-        for (; i + 4 <= count; i += 4) {
-            __m256i v_mul_low = _mm256_mul_epu32(v_idx, v_param1);
-            __m256i v_idx_shifted = _mm256_srli_epi64(v_idx, 32);
-            __m256i v_param1_high = _mm256_srli_epi64(v_param1, 32);
-            __m256i v_mul_high = _mm256_mul_epu32(v_idx_shifted, v_param1_high);
-            __m256i v_mul = _mm256_or_si256(v_mul_low, _mm256_slli_epi64(v_mul_high, 32));
-            __m256i v_val = _mm256_xor_si256(v_param0, v_mul);
-
-            _mm256_storeu_si256((__m256i*)(dst + i), v_val);
-
-            v_idx = _mm256_add_epi64(v_idx, v_idx_step);
+        for (; i + 8 <= count; i += 8) {
+            __m512i v_mul = _mm512_mullo_epi64(v_idx, v_param1);
+            __m512i v_val = _mm512_xor_si512(v_param0, v_mul);
+            
+            if (use_nt && caps.has_nt_stores) {
+                _mm512_stream_si512((void*)(dst + i), v_val);
+            } else {
+                _mm512_storeu_si512((void*)(dst + i), v_val);
+            }
+            v_idx = _mm512_add_epi64(v_idx, v_idx_step);
         }
     }
 #endif
 
+    // Scalar fallback - guaranteed correct
     for (; i < count; ++i) {
         dst[i] = param0 ^ (i * param1);
     }
     sfence();
 }
 
-template<>
-void generate_pattern_moving_inv<uint64_t>(uint64_t* dst, size_t count, uint64_t val, bool use_nt) {
-    SimdCapabilities caps = getCapabilities();
-    (void)caps;
-    size_t i = 0;
-#if defined(__AVX2__)
-    __m256i v = _mm256_set1_epi64x(val);
-    for (; i + 4 <= count; i += 4) {
-        if (use_nt && caps.has_nt_stores) _mm256_stream_si256((__m256i*)(dst + i), v);
-        else _mm256_storeu_si256((__m256i*)(dst + i), v);
-    }
-#endif
-    for (; i < count; ++i) dst[i] = val;
-    sfence();
-}
+// NOTE: generate_pattern_moving_inv removed - unused (MovingInversion test uses generate_pattern_uniform)
 
 template<>
 void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t val, bool use_nt) {
@@ -451,9 +473,13 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
     size_t errors = 0;
     size_t i = 0;
 
-#if defined(__AVX512F__) && defined(__AVX512VL__)
+    // NOTE: AVX2 doesn't have native 64-bit integer multiply.
+    // Previous SIMD emulation was incorrect. For RAM testing, correctness > speed.
+    // Only AVX512 has _mm512_mullo_epi64, so use that if available.
+
+#if defined(__AVX512F__)
     SimdCapabilities caps = getCapabilities();
-    if (caps.level >= SimdLevel::AVX512 && count >= 8) {
+    if (caps.has_avx512 && count >= 8) {
         __m512i v_param0 = _mm512_set1_epi64(param0);
         __m512i v_param1 = _mm512_set1_epi64(param1);
 
@@ -469,6 +495,7 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
             __m512i v_expect = _mm512_xor_si512(v_param0, v_mul);
             __mmask8 mask = _mm512_cmpeq_epi64_mask(actual, v_expect);
             if (mask != 0xFF) {
+                // Scalar verification for mismatches
                 for (size_t k = 0; k < 8; ++k) {
                     if (!(mask & (1 << k))) {
                         if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
@@ -482,41 +509,7 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
     }
 #endif
 
-#if defined(__AVX2__)
-    SimdCapabilities caps = getCapabilities();
-    if (caps.level >= SimdLevel::AVX2 && count >= 4) {
-        __m256i v_param0 = _mm256_set1_epi64x(param0);
-        __m256i v_param1 = _mm256_set1_epi64x(param1);
-
-        __m256i v_idx = _mm256_set_epi64x(start_idx + 3, start_idx + 2, start_idx + 1, start_idx);
-        __m256i v_idx_step = _mm256_set1_epi64x(4);
-
-        for (; i + 4 <= count; i += 4) {
-            if (errors >= max_errors) return errors;
-
-            __m256i actual = _mm256_loadu_si256((const __m256i*)(src + i));
-
-            __m256i v_mul_low = _mm256_mul_epu32(v_idx, v_param1);
-            __m256i v_idx_shifted = _mm256_srli_epi64(v_idx, 32);
-            __m256i v_param1_high = _mm256_srli_epi64(v_param1, 32);
-            __m256i v_mul_high = _mm256_mul_epu32(v_idx_shifted, v_param1_high);
-            __m256i v_mul = _mm256_or_si256(v_mul_low, _mm256_slli_epi64(v_mul_high, 32));
-
-            __m256i v_expect = _mm256_xor_si256(v_param0, v_mul);
-            __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
-            int mask = _mm256_movemask_epi8(eq);
-            if ((uint32_t)mask != 0xFFFFFFFF) {
-                for (size_t k = 0; k < 4; ++k) {
-                    if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                        if (errors < max_errors) error_indices[errors++] = i + k;
-                    }
-                }
-            }
-            v_idx = _mm256_add_epi64(v_idx, v_idx_step);
-        }
-    }
-#endif
-
+    // Scalar fallback - guaranteed correct
     for (; i < count; ++i) {
         if (errors >= max_errors) break;
         if (src[i] != (param0 ^ ((start_idx + i) * param1))) {

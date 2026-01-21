@@ -51,10 +51,10 @@ public:
         last_summary_time_ = std::chrono::high_resolution_clock::now();
 
         if (!filename.empty()) {
-            if (purge) {
-                log_file_.open(filename, std::ios::out | std::ios::trunc);
-            } else {
-                log_file_.open(filename, std::ios::out | std::ios::app);
+            // Use C-style file I/O for robustness
+            file_handle_ = fopen(filename.c_str(), purge ? "w" : "a");
+            if (!file_handle_) {
+                std::cerr << "[-] Failed to open log file: " << filename << std::endl;
             }
         }
 
@@ -63,25 +63,19 @@ public:
     }
 
     void setErrorRateLimit(uint32_t errors_per_second) {
-        // Atomic or simple lock is fine, this is rarely called
         std::lock_guard<std::mutex> lock(init_mutex_);
         error_rate_limit_ = errors_per_second;
     }
 
-    // Checking if we should log based on rate limiting
-    // Now internal logic, returns true if we should proceed
     bool checkRateLimit() {
-        // We use a separate mutex for rate limiting to reduce contention on the queue mutex
         std::lock_guard<std::mutex> lock(rate_limit_mutex_);
         
         auto now = std::chrono::high_resolution_clock::now();
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_error_time_).count();
 
-        // Add tokens based on elapsed time
         if (elapsed_ms > 0) {
-            uint32_t tokens_to_add = static_cast<uint32_t>(elapsed_ms / 10); // 1 token per 10ms = 100/sec base refill
+            uint32_t tokens_to_add = static_cast<uint32_t>(elapsed_ms / 10);
             if (tokens_to_add > 0) {
-                // If we have "error_count_" representing used tokens, we subtract
                 if (error_count_ > tokens_to_add) {
                     error_count_ -= tokens_to_add;
                 } else {
@@ -92,7 +86,7 @@ public:
         }
 
         if (error_count_ >= error_rate_limit_) {
-            return false; // Rate limit exceeded
+            return false; 
         }
 
         error_count_++;
@@ -110,8 +104,9 @@ public:
             writer_thread_.join();
         }
 
-        if (log_file_.is_open()) {
-            log_file_.close();
+        if (file_handle_) {
+            fclose(file_handle_);
+            file_handle_ = nullptr;
         }
     }
 
@@ -144,7 +139,6 @@ public:
     }
 
     void error(const char* format, ...) {
-        // Always log errors unless rate limited
         va_list args;
         va_start(args, format);
         logv(LogLevel::ERROR, format, args);
@@ -189,15 +183,11 @@ public:
     }
 
     void logError(const std::string& context, uint64_t address, uint64_t expected, uint64_t actual) {
-         // Rate limit check specific to memory error floods
         {
             std::lock_guard<std::mutex> lock(rate_limit_mutex_);
             auto now = std::chrono::high_resolution_clock::now();
             if (std::chrono::duration_cast<std::chrono::seconds>(now - last_summary_time_).count() >= 1) {
                 if (suppressed_count_ > 0) {
-                    // We must log this directly or push to queue. Pushing to queue is safer.
-                    // But we can't call 'error' easily from here if we want to avoid recursion effectively.
-                    // We'll construct the message manually.
                     char buf[128];
                     snprintf(buf, sizeof(buf), "ERROR RATE: %u additional errors suppressed", suppressed_count_);
                     pushMessage(LogLevel::ERROR, std::string(buf));
@@ -217,11 +207,8 @@ public:
             context.c_str(), (unsigned long long)address, (unsigned long long)expected, (unsigned long long)actual);
     }
     
-    // Legacy support for directly accessing mutex if needed (Monitor thread)
-    // The Monitor thread in TestEngine uses this for console locking.
-    // For AsyncLogger, we still want to protect the Console output.
-    // We can use the init_mutex_ or a dedicated console_mutex_.
     std::mutex& getConsoleMutex() { return console_mutex_; }
+    std::mutex& getMutex() { return getConsoleMutex(); } 
 
     double getElapsedSeconds() const {
         auto now = std::chrono::high_resolution_clock::now();
@@ -229,12 +216,9 @@ public:
     }
 
     std::string getLogPath() const { return log_filename_; }
-    
-    // Compatibility methods for old getters if accessed by external code
-    std::mutex& getMutex() { return getConsoleMutex(); } 
 
 private:
-    Logger() : running_(false), log_filename_(), log_level_(LogLevel::DEBUG),
+    Logger() : running_(false), file_handle_(nullptr), log_filename_(), log_level_(LogLevel::DEBUG),
                session_id_(0), error_count_(0), error_rate_limit_(100), suppressed_count_(0) {}
     
     ~Logger() { deinit(); }
@@ -242,10 +226,9 @@ private:
     Logger(const Logger&) = delete;
     Logger& operator=(const Logger&) = delete;
 
-    // Threading members
     std::mutex init_mutex_;
     std::mutex rate_limit_mutex_;
-    std::mutex console_mutex_; // Protects std::cout/cerr
+    std::mutex console_mutex_; 
     
     std::mutex queue_mutex_;
     std::condition_variable queue_cv_;
@@ -253,15 +236,13 @@ private:
     std::thread writer_thread_;
     std::atomic<bool> running_;
 
-    std::ofstream log_file_;
+    FILE* file_handle_; // Replaced ofstream
     std::string log_filename_;
     std::atomic<LogLevel> log_level_;
 
-    // State members
     uint32_t session_id_;
     std::chrono::high_resolution_clock::time_point start_time_;
     
-    // Rate limit members
     uint32_t error_count_;
     uint32_t error_rate_limit_;
     uint32_t suppressed_count_;
@@ -279,8 +260,16 @@ private:
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now.time_since_epoch()) % 1000;
 
+        // Use thread-safe localtime variant
+        std::tm tm_buf{};
+#ifdef _WIN32
+        localtime_s(&tm_buf, &time);
+#else
+        localtime_r(&time, &tm_buf);
+#endif
+
         std::stringstream ss;
-        ss << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S");
+        ss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
         ss << '.' << std::setfill('0') << std::setw(3) << ms.count();
         return ss.str();
     }
@@ -310,7 +299,6 @@ private:
         
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
-            // Cap queue size to prevent memory explosion if disk is stuck
             if (log_queue_.size() < 10000) { 
                 log_queue_.push({level, formatted_message});
             }
@@ -319,20 +307,17 @@ private:
     }
 
     void logv(LogLevel level, const char* format, va_list args) {
-        // Do formatting on the caller thread to capture values accurately at the time of call
         char buffer[4096];
         vsnprintf(buffer, sizeof(buffer), format, args);
         
         std::string message(buffer);
         std::string line = formatLogLine(level, message);
         
-        // 1. Synchronous Console Output (Fixes interaction with console wizards)
         {
             std::lock_guard<std::mutex> console_lock(console_mutex_);
             std::cout << line << "\n";
         }
 
-        // 2. Asynchronous File Output
         pushMessage(level, line);
     }
 
@@ -348,31 +333,27 @@ private:
 
             if (!running_ && log_queue_.empty()) break;
 
-            // Swap queue content to local batch to minimize lock time
             while (!log_queue_.empty() && local_batch.size() < 1000) {
                 local_batch.push_back(std::move(log_queue_.front()));
                 log_queue_.pop();
             }
             lock.unlock();
 
-            // Process batch
             if (!local_batch.empty()) {
-                if (log_file_.is_open()) {
+                if (file_handle_) {
                     bool force_flush = false;
                     for (const auto& msg : local_batch) {
-                        // Msg.second is already fully formatted
-                        log_file_ << msg.second << "\n";
-                        if (msg.first == LogLevel::ERROR) force_flush = true;
+                        fprintf(file_handle_, "%s\n", msg.second.c_str());
+                        if (msg.first == LogLevel::ERROR || msg.first == LogLevel::INFO) force_flush = true;
                     }
-                    if (force_flush) log_file_.flush();
+                    if (force_flush) fflush(file_handle_);
                 }
                 local_batch.clear();
             }
         }
         
-        // Final flush
-        if (log_file_.is_open()) {
-            log_file_.flush();
+        if (file_handle_) {
+            fflush(file_handle_);
         }
     }
 };

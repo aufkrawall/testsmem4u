@@ -52,6 +52,7 @@ public:
     static TestResult runWalkingZeros(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
     static TestResult runLFSRPattern(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
     static TestResult runRowHammerTest(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runMovingInversion(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
 
     static size_t verifyAndReport(const uint64_t* ptr, size_t count, size_t start_idx,
                                    uint8_t pattern_mode, uint64_t param0, uint64_t param1,

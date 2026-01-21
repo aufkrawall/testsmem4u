@@ -10,8 +10,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <psapi.h>
-#include <windows.h>
-#include <psapi.h>
 #include <memoryapi.h>
 #include <ntsecapi.h> // For LSA functions
 
@@ -86,14 +84,18 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
 #pragma clang diagnostic pop
 #else
 static void SignalHandlerWrapper(int signum) {
-    (void)g_shutdown_initiated;
+    // Mark as shutting down (atomic write is async-signal-safe)
+    g_shutdown_initiated = true;
+    
+    // Callback may not be async-signal-safe, but we need to signal stop
+    // The callback only sets an atomic flag, which IS safe
     if (g_shutdown_callback) {
         g_shutdown_callback();
     }
-    // Give threads time to clean up
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    // Use exit instead of _exit to allow proper cleanup
-    exit(128 + signum);
+    
+    // Use _exit() which IS async-signal-safe (exit() is NOT)
+    // No time for cleanup - trust the callback to trigger graceful shutdown
+    _exit(128 + signum);
 }
 #endif
 
@@ -275,7 +277,7 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
         return false;
     }
 
-    // Set working set size before allocating
+    // Set working set size before allocating - CRITICAL for VirtualLock to succeed
     HANDLE hProcess = GetCurrentProcess();
     SIZE_T overhead = 128 * 1024 * 1024;
     SIZE_T min_ws = size + overhead;
@@ -283,7 +285,11 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
     
     if (!SetProcessWorkingSetSize(hProcess, min_ws, max_ws)) {
         DWORD err = GetLastError();
-        LOG_WARN("SetProcessWorkingSetSize(min=%zu, max=%zu) failed: error %lu", min_ws, max_ws, err);
+        LOG_ERROR("SetProcessWorkingSetSize(min=%zu MB, max=%zu MB) failed: error %lu. "
+                  "Cannot guarantee memory lock without sufficient working set.",
+                  min_ws / 1024 / 1024, max_ws / 1024 / 1024, err);
+        // This is now a critical failure - VirtualLock will likely fail without sufficient working set
+        return false;
     }
 
     // Free any existing allocation before reassigning
@@ -425,7 +431,9 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
     region.size = (size + page_align - 1) & ~(page_align - 1);
     
     // Strict requirement: 100% of requested bytes must be locked if locking is requested
+#ifdef _WIN32
     size_t min_required_bytes = region.size;
+#endif
 
 #ifdef _WIN32
     if (try_large_pages) {
@@ -548,6 +556,9 @@ void Platform::setProcessPriorityHigh() {
 #ifdef _WIN32
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #else
+    // Set nice value to -5 for higher priority (requires CAP_SYS_NICE or root)
+    // Failure is acceptable - just means we'll run at normal priority
+    nice(-5);
 #endif
 }
 

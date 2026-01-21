@@ -40,6 +40,10 @@ void lfence();
 // Cache Management
 void flush_cache_line(void* ptr);
 
+// Flush entire memory region from cache - essential for true RAM testing
+// This ensures subsequent reads come from DRAM, not CPU cache
+void flush_cache_region(void* ptr, size_t bytes);
+
 // Non-Temporal Stores (Bypass Cache for Writes)
 template<typename T>
 void nt_store_128(T* dst, const T* src, size_t count);

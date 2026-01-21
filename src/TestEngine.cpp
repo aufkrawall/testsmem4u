@@ -1,6 +1,7 @@
 #include "TestEngine.h"
 #include "Logger.h"
 #include "simd_ops.h"
+#include <chrono>
 #include <iostream>
 #include <thread>
 #include <atomic>
@@ -65,21 +66,23 @@ size_t TestEngine::verifyAndReport(const uint64_t* ptr, size_t count, size_t sta
         uint64_t idx = error_indices[i];
         uint64_t expect;
         generatePatternValue(start_idx + idx, pattern_mode, param0, param1, expect);
-        uint64_t actual = ptr[idx]; // Re-read to check consistency
+        
+        // CRITICAL: Flush cache line before re-read to ensure we read from RAM, not cache
+        // This is essential for accurate soft vs hard error detection
+        simd::flush_cache_line((void*)&ptr[idx]);
+        simd::lfence(); // Serialize to ensure flush completes before read
+        
+        uint64_t actual = ptr[idx]; // Re-read from RAM (not cache)
 
         if (actual != expect) {
-            // Hard Error: Re-read confirmed the mismatch
+            // Hard Error: Re-read from RAM confirmed the mismatch
             LOG_ERROR_DETAIL((test_name + " (Hard)").c_str(), (uint64_t)((start_idx + idx) * 8), expect, actual);
             res.errors++;
         } else {
-            // Soft/Transient Error: Re-read returned correct value
-            // This is likely a bus glitch, interference, or alpha particle, but not a stuck bit.
-            // We report it as a warning but do NOT fail the test immediately unless strict mode is on.
-            LOG_WARN("Soft/Transient error at 0x%016llX (expected 0x%016llX, re-read correct)", 
-                     (unsigned long long)((start_idx + idx) * 8), (unsigned long long)expect);
-            
-            // Should we count this? For now, let's not fail the test on soft errors to avoid false alarms.
-            // But we should track them if we had a field. For now, just logging is a huge improvement.
+            // Soft/Transient Error: Initial read failed but RAM now has correct value
+            // This indicates a transient bit flip - still a real RAM error
+            LOG_ERROR_DETAIL((test_name + " (Soft/Transient)").c_str(), (uint64_t)((start_idx + idx) * 8), expect, actual);
+            res.errors++;
         }
         
         if (halt_on_error && res.errors > 0) {
@@ -98,6 +101,7 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
 
     bool use_nt = true;
 
+    // Write pattern to memory
     if (config.pattern_mode == 0) {
         generate_pattern_uniform(ptr, count, config.pattern_param0, use_nt);
     } else if (config.pattern_mode == 1) {
@@ -106,12 +110,13 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
         generate_pattern_linear(ptr, count, config.pattern_param0, config.pattern_param1, use_nt);
     }
 
-    res.bytes_tested += region.size;
-
     sfence();
+    
+    // CRITICAL: Flush entire region from cache to ensure verification reads from RAM
+    // This is essential for detecting real RAM errors vs cache hits
+    simd::flush_cache_region(ptr, region.size);
 
-    // Use a larger block size to reduce loop overhead and potentially stress memory controller more
-    // 2MB (256K uint64) is a reasonable chunk
+    // Verify in blocks (2MB chunks)
     size_t block = 256 * 1024; 
 
     for (size_t i = 0; i < count; i += block) {
@@ -122,9 +127,9 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
                                     config.pattern_param1, res, ctx, "SimpleTest", stop);
 
         if (stop && ctx.shouldStop()) break;
-        res.bytes_tested += n * 8;
     }
 
+    res.bytes_tested = region.size;  // Count once at the end (was double-counted before)
     return res;
 }
 
@@ -152,6 +157,9 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
     // Fill memory with solid pattern (all ones - most susceptible to RowHammer)
     generate_pattern_uniform(ptr, count, ~0ULL, true);
     sfence();
+    
+    // Flush to RAM before initial verification
+    simd::flush_cache_region(ptr, region.size);
 
     // Verify initial write before hammering
     size_t initial_errors = simd::verify_uniform(ptr, count, ~0ULL, nullptr, 0);
@@ -178,6 +186,9 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
             simd::flush_cache_line((void*)&vptr[idxB]);
         }
     }
+    
+    // Flush entire region before verification to ensure we read from RAM
+    simd::flush_cache_region(ptr, region.size);
     
     // Verify memory still contains the pattern
     size_t block = 256 * 1024;
@@ -216,6 +227,9 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
         if (ctx.shouldStop()) break;
         generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt);
         sfence();
+        
+        // Flush cache before verification for true RAM testing
+        simd::flush_cache_region(ptr, region.size);
 
         size_t found = verify_pattern_xor(ptr, count, 0, config.pattern_param0, config.pattern_param1, errors, 128);
         if (found > 0) {
@@ -234,6 +248,9 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
 
         invert_array(ptr, count, use_nt);
         sfence();
+        
+        // Flush cache before verification
+        simd::flush_cache_region(ptr, region.size);
 
         found = verify_pattern_xor(ptr, count, 0, ~config.pattern_param0, config.pattern_param1, errors, 128);
         if (found > 0) {
@@ -268,6 +285,9 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
             ptr[i+1] = config.pattern_param1;
         }
         sfence();
+        
+        // Flush cache before verification
+        simd::flush_cache_region(ptr, region.size);
 
         for (size_t i = 0; i + 1 < count; i += 2) {
             if (ctx.shouldStop()) break;
@@ -288,6 +308,16 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
                 }
             }
         }
+        
+        // Handle odd tail word if region size not divisible by 16 bytes
+        if (count % 2 == 1) {
+            size_t last = count - 1;
+            if (ptr[last] != config.pattern_param0) {
+                res.errors++;
+                LOG_ERROR_DETAIL("MirrorMove128 (Tail)", (uint64_t)(last * 8), config.pattern_param0, ptr[last]);
+                if (stop) ctx.requestStop();
+            }
+        }
     }
 
     res.bytes_tested = region.size * repeats;
@@ -304,6 +334,9 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
     sfence();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(config.parameter > 0 ? config.parameter : 100));
+    
+    // Flush cache to ensure verification reads from RAM
+    simd::flush_cache_region(ptr, region.size);
 
     uint64_t errors[128];
     size_t found = verify_uniform(ptr, count, config.pattern_param0, errors, 128);
@@ -322,78 +355,89 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
 TestResult TestEngine::runWalkingOnes(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
     (void)config;
     TestResult res = {};
-    uint8_t* ptr = reinterpret_cast<uint8_t*>(region.base);
-    size_t count = region.size;
+    uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
+    size_t count = region.size / 8;
 
-    // Optimize: Process in cache-line sized blocks if possible, or at least flush
-    for (size_t byte = 0; byte < count; ++byte) {
-        if (ctx.shouldStop()) break;
-        uint8_t pattern = 1;
+    // SIMD-optimized Walking Ones: Test each bit position across entire memory
+    // For each bit position (0-63), write pattern with that bit set, flush, verify
+    for (int bit = 0; bit < 64 && !ctx.shouldStop(); ++bit) {
+        uint64_t pattern = 1ULL << bit;
         
-        // Write pattern
-        for (int bit = 0; bit < 8 && byte + bit < count; ++bit) {
-            ptr[byte + bit] = pattern;
-            pattern <<= 1;
-        }
-        
-        // Flush to ensure it hits RAM (critical for this specific low-level bit test)
-        simd::flush_cache_line((void*)&ptr[byte]);
+        // Fill memory with walking one pattern
+        generate_pattern_uniform(ptr, count, pattern, true);
         sfence();
-
-        // Verify
-        pattern = 1;
-        for (int bit = 0; bit < 8 && byte + bit < count; ++bit) {
-            // Force read from memory (if flush worked, this should be from RAM)
-            volatile uint8_t val = ptr[byte + bit];
-            if (val != pattern) {
-                res.errors++;
-                LOG_ERROR_DETAIL("WalkingOnes", (uint64_t)(byte + bit), pattern, val);
+        
+        // Flush cache to ensure verification reads from RAM
+        simd::flush_cache_region(ptr, region.size);
+        
+        // Verify in blocks
+        uint64_t error_indices[128];
+        size_t block = 256 * 1024;
+        for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
+            size_t n = std::min(block, count - i);
+            size_t found = simd::verify_uniform(ptr + i, n, pattern, error_indices, 128);
+            
+            if (found > 0) {
+                res.errors += found;
+                for (size_t k = 0; k < found && k < 10; ++k) {
+                    // Flush before re-read for accurate logging
+                    simd::flush_cache_line((void*)&ptr[i + error_indices[k]]);
+                    simd::lfence();
+                    LOG_ERROR_DETAIL("WalkingOnes", (uint64_t)((i + error_indices[k]) * 8), pattern, ptr[i + error_indices[k]]);
+                }
                 if (stop) {
                     ctx.requestStop();
-                    return res;
+                    break;
                 }
             }
-            pattern <<= 1;
         }
     }
 
-    res.bytes_tested = count;
+    res.bytes_tested = region.size * 64; // Tested each bit position
     return res;
 }
 
 TestResult TestEngine::runWalkingZeros(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
     (void)config;
     TestResult res = {};
-    uint8_t* ptr = reinterpret_cast<uint8_t*>(region.base);
-    size_t count = region.size;
+    uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
+    size_t count = region.size / 8;
 
-    for (size_t byte = 0; byte < count; ++byte) {
-        if (ctx.shouldStop()) break;
-        uint8_t pattern = 0xFE;
-        for (int bit = 0; bit < 8 && byte + bit < count; ++bit) {
-            ptr[byte + bit] = pattern;
-            pattern = (pattern << 1) | 1;
-        }
+    // SIMD-optimized Walking Zeros: Test each bit position with that bit clear
+    // Pattern is all 1s except for one bit position
+    for (int bit = 0; bit < 64 && !ctx.shouldStop(); ++bit) {
+        uint64_t pattern = ~(1ULL << bit);
         
-        simd::flush_cache_line((void*)&ptr[byte]);
+        // Fill memory with walking zero pattern
+        generate_pattern_uniform(ptr, count, pattern, true);
         sfence();
-
-        pattern = 0xFE;
-        for (int bit = 0; bit < 8 && byte + bit < count; ++bit) {
-            volatile uint8_t val = ptr[byte + bit];
-            if (val != pattern) {
-                res.errors++;
-                LOG_ERROR_DETAIL("WalkingZeros", (uint64_t)(byte + bit), pattern, val);
+        
+        // Flush cache to ensure verification reads from RAM
+        simd::flush_cache_region(ptr, region.size);
+        
+        // Verify in blocks
+        uint64_t error_indices[128];
+        size_t block = 256 * 1024;
+        for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
+            size_t n = std::min(block, count - i);
+            size_t found = simd::verify_uniform(ptr + i, n, pattern, error_indices, 128);
+            
+            if (found > 0) {
+                res.errors += found;
+                for (size_t k = 0; k < found && k < 10; ++k) {
+                    simd::flush_cache_line((void*)&ptr[i + error_indices[k]]);
+                    simd::lfence();
+                    LOG_ERROR_DETAIL("WalkingZeros", (uint64_t)((i + error_indices[k]) * 8), pattern, ptr[i + error_indices[k]]);
+                }
                 if (stop) {
                     ctx.requestStop();
-                    return res;
+                    break;
                 }
             }
-            pattern = (pattern << 1) | 1;
         }
     }
 
-    res.bytes_tested = count;
+    res.bytes_tested = region.size * 64; // Tested each bit position
     return res;
 }
 
@@ -407,44 +451,142 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
     uint32_t* ptr = reinterpret_cast<uint32_t*>(region.base);
     size_t count = region.size / 4;
 
-    uint64_t seed = config.pattern_param0 ? config.pattern_param0 : 0x12345678;
+    uint64_t initial_seed = config.pattern_param0 ? config.pattern_param0 : 0x12345678;
+    uint64_t seed = initial_seed;
 
+    // Generate pattern
     for (size_t i = 0; i < count; ++i) {
         if (ctx.shouldStop()) break;
         ptr[i] = static_cast<uint32_t>(seed);
         seed = lfsr_next(seed);
     }
     sfence();
+    
+    // Flush cache for true RAM testing
+    simd::flush_cache_region(ptr, region.size);
 
-    seed = config.pattern_param0 ? config.pattern_param0 : 0x12345678;
-    uint64_t errors[128];
+    // Verify - reset seed and check
+    seed = initial_seed;
 
     for (size_t i = 0; i < count; i += 1024) {
         if (ctx.shouldStop()) break;
         size_t n = std::min((size_t)1024, count - i);
 
+        // Store expected values BEFORE checking so we can log correct values
+        uint32_t expected_values[1024];
+        uint64_t block_seed = seed;
+        for (size_t j = 0; j < n; ++j) {
+            expected_values[j] = static_cast<uint32_t>(block_seed);
+            block_seed = lfsr_next(block_seed);
+        }
+
         size_t found = 0;
+        uint64_t error_indices[128];
         for (size_t j = 0; j < n && found < 128; ++j) {
-            if (ptr[i + j] != static_cast<uint32_t>(seed)) {
-                errors[found++] = j;
+            if (ptr[i + j] != expected_values[j]) {
+                error_indices[found++] = j;
             }
-            seed = lfsr_next(seed);
         }
 
         if (found > 0) {
             res.errors += found;
-            size_t limit = std::min(found, (size_t)128);
-            for (size_t k = 0; k < limit; ++k) {
-                LOG_ERROR_DETAIL("LFSR", (uint64_t)((i + errors[k]) * 4), static_cast<uint32_t>(seed), ptr[i + errors[k]]);
+            for (size_t k = 0; k < found; ++k) {
+                size_t idx = error_indices[k];
+                // BUG FIX: Use pre-computed expected values, not current seed
+                LOG_ERROR_DETAIL("LFSR", (uint64_t)((i + idx) * 4), expected_values[idx], ptr[i + idx]);
             }
             if (stop) {
                 ctx.requestStop();
                 break;
             }
         }
+
+        // Advance seed for next block
+        seed = block_seed;
     }
 
     res.bytes_tested = region.size;
+    return res;
+}
+
+// Classic Moving Inversion test (March test algorithm)
+// 1. Fill memory with pattern
+// 2. Verify pattern
+// 3. Invert memory
+// 4. Verify inverted pattern
+// This stresses RAM by testing both 0->1 and 1->0 transitions at each bit position
+TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
+    TestResult res = {};
+    uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
+    size_t count = region.size / 8;
+    
+    uint64_t pattern = config.pattern_param0 ? config.pattern_param0 : 0xAAAAAAAAAAAAAAAAULL;
+    uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
+    
+    for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
+        // Phase 1: Fill with pattern
+        generate_pattern_uniform(ptr, count, pattern, true);
+        sfence();
+        simd::flush_cache_region(ptr, region.size);
+        
+        // Phase 2: Verify pattern (forward march)
+        uint64_t error_indices[128];
+        size_t block = 256 * 1024;
+        for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
+            size_t n = std::min(block, count - i);
+            size_t found = simd::verify_uniform(ptr + i, n, pattern, error_indices, 128);
+            
+            if (found > 0) {
+                res.errors += found;
+                for (size_t k = 0; k < found && k < 10; ++k) {
+                    simd::flush_cache_line((void*)&ptr[i + error_indices[k]]);
+                    simd::lfence();
+                    LOG_ERROR_DETAIL("MovingInv (Fwd)", (uint64_t)((i + error_indices[k]) * 8), pattern, ptr[i + error_indices[k]]);
+                }
+                if (stop) {
+                    ctx.requestStop();
+                    break;
+                }
+            }
+        }
+        
+        if (ctx.shouldStop()) break;
+        
+        // Phase 3: Invert memory
+        invert_array(ptr, count, true);
+        sfence();
+        simd::flush_cache_region(ptr, region.size);
+        
+        uint64_t inverted = ~pattern;
+        
+        // Phase 4: Verify inverted pattern (backward march for better coverage)
+        for (size_t i = count; i > 0 && !ctx.shouldStop(); ) {
+            size_t chunk_end = i;
+            size_t chunk_start = (i > block) ? (i - block) : 0;
+            size_t n = chunk_end - chunk_start;
+            i = chunk_start;
+            
+            size_t found = simd::verify_uniform(ptr + chunk_start, n, inverted, error_indices, 128);
+            
+            if (found > 0) {
+                res.errors += found;
+                for (size_t k = 0; k < found && k < 10; ++k) {
+                    simd::flush_cache_line((void*)&ptr[chunk_start + error_indices[k]]);
+                    simd::lfence();
+                    LOG_ERROR_DETAIL("MovingInv (Bwd)", (uint64_t)((chunk_start + error_indices[k]) * 8), inverted, ptr[chunk_start + error_indices[k]]);
+                }
+                if (stop) {
+                    ctx.requestStop();
+                    break;
+                }
+            }
+        }
+        
+        // Alternate pattern for next iteration
+        pattern = ~pattern;
+    }
+    
+    res.bytes_tested = region.size * 2 * repeats;
     return res;
 }
 
@@ -457,8 +599,11 @@ TestResult TestEngine::runTest(TestContext& ctx, const std::string& name, const 
     if (name == "WalkingOnes") return runWalkingOnes(ctx, region, config, stop);
     if (name == "WalkingZeros") return runWalkingZeros(ctx, region, config, stop);
     if (name == "LFSRPattern") return runLFSRPattern(ctx, region, config, stop);
-    if (name == "MovingInversion") return runSimpleTest(ctx, region, config, stop);
+    if (name == "MovingInversion") return runMovingInversion(ctx, region, config, stop);
     if (name == "RowHammer") return runRowHammerTest(ctx, region, config, stop);
+    
+    // Warn on invalid test name (GPT report item: invalid names silently ignored)
+    LOG_WARN("Unknown test function name: '%s' - skipping", name.c_str());
     return {};
 }
 
@@ -565,35 +710,48 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             uint32_t cycle = ctx.current_cycle.load(std::memory_order_relaxed);
             uint32_t test_idx = ctx.current_test_idx.load(std::memory_order_relaxed);
 
+            auto elapsed_duration = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
+            uint32_t hours = static_cast<uint32_t>(elapsed_duration / 3600);
+            uint32_t minutes = static_cast<uint32_t>((elapsed_duration % 3600) / 60);
+            uint32_t seconds = static_cast<uint32_t>(elapsed_duration % 60);
+
             int len = snprintf(buffer, sizeof(buffer),
-                "[Cycle %u/%s] Test %u/%zu (%s): %.2f GB, %llu errors",
+                "[Cycle %u/%s] Test %u/%zu (%s): %.2f GB, %llu errors | Time: %02u:%02u:%02u",
                 cycle,
                 config.cycles ? std::to_string(config.cycles).c_str() : "inf",
                 test_idx,
                 seq.size(),
                 name.c_str(),
                 gb,
-                (unsigned long long)errs);
+                (unsigned long long)errs,
+                hours, minutes, seconds);
 
 #ifdef _WIN32
             if (len > 0 && last_line != buffer) {
                 // Only lock for the actual console I/O
                 std::lock_guard<std::mutex> lock(Logger::get().getMutex());
                 GetConsoleScreenBufferInfo(hOut, &csbi);
-                cursorPos = csbi.dwCursorPosition;
-                cursorPos.X = 0;
-                SetConsoleCursorPosition(hOut, cursorPos);
+                int width = csbi.dwSize.X;
+                
+                // Prevent line wrapping by limiting to width - 1
+                if (width > 1) {
+                    cursorPos = csbi.dwCursorPosition;
+                    cursorPos.X = 0;
+                    SetConsoleCursorPosition(hOut, cursorPos);
 
-                DWORD written;
-                WriteConsoleA(hOut, buffer, static_cast<DWORD>(len), &written, nullptr);
+                    int max_len = width - 1;
+                    int actual_len = std::min(len, max_len);
+                    
+                    DWORD written;
+                    WriteConsoleA(hOut, buffer, static_cast<DWORD>(actual_len), &written, nullptr);
 
-                DWORD cellsToClear = csbi.dwSize.X - cursorPos.X - written;
-                if (cellsToClear > 0) {
-                    for (DWORD i = 0; i < cellsToClear; i++) {
-                        WriteConsoleA(hOut, " ", 1, &written, nullptr);
+                    // Clear remaining part of line up to width - 1
+                    int cellsToClear = max_len - actual_len;
+                    if (cellsToClear > 0) {
+                        std::string spaces(cellsToClear, ' ');
+                        WriteConsoleA(hOut, spaces.c_str(), static_cast<DWORD>(cellsToClear), &written, nullptr);
                     }
                 }
-
                 last_line = buffer;
             }
 #else
