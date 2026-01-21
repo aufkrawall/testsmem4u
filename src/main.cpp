@@ -10,6 +10,10 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <shellapi.h>
+#else
+#include <unistd.h>
+#include <sys/types.h>
 #endif
 
 namespace testsmem4u {
@@ -46,7 +50,7 @@ static bool parseUintOrDefault(const std::string& str, uint32_t& result, uint32_
     return false;
 }
 
-static bool parseIntOrDefault(const std::string& str, int32_t& result, int32_t default_val) {
+[[maybe_unused]] static bool parseIntOrDefault(const std::string& str, int32_t& result, int32_t default_val) {
     if (str.empty()) {
         result = default_val;
         return true;
@@ -68,6 +72,80 @@ static std::string trimString(const std::string& str) {
     if (start == std::string::npos) return "";
     size_t end = str.find_last_not_of(" \t\r\n");
     return str.substr(start, end - start + 1);
+}
+
+static bool isPrivileged() {
+#ifdef _WIN32
+    BOOL fRet = FALSE;
+    HANDLE hToken = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        TOKEN_ELEVATION elevation;
+        DWORD cbSize = sizeof(TOKEN_ELEVATION);
+        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &cbSize)) {
+            fRet = elevation.TokenIsElevated;
+        }
+    }
+    if (hToken) {
+        CloseHandle(hToken);
+    }
+    return fRet;
+#else
+    return geteuid() == 0;
+#endif
+}
+
+static void relaunchAsPrivileged(int argc, char* argv[]) {
+#ifdef _WIN32
+    // Re-launch with ShellExecute and "runas" verb
+    std::string args;
+    for (int i = 1; i < argc; ++i) {
+        if (i > 1) args += " ";
+        // Simple quoting - sophisticated quoting might be needed for paths with spaces
+        std::string arg = argv[i];
+        if (arg.find(' ') != std::string::npos) {
+            args += "\"" + arg + "\"";
+        } else {
+            args += arg;
+        }
+    }
+
+    // Get current executable path
+    char exePath[MAX_PATH];
+    if (GetModuleFileNameA(NULL, exePath, MAX_PATH) == 0) {
+        std::cerr << "Failed to get executable path for elevation." << std::endl;
+        return;
+    }
+
+    SHELLEXECUTEINFOA sei = {}; 
+    sei.cbSize = sizeof(sei);
+    sei.lpVerb = "runas";
+    sei.lpFile = exePath;
+    sei.lpParameters = args.c_str();
+    sei.hwnd = NULL;
+    sei.nShow = SW_NORMAL;
+
+    if (!ShellExecuteExA(&sei)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_CANCELLED) {
+            std::cerr << "Elevation refused by user." << std::endl;
+        } else {
+            std::cerr << "Failed to elevate: Error " << err << std::endl;
+        }
+    }
+#else
+    // Re-launch with sudo
+    std::vector<char*> new_argv;
+    new_argv.push_back((char*)"sudo");
+    // Find absolute path of current executable if possible, or use argv[0]
+    new_argv.push_back(argv[0]); 
+    for (int i = 1; i < argc; ++i) {
+        new_argv.push_back(argv[i]);
+    }
+    new_argv.push_back(nullptr);
+
+    execvp("sudo", new_argv.data());
+    std::cerr << "Failed to run sudo: " << strerror(errno) << std::endl;
+#endif
 }
 
 Config runConfigWizard() {
@@ -173,18 +251,60 @@ int main(int argc, char* argv[]) {
     Config config = {};
     bool debug = false;
     bool skip_wizard = false;
+    bool no_elevation = false;
     std::string preset_path = "default.cfg";
 
     for(int i=1; i<argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--debug" || arg == "-d") debug = true;
+        else if (arg == "--no-elevation") no_elevation = true;
         else if (arg == "--preset" && i+1 < argc) { preset_path = argv[++i]; skip_wizard = true; }
         else if (arg == "--yes" || arg == "-y") skip_wizard = true;
         else if (arg[0] != '-') { preset_path = arg; skip_wizard = true; }
     }
 
+
+
+    if (!no_elevation && !isPrivileged()) {
+        std::cout << "Requesting elevation... (Use --no-elevation to skip)" << std::endl;
+        relaunchAsPrivileged(argc, argv);
+        return 0; // Exit this instance, the elevated one should take over
+    }
+
     Logger::get().init("testsmem4u.log", debug ? LogLevel::DEBUG : LogLevel::INFO, true);
     auto& log = Logger::get();
+    log.setErrorRateLimit(10); // Limit error reporting to 10/sec to avoid log spam
+
+    // Check for SeLockMemoryPrivilege (Strict Requirement)
+    if (!Platform::hasMemoryLockPrivilege()) {
+        std::cout << "\n[!] 'Lock Pages in Memory' privilege (SeLockMemoryPrivilege) is MISSING.\n"
+                  << "    This is required for reliable RAM testing to prevent swapping.\n"
+                  << "    Do you want to grant this privilege to the current user now?\n"
+                  << "    (Requires 'Yes' and then a Sign-out/Reboot to take effect)\n"
+                  << "    [Y/n]: ";
+        
+        std::string answer;
+        if (!skip_wizard) {
+             std::getline(std::cin, answer);
+        } else {
+             // In non-interactive mode, we can't prompt. But since we are strict now, we just warn.
+             // Or should we fail even earlier? Let's assume user might run without wizard.
+             // We'll just print the warning.
+             std::cout << "N (Non-interactive mode)" << std::endl;
+             answer = "n";
+        }
+
+        if (answer.empty() || answer == "y" || answer == "Y") {
+            if (Platform::grantMemoryLockPrivilege()) {
+                std::cout << "\n[+] Privilege granted successfully!\n"
+                          << "    PLEASE SIGN OUT AND SIGN BACK IN for the changes to take effect.\n"
+                          << "    The program will now exit." << std::endl;
+                return 0;
+            } else {
+                std::cerr << "\n[-] Failed to grant privilege. You may need to run as Administrator manually or use the Group Policy Editor." << std::endl;
+            }
+        }
+    }
 
     log.info("testsmem4u starting...");
     PlatformInfo plat = Platform::detectPlatform();

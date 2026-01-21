@@ -60,15 +60,56 @@ static uint32_t parseUint(const std::string& str) {
 }
 
 static bool isPathTraversalAttempt(const std::string& path) {
-    if (path.find("..") != std::string::npos) {
+    // Check for null bytes or other suspicious characters
+    if (path.find('\0') != std::string::npos || path.find('\x1b') != std::string::npos) {
         return true;
     }
-    if (!path.empty() && path[0] == '/') {
+
+    // Normalize path separators for consistent checking
+    std::string normalized = path;
+    for (char& c : normalized) {
+        if (c == '\\') c = '/';
+    }
+
+    // Check for parent directory references
+    if (normalized.find("../") != std::string::npos || normalized.find("/..") != std::string::npos) {
         return true;
     }
+    
+    // Check for current directory tricks
+    if (normalized.find("./") != std::string::npos || normalized.find("/.") != std::string::npos) {
+        // But allow single .cfg files like "./config.cfg"
+        if (normalized.length() > 2 && (normalized.substr(0, 2) == "./" || normalized.substr(0, 2) == ".\\")) {
+            std::string rest = normalized.substr(2);
+            if (rest.find('/') != std::string::npos || rest.find("\\") != std::string::npos) {
+                return true; // Has additional path separators after ./
+            }
+        }
+    }
+
+    // Check for absolute paths
+    if (!path.empty() && (path[0] == '/' || path[0] == '\\')) {
+        return true;
+    }
+
+    // Check for Windows drive letter paths
     if (path.size() >= 2 && path[1] == ':') {
         return true;
     }
+
+    // Check for UNC paths (Windows network paths)
+    if (path.size() >= 2 && path[0] == '\\' && path[1] == '\\') {
+        return true;
+    }
+
+    // Check for URL-encoded traversal attempts
+    if (path.find("%2e%2e%2f") != std::string::npos || path.find("%252e%252e%252f") != std::string::npos) {
+        return true;
+    }
+    if (path.find("..%2f") != std::string::npos || path.find("%2e%2e") != std::string::npos) {
+        return true;
+    }
+
     return false;
 }
 

@@ -35,12 +35,16 @@ DIST_DIR = PROJECT_ROOT / "dist"
 BASE_CXX_FLAGS = [
     "-std=c++17",
     "-O3",
-    "-ffast-math",
     "-flto",
-    "-fomit-frame-pointer",
-    "-s",
+    "-Wall",
+    "-Wextra",
+    "-Wpedantic",
+    "-Wshadow",
+    "-Wundef",
+    "-Werror",
+    "-Wno-sign-conversion",
+    "-Wno-unused-parameter",
     "-Wl,--gc-sections",
-    "-Wl,--strip-all",
     "-Wl,-O3",
 ]
 
@@ -53,12 +57,12 @@ TARGETS = {
     "windows-x86_64": {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64.exe",
-        "extra_flags": HOST_ONLY_FLAGS,
+        "extra_flags": HOST_ONLY_FLAGS + ["-ladvapi32"],
     },
     "windows-arm64": {
         "zig_target": "aarch64-windows-gnu",
         "output": "testsmem4u-windows-arm64.exe",
-        "extra_flags": [],
+        "extra_flags": ["-ladvapi32"],
     },
     "linux-x86": {
         "zig_target": "x86-linux-gnu",

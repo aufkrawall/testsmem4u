@@ -58,6 +58,16 @@ void aligned_store(T* dst, const T* src, size_t count);
 template<typename T>
 void aligned_load(T* dst, const T* src, size_t count);
 
+// Non-Temporal Loads (Bypass Cache for Reads) - Requires Memory Alignment!
+template<typename T>
+void stream_load_128(T* dst, const T* src, size_t count);
+
+template<typename T>
+void stream_load_256(T* dst, const T* src, size_t count);
+
+template<typename T>
+void stream_load_512(T* dst, const T* src, size_t count);
+
 // Pattern Generators (Write to Memory)
 template<typename T>
 void generate_pattern_linear(T* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt);

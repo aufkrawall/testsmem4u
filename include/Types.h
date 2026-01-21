@@ -74,6 +74,9 @@ public:
         return *this;
     }
 
+    // Self-move assignment safety - do nothing if self-assigned
+    MemoryGuard& operator=(MemoryGuard& other) = delete;
+
     uint8_t* base() const { return base_; }
     size_t size() const { return size_; }
     bool is_large_pages() const { return is_large_pages_; }
@@ -81,10 +84,13 @@ public:
     bool valid() const { return base_ != nullptr; }
 
     void release() {
-        base_ = nullptr;
-        size_ = 0;
-        is_large_pages_ = false;
-        is_locked_ = false;
+        if (base_) {
+            freeInternal(base_, size_, is_large_pages_, is_locked_);
+            base_ = nullptr;
+            size_ = 0;
+            is_large_pages_ = false;
+            is_locked_ = false;
+        }
     }
 
 private:

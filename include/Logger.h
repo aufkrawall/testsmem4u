@@ -12,6 +12,9 @@
 #include <thread>
 #include <cstdarg>
 #include <atomic>
+#include <queue>
+#include <condition_variable>
+#include <vector>
 
 namespace testsmem4u {
 
@@ -30,11 +33,15 @@ public:
     }
 
     void init(const std::string& filename, LogLevel level = LogLevel::DEBUG, bool purge = true) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(init_mutex_);
+
+        if (running_) {
+            return; // Already initialized
+        }
 
         log_filename_ = filename;
         log_level_ = level;
-        enabled_ = true;
+        
         session_id_ = generateSessionId();
         start_time_ = std::chrono::high_resolution_clock::now();
         error_count_ = 0;
@@ -43,10 +50,6 @@ public:
         last_error_time_ = std::chrono::high_resolution_clock::now();
         last_summary_time_ = std::chrono::high_resolution_clock::now();
 
-        if (log_file_.is_open()) {
-            log_file_.close();
-        }
-
         if (!filename.empty()) {
             if (purge) {
                 log_file_.open(filename, std::ios::out | std::ios::trunc);
@@ -54,51 +57,70 @@ public:
                 log_file_.open(filename, std::ios::out | std::ios::app);
             }
         }
+
+        running_ = true;
+        writer_thread_ = std::thread(&Logger::writerThreadFunc, this);
     }
 
     void setErrorRateLimit(uint32_t errors_per_second) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        // Atomic or simple lock is fine, this is rarely called
+        std::lock_guard<std::mutex> lock(init_mutex_);
         error_rate_limit_ = errors_per_second;
     }
 
-    bool shouldLogError() {
+    // Checking if we should log based on rate limiting
+    // Now internal logic, returns true if we should proceed
+    bool checkRateLimit() {
+        // We use a separate mutex for rate limiting to reduce contention on the queue mutex
+        std::lock_guard<std::mutex> lock(rate_limit_mutex_);
+        
         auto now = std::chrono::high_resolution_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_error_time_).count();
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_error_time_).count();
 
-        if (elapsed >= 1000) {
-            error_count_ = 0;
-            last_error_time_ = now;
+        // Add tokens based on elapsed time
+        if (elapsed_ms > 0) {
+            uint32_t tokens_to_add = static_cast<uint32_t>(elapsed_ms / 10); // 1 token per 10ms = 100/sec base refill
+            if (tokens_to_add > 0) {
+                // If we have "error_count_" representing used tokens, we subtract
+                if (error_count_ > tokens_to_add) {
+                    error_count_ -= tokens_to_add;
+                } else {
+                    error_count_ = 0;
+                }
+                last_error_time_ = now;
+            }
         }
 
-        return error_count_ < error_rate_limit_;
-    }
+        if (error_count_ >= error_rate_limit_) {
+            return false; // Rate limit exceeded
+        }
 
-    void incrementErrorCount() {
-        std::lock_guard<std::mutex> lock(mutex_);
         error_count_++;
+        return true;
     }
 
     void deinit() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(init_mutex_);
+        if (!running_) return;
+
+        running_ = false;
+        queue_cv_.notify_one();
+        
+        if (writer_thread_.joinable()) {
+            writer_thread_.join();
+        }
+
         if (log_file_.is_open()) {
             log_file_.close();
         }
-        enabled_ = false;
     }
 
     void setLevel(LogLevel level) {
-        std::lock_guard<std::mutex> lock(mutex_);
         log_level_ = level;
     }
 
-    void log(LogLevel level, const char* format, ...) {
-        va_list args;
-        va_start(args, format);
-        logv(level, format, args);
-        va_end(args);
-    }
-
     void debug(const char* format, ...) {
+        if (log_level_ > LogLevel::DEBUG) return;
         va_list args;
         va_start(args, format);
         logv(LogLevel::DEBUG, format, args);
@@ -106,6 +128,7 @@ public:
     }
 
     void info(const char* format, ...) {
+        if (log_level_ > LogLevel::INFO) return;
         va_list args;
         va_start(args, format);
         logv(LogLevel::INFO, format, args);
@@ -113,6 +136,7 @@ public:
     }
 
     void warn(const char* format, ...) {
+        if (log_level_ > LogLevel::WARN) return;
         va_list args;
         va_start(args, format);
         logv(LogLevel::WARN, format, args);
@@ -120,6 +144,7 @@ public:
     }
 
     void error(const char* format, ...) {
+        // Always log errors unless rate limited
         va_list args;
         va_start(args, format);
         logv(LogLevel::ERROR, format, args);
@@ -143,7 +168,7 @@ public:
     }
 
     void logTestProgress(uint32_t test_num, size_t bytes_tested, size_t total, double elapsed) {
-        float percent = (total > 0) ? (100.0f * bytes_tested / total) : 0.0f;
+        float percent = (total > 0) ? (100.0f * static_cast<float>(bytes_tested) / static_cast<float>(total)) : 0.0f;
         debug("TEST PROGRESS: #%02u %zu/%zu (%.1f%%) %.3fs", test_num, bytes_tested, total, percent, elapsed);
     }
 
@@ -164,53 +189,79 @@ public:
     }
 
     void logError(const std::string& context, uint64_t address, uint64_t expected, uint64_t actual) {
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        auto now = std::chrono::high_resolution_clock::now();
-
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - last_summary_time_).count() >= 1) {
-            if (suppressed_count_ > 1) {
-                error("ERROR RATE: %llu additional errors suppressed (rate limit active)",
-                      (unsigned long long)(suppressed_count_ - 1));
+         // Rate limit check specific to memory error floods
+        {
+            std::lock_guard<std::mutex> lock(rate_limit_mutex_);
+            auto now = std::chrono::high_resolution_clock::now();
+            if (std::chrono::duration_cast<std::chrono::seconds>(now - last_summary_time_).count() >= 1) {
+                if (suppressed_count_ > 0) {
+                    // We must log this directly or push to queue. Pushing to queue is safer.
+                    // But we can't call 'error' easily from here if we want to avoid recursion effectively.
+                    // We'll construct the message manually.
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), "ERROR RATE: %u additional errors suppressed", suppressed_count_);
+                    pushMessage(LogLevel::ERROR, std::string(buf));
+                }
+                suppressed_count_ = 0;
+                last_summary_time_ = now;
             }
-            suppressed_count_ = 0;
-            last_summary_time_ = now;
         }
 
-        if (!shouldLogError()) {
+        if (!checkRateLimit()) {
+            std::lock_guard<std::mutex> lock(rate_limit_mutex_);
             suppressed_count_++;
             return;
         }
 
-        incrementErrorCount();
         error("ERROR: %s at 0x%016llX: expected 0x%016llX, got 0x%016llX",
             context.c_str(), (unsigned long long)address, (unsigned long long)expected, (unsigned long long)actual);
     }
+    
+    // Legacy support for directly accessing mutex if needed (Monitor thread)
+    // The Monitor thread in TestEngine uses this for console locking.
+    // For AsyncLogger, we still want to protect the Console output.
+    // We can use the init_mutex_ or a dedicated console_mutex_.
+    std::mutex& getConsoleMutex() { return console_mutex_; }
 
-    uint32_t getSessionId() const { return session_id_; }
-    std::mutex& getMutex() { return mutex_; }
     double getElapsedSeconds() const {
         auto now = std::chrono::high_resolution_clock::now();
         return std::chrono::duration<double>(now - start_time_).count();
     }
 
     std::string getLogPath() const { return log_filename_; }
+    
+    // Compatibility methods for old getters if accessed by external code
+    std::mutex& getMutex() { return getConsoleMutex(); } 
 
 private:
-    Logger() : enabled_(false), log_level_(LogLevel::DEBUG), session_id_(0),
-               error_count_(0), error_rate_limit_(100), suppressed_count_(0) {}
+    Logger() : running_(false), log_filename_(), log_level_(LogLevel::DEBUG),
+               session_id_(0), error_count_(0), error_rate_limit_(100), suppressed_count_(0) {}
+    
     ~Logger() { deinit(); }
 
     Logger(const Logger&) = delete;
     Logger& operator=(const Logger&) = delete;
 
-    std::mutex mutex_;
+    // Threading members
+    std::mutex init_mutex_;
+    std::mutex rate_limit_mutex_;
+    std::mutex console_mutex_; // Protects std::cout/cerr
+    
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    std::queue<std::pair<LogLevel, std::string>> log_queue_;
+    std::thread writer_thread_;
+    std::atomic<bool> running_;
+
     std::ofstream log_file_;
     std::string log_filename_;
-    LogLevel log_level_;
-    bool enabled_;
+    std::atomic<LogLevel> log_level_;
+
+    // State members
     uint32_t session_id_;
     std::chrono::high_resolution_clock::time_point start_time_;
+    
+    // Rate limit members
     uint32_t error_count_;
     uint32_t error_rate_limit_;
     uint32_t suppressed_count_;
@@ -254,21 +305,75 @@ private:
         return ss.str();
     }
 
+    void pushMessage(LogLevel level, const std::string& formatted_message) {
+        if (!running_) return;
+        
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            // Cap queue size to prevent memory explosion if disk is stuck
+            if (log_queue_.size() < 10000) { 
+                log_queue_.push({level, formatted_message});
+            }
+        }
+        queue_cv_.notify_one();
+    }
+
     void logv(LogLevel level, const char* format, va_list args) {
-        if (!enabled_ || level < log_level_) return;
-
-        std::lock_guard<std::mutex> lock(mutex_);
-
+        // Do formatting on the caller thread to capture values accurately at the time of call
         char buffer[4096];
         vsnprintf(buffer, sizeof(buffer), format, args);
-
+        
         std::string message(buffer);
         std::string line = formatLogLine(level, message);
-
-        if (log_file_.is_open()) {
-            log_file_ << line << std::endl;
+        
+        // 1. Synchronous Console Output (Fixes interaction with console wizards)
+        {
+            std::lock_guard<std::mutex> console_lock(console_mutex_);
+            std::cout << line << "\n";
         }
-        std::cout << line << std::endl;
+
+        // 2. Asynchronous File Output
+        pushMessage(level, line);
+    }
+
+    void writerThreadFunc() {
+        std::vector<std::pair<LogLevel, std::string>> local_batch;
+        local_batch.reserve(100);
+
+        while (running_) {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cv_.wait(lock, [this] {
+                return !log_queue_.empty() || !running_;
+            });
+
+            if (!running_ && log_queue_.empty()) break;
+
+            // Swap queue content to local batch to minimize lock time
+            while (!log_queue_.empty() && local_batch.size() < 1000) {
+                local_batch.push_back(std::move(log_queue_.front()));
+                log_queue_.pop();
+            }
+            lock.unlock();
+
+            // Process batch
+            if (!local_batch.empty()) {
+                if (log_file_.is_open()) {
+                    bool force_flush = false;
+                    for (const auto& msg : local_batch) {
+                        // Msg.second is already fully formatted
+                        log_file_ << msg.second << "\n";
+                        if (msg.first == LogLevel::ERROR) force_flush = true;
+                    }
+                    if (force_flush) log_file_.flush();
+                }
+                local_batch.clear();
+            }
+        }
+        
+        // Final flush
+        if (log_file_.is_open()) {
+            log_file_.flush();
+        }
     }
 };
 
