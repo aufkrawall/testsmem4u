@@ -1,19 +1,26 @@
 #include "TestEngine.h"
 #include "Logger.h"
 #include "Platform.h"
+#include "ConfigManager.h"
 #include <iostream>
 #include <string>
 #include <vector>
 #include <csignal>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <shellapi.h>
+#include <conio.h>
 #else
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/select.h>
+#include <termios.h>
+#include <fcntl.h>
 #endif
 
 namespace testsmem4u {
@@ -31,9 +38,69 @@ static void enableVirtualTerminal() {
         }
     }
 }
+
+static bool isInputAvailable() {
+    return _kbhit() != 0;
+}
+
+static void clearInput() {
+    while (_kbhit()) _getch();
+}
 #else
 static void enableVirtualTerminal() {}
+
+static bool isInputAvailable() {
+    struct timeval tv;
+    fd_set fds;
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+    select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    return FD_ISSET(STDIN_FILENO, &fds);
+}
+
+static void clearInput() {
+    // Non-blocking read to clear buffer
+    int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+    char c;
+    while (read(STDIN_FILENO, &c, 1) > 0);
+    fcntl(STDIN_FILENO, F_SETFL, flags);
+}
 #endif
+
+// Returns true if user pressed a key, false if timeout
+static bool waitForInput(int seconds, const char* startMessage) {
+    auto start = std::chrono::steady_clock::now();
+    int last_print = -1;
+
+    // Flush any pending input
+    clearInput();
+
+    while (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start).count() < seconds) {
+        auto remaining = seconds - std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start).count();
+        
+        if (remaining != last_print) {
+            std::cout << "\r" << startMessage << " " << remaining << "s... Press any key to configure.   " << std::flush;
+            last_print = (int)remaining;
+        }
+
+        if (isInputAvailable()) {
+            std::cout << std::endl;
+            // Consume the key
+            #ifdef _WIN32
+            _getch();
+            #else
+            getchar();
+            #endif
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    std::cout << "\rStarting tests...                                             " << std::endl;
+    return false;
+}
 
 static bool parseUintOrDefault(const std::string& str, uint32_t& result, uint32_t default_val) {
     if (str.empty()) {
@@ -254,7 +321,8 @@ int main(int argc, char* argv[]) {
     bool debug = false;
     bool skip_wizard = false;
     bool no_elevation = false;
-    std::string preset_path = "default.cfg";
+    std::string preset_path = "";
+    bool config_loaded = false;
 
     for(int i=1; i<argc; ++i) {
         std::string arg = argv[i];
@@ -264,8 +332,6 @@ int main(int argc, char* argv[]) {
         else if (arg == "--yes" || arg == "-y") skip_wizard = true;
         else if (arg[0] != '-') { preset_path = arg; skip_wizard = true; }
     }
-
-
 
     if (!no_elevation && !isPrivileged()) {
         std::cout << "Requesting elevation... (Use --no-elevation to skip)" << std::endl;
@@ -289,9 +355,6 @@ int main(int argc, char* argv[]) {
         if (!skip_wizard) {
              std::getline(std::cin, answer);
         } else {
-             // In non-interactive mode, we can't prompt. But since we are strict now, we just warn.
-             // Or should we fail even earlier? Let's assume user might run without wizard.
-             // We'll just print the warning.
              std::cout << "N (Non-interactive mode)" << std::endl;
              answer = "n";
         }
@@ -311,26 +374,84 @@ int main(int argc, char* argv[]) {
     log.info("testsmem4u starting...");
     PlatformInfo plat = Platform::detectPlatform();
 
-    if (skip_wizard) {
-        config.preset_file = preset_path;
-        try {
-            config.preset = loadPreset(preset_path);
-        } catch (...) {
-            LOG_WARN("Could not load preset '%s'", preset_path.c_str());
+    // Try to load config; if fails or doesn't exist, we will setup defaults but allow override
+    bool loaded_from_file = false;
+    if (!skip_wizard) {
+        if (loadConfig("config.ini", config)) {
+            loaded_from_file = true;
+        } else {
+            // Setup defaults if no config found
+            config.memory_window_percent = 85;
+            config.memory_window_mb = 0;
+            config.cores = plat.cpu_cores;
+            config.cycles = 3;
+            config.use_locked_memory = true;
+            config.halt_on_error = true;
+            config.preset_file = "default.cfg";
         }
-        config.cores = plat.cpu_cores;
-        uint64_t total_ram = Platform::getTotalSystemRAM();
-        uint64_t max_mem = Platform::getMaxTestableMemory(total_ram, 85);
-        config.memory_window_mb = static_cast<uint32_t>(max_mem / 1024 / 1024);
-        config.use_locked_memory = true;
-        config.halt_on_error = false;
-        config.cycles = 0;
+
+        // Ensure calculations are correct based on current config (loaded or default)
+        if (config.memory_window_mb == 0) {
+            uint64_t total_ram = Platform::getTotalSystemRAM();
+            uint64_t max_mem = Platform::getMaxTestableMemory(total_ram, config.memory_window_percent);
+            config.memory_window_mb = static_cast<uint32_t>(max_mem / 1024 / 1024);
+        }
+
+        // Load the preset referenced in the config
+        try {
+            if (config.preset_file.empty()) config.preset_file = "default.cfg";
+            config.preset = loadPreset(config.preset_file);
+        } catch (...) {
+            LOG_WARN("Could not load preset '%s', using internal defaults", config.preset_file.c_str());
+        }
+
+        // Show appropriate message
+        const char* msg = loaded_from_file ? "Starting with saved settings..." : "Starting with default settings...";
+
+        // Wait for user input
+        if (waitForInput(3, msg)) {
+            skip_wizard = false;
+            config_loaded = false; // Force re-run wizard
+        } else {
+            skip_wizard = true;
+            config_loaded = true; // Use the current config
+        }
+    }
+
+    if (skip_wizard) {
+        if (!config_loaded) {
+            if (!preset_path.empty()) config.preset_file = preset_path;
+            else if (config.preset_file.empty()) config.preset_file = "default.cfg";
+
+            try {
+                config.preset = loadPreset(config.preset_file);
+            } catch (...) {
+                LOG_WARN("Could not load preset '%s'", config.preset_file.c_str());
+            }
+            config.cores = plat.cpu_cores;
+            uint64_t total_ram = Platform::getTotalSystemRAM();
+            uint64_t max_mem = Platform::getMaxTestableMemory(total_ram, 85);
+            config.memory_window_mb = static_cast<uint32_t>(max_mem / 1024 / 1024);
+            config.use_locked_memory = true;
+            config.halt_on_error = false;
+            config.cycles = 0;
+        }
     } else {
         config = runConfigWizard();
+        saveConfig("config.ini", config);
     }
 
     std::cout << "\nStarting tests with " << config.cores << " threads, " << config.memory_window_mb << " MB memory." << std::endl;
     std::cout << "Tip: Press Ctrl+C to stop and save results.\n" << std::endl;
+
+    if (config.preset.test_configs.empty()) {
+        std::cerr << "\n[!] ERROR: No tests loaded! Please verify " << config.preset_file << " exists and is valid." << std::endl;
+#ifdef _WIN32
+        std::cout << "Press any key to exit..." << std::endl;
+        _getch();
+#endif
+        return 1;
+    }
 
     try {
         RunResult res = TestEngine::runTests(config);
@@ -341,10 +462,20 @@ int main(int argc, char* argv[]) {
 
         // Ensure logger flushes all pending messages before exit
         Logger::get().deinit();
+
+#ifdef _WIN32
+        std::cout << "\nPress any key to exit..." << std::endl;
+        _getch();
+#endif
+
         return res.total_errors == 0 ? 0 : 1;
     } catch (const std::exception& e) {
         std::cerr << "CRITICAL ERROR: " << e.what() << std::endl;
         Logger::get().deinit();
+#ifdef _WIN32
+        std::cout << "\nPress any key to exit..." << std::endl;
+        _getch();
+#endif
         return 1;
     }
 }

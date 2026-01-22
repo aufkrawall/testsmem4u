@@ -12,6 +12,7 @@ import subprocess
 import sys
 import urllib.request
 import zipfile
+import json
 from pathlib import Path
 
 
@@ -28,7 +29,9 @@ SRC_FILES = [
     PROJECT_ROOT / "src" / "simd_ops.cpp",
     PROJECT_ROOT / "src" / "Platform.cpp",
     PROJECT_ROOT / "src" / "TestEngine.cpp",
+    PROJECT_ROOT / "src" / "ConfigManager.cpp",
 ]
+
 
 DIST_DIR = PROJECT_ROOT / "dist"
 
@@ -108,6 +111,55 @@ def download_zig() -> bool:
         return False
 
 
+def generate_compile_commands(target_name: str, cmd_base: list, files: list):
+    """Generates compile_commands.json for LSP support."""
+    # We only generate for the first target built (usually host) to avoid conflicts
+    cc_path = PROJECT_ROOT / "compile_commands.json"
+    if cc_path.exists():
+        return
+
+    print(f"[*] Generating compile_commands.json for {target_name}...")
+    
+    entries = []
+    
+    # Zig c++ accepts multiple files at once but compile_commands.json expects one entry per file
+    # We need to construct the command as if it was compiling just that file
+    
+    # Common flags from cmd_base (excluding zig exe and "c++" and the output)
+    # cmd_base is [zig_exe, "c++", "-target", ..., flags..., "-I...", "-o..."]
+    
+    # We want: [zig_exe, "c++", "-target", ..., flags..., "-I...", "-c", file]
+    
+    base_args = cmd_base[:-len(files)-1] # remove output flag and files
+    
+    # Filter out -o flag if it was in the base (it is in our case)
+    final_args = []
+    skip_next = False
+    for arg in base_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg.startswith("-o"):
+            if arg == "-o":
+                skip_next = True
+            continue
+        final_args.append(arg)
+
+    for f in files:
+        entry = {
+            "directory": str(PROJECT_ROOT).replace("\\", "/"),
+            "command": " ".join([str(arg).replace("\\", "/") for arg in final_args] + ["-c", str(f).replace("\\", "/")]),
+            "file": str(f).replace("\\", "/")
+        }
+        entries.append(entry)
+        
+    try:
+        with open(cc_path, "w") as f:
+            json.dump(entries, f, indent=2)
+    except Exception as e:
+        print(f"[!] Failed to write compile_commands.json: {e}")
+
+
 def build_target(name: str) -> bool:
     if name not in TARGETS:
         print(f"[!] Unknown target: {name}")
@@ -138,6 +190,10 @@ def build_target(name: str) -> bool:
     print(f"[*] Building {name} -> {output_path}")
     print(f"[*] Command: {' '.join(cmd)}")
 
+    # Generate compile_commands.json if this is the Windows target (likely host)
+    if "windows" in name:
+        generate_compile_commands(name, cmd, SRC_FILES)
+
     result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
     if result.returncode != 0:
         print("[!] Compilation failed:")
@@ -150,6 +206,11 @@ def build_target(name: str) -> bool:
     if output_path.exists():
         size = output_path.stat().st_size
         print(f"[*] OK: {size:,} bytes ({size/1024:.1f} KB)")
+
+    # Copy config files to dist
+    for cfg in PROJECT_ROOT.glob("*.cfg"):
+        shutil.copy2(cfg, DIST_DIR / cfg.name)
+        print(f"[*] Copied {cfg.name}")
 
     return True
 
