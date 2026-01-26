@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include "Platform.h"
 #include "ConfigManager.h"
+#include "simd_ops.h" // Added include
 #include <iostream>
 #include <string>
 #include <vector>
@@ -285,11 +286,27 @@ Config runConfigWizard() {
     input = trimString(input);
     config.halt_on_error = (input.empty() || (input != "n" && input != "N"));
 
-    std::cout << "Enter preset file path (e.g. 'Extreme1.cfg') [Default: default.cfg]: ";
+    std::cout << "Select Preset:\n";
+    std::cout << "1. default.cfg (Recommended)\n";
+    std::cout << "2. anta777extreme.cfg\n";
+    std::cout << "3. memtest86+.cfg\n";
+    std::cout << "4. Custom config file\n";
+    std::cout << "Enter selection [1]: ";
+    
     std::getline(std::cin, input);
     input = trimString(input);
-    if (input.empty()) config.preset_file = "default.cfg";
-    else config.preset_file = input;
+    
+    if (input == "2") {
+        config.preset_file = "anta777extreme.cfg";
+    } else if (input == "3") {
+        config.preset_file = "memtest86+.cfg";
+    } else if (input == "4") {
+        std::cout << "Enter preset file path: ";
+        std::getline(std::cin, input);
+        config.preset_file = trimString(input);
+    } else {
+        config.preset_file = "default.cfg";
+    }
 
     try {
         config.preset = loadPreset(config.preset_file);
@@ -457,7 +474,7 @@ int main(int argc, char* argv[]) {
         RunResult res = TestEngine::runTests(config);
 
         std::cout << "\n--- Results ---" << std::endl;
-        std::cout << "Errors: " << res.total_errors << std::endl;
+        std::cout << "Errors: " << res.total_errors() << " (Hard: " << res.hard_errors << ", Soft: " << res.soft_errors << ")" << std::endl;
         std::cout << "Time: " << res.duration_seconds << "s" << std::endl;
 
         // Ensure logger flushes all pending messages before exit
@@ -468,7 +485,7 @@ int main(int argc, char* argv[]) {
         _getch();
 #endif
 
-        return res.total_errors == 0 ? 0 : 1;
+        return res.total_errors() == 0 ? 0 : 1;
     } catch (const std::exception& e) {
         std::cerr << "CRITICAL ERROR: " << e.what() << std::endl;
         Logger::get().deinit();

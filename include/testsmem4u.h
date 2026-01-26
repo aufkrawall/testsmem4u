@@ -65,10 +65,13 @@ struct Config {
 
 // Overall test run result
 struct RunResult {
-    uint64_t total_errors = 0;
+    uint64_t hard_errors = 0;
+    uint64_t soft_errors = 0;
     uint64_t bytes_tested = 0;
     uint64_t cycles_completed = 0;
     double duration_seconds = 0.0;
+    
+    uint64_t total_errors() const { return hard_errors + soft_errors; }
 };
 
 // Parse test sequence helper

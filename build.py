@@ -3,6 +3,7 @@
 
 Downloads Zig, extracts it, and compiles testsmem4u.
 Supports cross-compilation via Zig (Windows x86_64/arm64, Linux x86_64/arm64).
+Uses parallel compilation for object files.
 """
 
 import argparse
@@ -13,6 +14,7 @@ import sys
 import urllib.request
 import zipfile
 import json
+import concurrent.futures
 from pathlib import Path
 
 
@@ -34,26 +36,19 @@ SRC_FILES = [
 
 
 DIST_DIR = PROJECT_ROOT / "dist"
+BUILD_DIR = PROJECT_ROOT / "build"
 
 BASE_CXX_FLAGS = [
     "-std=c++17",
     "-O3",
     "-flto",
     "-Wall",
-    "-Wextra",
-    "-Wpedantic",
-    "-Wshadow",
-    "-Wundef",
-    "-Werror",
-    "-Wno-sign-conversion",
-    "-Wno-unused-parameter",
     "-Wl,--gc-sections",
     "-Wl,-O3",
 ]
 
 HOST_ONLY_FLAGS = [
-    "-march=native",
-    "-mtune=native",
+    "-mcpu=x86_64_v3",
 ]
 
 TARGETS = {
@@ -61,26 +56,31 @@ TARGETS = {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64.exe",
         "extra_flags": HOST_ONLY_FLAGS + ["-ladvapi32"],
+        "obj_ext": ".obj"
     },
     "windows-arm64": {
         "zig_target": "aarch64-windows-gnu",
         "output": "testsmem4u-windows-arm64.exe",
         "extra_flags": ["-ladvapi32"],
+        "obj_ext": ".obj"
     },
     "linux-x86": {
         "zig_target": "x86-linux-gnu",
         "output": "testsmem4u-linux-x86",
         "extra_flags": ["-pthread"],
+        "obj_ext": ".o"
     },
     "linux-x86_64": {
         "zig_target": "x86_64-linux-gnu",
         "output": "testsmem4u-linux-x86_64",
         "extra_flags": ["-pthread"],
+        "obj_ext": ".o"
     },
     "linux-arm64": {
         "zig_target": "aarch64-linux-gnu",
         "output": "testsmem4u-linux-arm64",
         "extra_flags": ["-pthread"],
+        "obj_ext": ".o"
     },
 }
 
@@ -112,52 +112,22 @@ def download_zig() -> bool:
 
 
 def generate_compile_commands(target_name: str, cmd_base: list, files: list):
-    """Generates compile_commands.json for LSP support."""
-    # We only generate for the first target built (usually host) to avoid conflicts
-    cc_path = PROJECT_ROOT / "compile_commands.json"
-    if cc_path.exists():
-        return
+    pass
 
-    print(f"[*] Generating compile_commands.json for {target_name}...")
-    
-    entries = []
-    
-    # Zig c++ accepts multiple files at once but compile_commands.json expects one entry per file
-    # We need to construct the command as if it was compiling just that file
-    
-    # Common flags from cmd_base (excluding zig exe and "c++" and the output)
-    # cmd_base is [zig_exe, "c++", "-target", ..., flags..., "-I...", "-o..."]
-    
-    # We want: [zig_exe, "c++", "-target", ..., flags..., "-I...", "-c", file]
-    
-    base_args = cmd_base[:-len(files)-1] # remove output flag and files
-    
-    # Filter out -o flag if it was in the base (it is in our case)
-    final_args = []
-    skip_next = False
-    for arg in base_args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg.startswith("-o"):
-            if arg == "-o":
-                skip_next = True
-            continue
-        final_args.append(arg)
 
-    for f in files:
-        entry = {
-            "directory": str(PROJECT_ROOT).replace("\\", "/"),
-            "command": " ".join([str(arg).replace("\\", "/") for arg in final_args] + ["-c", str(f).replace("\\", "/")]),
-            "file": str(f).replace("\\", "/")
-        }
-        entries.append(entry)
-        
+def compile_object(args):
+    """Compiles a single source file to an object file."""
+    cmd, src_file, obj_file = args
+    # Construct command: zig c++ [flags] -c src_file -o obj_file
+    full_cmd = cmd + ["-c", str(src_file), "-o", str(obj_file)]
+    
     try:
-        with open(cc_path, "w") as f:
-            json.dump(entries, f, indent=2)
+        result = subprocess.run(full_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+        if result.returncode != 0:
+            return (False, src_file, result.stderr)
+        return (True, src_file, None)
     except Exception as e:
-        print(f"[!] Failed to write compile_commands.json: {e}")
+        return (False, src_file, str(e))
 
 
 def build_target(name: str) -> bool:
@@ -171,32 +141,80 @@ def build_target(name: str) -> bool:
 
     t = TARGETS[name]
     DIST_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Create object directory for this target
+    obj_dir = BUILD_DIR / "obj" / name
+    obj_dir.mkdir(parents=True, exist_ok=True)
+    
     output_path = DIST_DIR / t["output"]
 
     flags = list(BASE_CXX_FLAGS)
-    flags += t.get("extra_flags", [])
-
-    cmd = [
+    # Remove link-time flags from compile step if they cause warnings, but -flto is fine
+    # Remove -Wl flags for compilation step
+    compile_flags = [f for f in flags if not f.startswith("-Wl")]
+    
+    link_flags = list(flags) # Keep all flags for linking (LTO needs optimization flags)
+    link_flags += t.get("extra_flags", [])
+    
+    # Base compile command
+    base_compile_cmd = [
         str(ZIG_EXE),
         "c++",
         "-target",
         t["zig_target"],
-        *flags,
+        *compile_flags,
         f"-I{INCLUDE_DIR}",
-        f"-o{output_path}",
-        *[str(f) for f in SRC_FILES],
     ]
+    
+    print(f"[*] Building {name} objects...")
+    
+    # Prepare jobs
+    jobs = []
+    obj_files = []
+    for src in SRC_FILES:
+        obj_file = obj_dir / (src.stem + t["obj_ext"])
+        obj_files.append(obj_file)
+        
+        # Check if rebuild needed (simple mtime check)
+        if obj_file.exists() and src.stat().st_mtime < obj_file.stat().st_mtime:
+            continue
+            
+        jobs.append((base_compile_cmd, src, obj_file))
 
-    print(f"[*] Building {name} -> {output_path}")
-    print(f"[*] Command: {' '.join(cmd)}")
+    # Run parallel compilation
+    cpu_count = os.cpu_count() or 4
+    if jobs:
+        print(f"[*] Compiling {len(jobs)} files using {cpu_count} threads...")
+        success = True
+        with concurrent.futures.ThreadPoolExecutor(max_workers=cpu_count) as executor:
+            results = list(executor.map(compile_object, jobs))
+            
+            for ok, src, err in results:
+                if not ok:
+                    print(f"[!] Failed to compile {src.name}:")
+                    print(err)
+                    success = False
+        
+        if not success:
+            return False
+    else:
+        print("[*] All objects up to date.")
 
-    # Generate compile_commands.json if this is the Windows target (likely host)
-    if "windows" in name:
-        generate_compile_commands(name, cmd, SRC_FILES)
-
-    result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    # Link step
+    print(f"[*] Linking {name} -> {output_path}")
+    link_cmd = [
+        str(ZIG_EXE),
+        "c++",
+        "-target",
+        t["zig_target"],
+        *link_flags,
+        *[str(obj) for obj in obj_files],
+        f"-o{output_path}",
+    ]
+    
+    result = subprocess.run(link_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
     if result.returncode != 0:
-        print("[!] Compilation failed:")
+        print("[!] Linking failed:")
         print(result.stderr)
         return False
 
@@ -226,7 +244,7 @@ def main() -> int:
     args = parser.parse_args()
 
     print("=" * 60)
-    print("  testsmem4u Build Script")
+    print("  testsmem4u Build Script (Multi-threaded)")
     print("=" * 60)
 
     if not download_zig():

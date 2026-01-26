@@ -316,14 +316,33 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
     }
 }
 
+#if defined(__AVX2__)
+// Helper: Emulate 64-bit multiplication using AVX2 32-bit primitives
+// Returns (a * b) & 0xFFFFFFFFFFFFFFFF
+static inline __m256i mul64_avx2(__m256i a, __m256i b) {
+    // lo_prod = a_lo * b_lo (64-bit result)
+    __m256i lo_prod = _mm256_mul_epu32(a, b);
+    
+    // hi_prod1 = a_lo * b_hi
+    __m256i b_hi = _mm256_srli_epi64(b, 32);
+    __m256i hi_prod1 = _mm256_mul_epu32(a, b_hi);
+    
+    // hi_prod2 = a_hi * b_lo
+    __m256i a_hi = _mm256_srli_epi64(a, 32);
+    __m256i hi_prod2 = _mm256_mul_epu32(a_hi, b);
+    
+    // Combine cross terms: (a_lo*b_hi + a_hi*b_lo) << 32
+    __m256i sum_hi = _mm256_add_epi64(hi_prod1, hi_prod2);
+    __m256i scaled_hi = _mm256_slli_epi64(sum_hi, 32);
+    
+    return _mm256_add_epi64(lo_prod, scaled_hi);
+}
+#endif
+
 template<>
 void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt) {
     size_t i = 0;
 
-    // NOTE: AVX2 doesn't have native 64-bit integer multiply (_mm256_mullo_epi64 requires AVX512).
-    // Previous SIMD emulation was incorrect. For RAM testing, correctness > speed.
-    // AVX512 has _mm512_mullo_epi64, so use that if available.
-    
 #if defined(__AVX512F__)
     SimdCapabilities caps = getCapabilities();
     if (caps.has_avx512) {
@@ -342,6 +361,30 @@ void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0
                 _mm512_storeu_si512((void*)(dst + i), v_val);
             }
             v_idx = _mm512_add_epi64(v_idx, v_idx_step);
+        }
+    }
+#endif
+
+#if defined(__AVX2__)
+    // Optimized AVX2 path
+    SimdCapabilities caps = getCapabilities();
+    if (caps.has_avx2) {
+        __m256i v_param0 = _mm256_set1_epi64x(param0);
+        __m256i v_param1 = _mm256_set1_epi64x(param1);
+        __m256i v_idx = _mm256_set_epi64x(3, 2, 1, 0);
+        __m256i v_idx_step = _mm256_set1_epi64x(4);
+        
+        for (; i + 4 <= count; i += 4) {
+             // val = param0 ^ (idx * param1)
+             __m256i v_mul = mul64_avx2(v_idx, v_param1);
+             __m256i v_val = _mm256_xor_si256(v_param0, v_mul);
+
+             if (use_nt && caps.has_nt_stores) {
+                 _mm256_stream_si256((__m256i*)(dst + i), v_val);
+             } else {
+                 _mm256_storeu_si256((__m256i*)(dst + i), v_val);
+             }
+             v_idx = _mm256_add_epi64(v_idx, v_idx_step);
         }
     }
 #endif
@@ -505,6 +548,47 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
                 }
             }
             v_idx = _mm512_add_epi64(v_idx, v_idx_step);
+        }
+    }
+#endif
+
+#if defined(__AVX2__)
+    // Optimized AVX2 Path
+    SimdCapabilities caps = getCapabilities();
+    if (caps.has_avx2 && count >= 4) {
+        __m256i v_param0 = _mm256_set1_epi64x(param0);
+        __m256i v_param1 = _mm256_set1_epi64x(param1);
+        __m256i v_idx = _mm256_set_epi64x(start_idx + 3, start_idx + 2, start_idx + 1, start_idx);
+        __m256i v_idx_step = _mm256_set1_epi64x(4);
+        
+        for (; i + 4 <= count; i += 4) {
+            if (errors >= max_errors) return errors;
+            
+            __m256i actual;
+            // Use stream load if aligned (and supported, but standard allocator aligns)
+            // Just use loadu for safety, stream loads for verify usually need explicit alignment check
+            if (((uintptr_t)(src + i) & 31) == 0) {
+                 actual = _mm256_stream_load_si256((__m256i*)(src + i));
+            } else {
+                 actual = _mm256_loadu_si256((const __m256i*)(src + i));
+            }
+            
+            // Calculate expected
+            __m256i v_mul = mul64_avx2(v_idx, v_param1);
+            __m256i v_expect = _mm256_xor_si256(v_param0, v_mul);
+            
+            __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
+            int mask = _mm256_movemask_epi8(eq);
+            
+            // 0xFFFFFFFF means all bytes equal
+            if ((uint32_t)mask != 0xFFFFFFFF) {
+                 for (size_t k = 0; k < 4; ++k) {
+                     if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
+                         if(errors < max_errors) error_indices[errors++] = i + k;
+                     }
+                 }
+            }
+            v_idx = _mm256_add_epi64(v_idx, v_idx_step);
         }
     }
 #endif

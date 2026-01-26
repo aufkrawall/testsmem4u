@@ -11,7 +11,8 @@ namespace testsmem4u {
 
 struct TestContext {
     std::atomic<bool> stop_flag{false};
-    std::atomic<uint64_t> total_errors{0};
+    std::atomic<uint64_t> total_hard_errors{0};
+    std::atomic<uint64_t> total_soft_errors{0};
     std::atomic<uint64_t> total_bytes{0};
     std::atomic<uint32_t> current_cycle{0};
     std::atomic<uint32_t> current_test_idx{0};
@@ -53,6 +54,9 @@ public:
     static TestResult runLFSRPattern(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
     static TestResult runRowHammerTest(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
     static TestResult runMovingInversion(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runMovingInversionLFSR(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runMovingInversionWalking(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runBlockMove(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
 
     static size_t verifyAndReport(const uint64_t* ptr, size_t count, size_t start_idx,
                                    uint8_t pattern_mode, uint64_t param0, uint64_t param1,
