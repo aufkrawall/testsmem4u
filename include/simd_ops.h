@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace testsmem4u {
 namespace simd {
@@ -25,9 +26,15 @@ struct SimdCapabilities {
     bool has_neon = false;
     bool has_sve = false;
     bool has_clflush = false;
+    bool has_clflushopt = false;
     size_t vector_width = 16;
     size_t nt_store_width = 16;
 };
+
+// Maximum number of errors to report per verification block
+// Set to a very large value (1 billion) to effectively allow unlimited errors
+// while still providing some protection against runaway error storms
+constexpr size_t MAX_ERRORS_PER_BLOCK = 1000000000ULL;
 
 SimdCapabilities getCapabilities();
 const char* getSimdLevelName(SimdLevel level);
@@ -96,18 +103,24 @@ template<typename T>
 void invert_array(T* dst, size_t count, bool use_nt);
 
 // Verification (Read from Memory)
-// Returns number of errors found. Populates error_indices with offsets of failing words.
+// Populates error_indices with offsets of failing words.
 // Uses SIMD comparison for speed where possible.
 template<typename T>
-size_t verify_pattern_linear(const T* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, uint64_t* error_indices, size_t max_errors);
+void verify_pattern_linear(const T* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<uint64_t>& error_indices);
 
 template<typename T>
-size_t verify_pattern_xor(const T* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, uint64_t* error_indices, size_t max_errors);
+void verify_pattern_xor(const T* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<uint64_t>& error_indices);
 
 template<typename T>
-size_t verify_uniform(const T* src, size_t count, uint64_t val, uint64_t* error_indices, size_t max_errors);
+void verify_uniform(const T* src, size_t count, uint64_t val, std::vector<uint64_t>& error_indices);
 
 template<typename T>
-size_t verify_moving_inv(const T* src, size_t count, uint64_t val, uint64_t* error_indices, size_t max_errors);
+void verify_moving_inv(const T* src, size_t count, uint64_t val, std::vector<uint64_t>& error_indices);
+
+// Safe forced memory read after cache flush
+// Use this instead of volatile casts (which are UB in C++)
+// Performs: flush cache line, memory fence, read value
+uint64_t safe_read_u64(const uint64_t* ptr);
+uint32_t safe_read_u32(const uint32_t* ptr);
 
 }} // namespace testsmem4u::simd

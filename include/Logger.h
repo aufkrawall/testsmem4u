@@ -98,7 +98,8 @@ public:
         if (!running_) return;
 
         running_ = false;
-        queue_cv_.notify_one();
+        writer_cv_.notify_one(); 
+        queue_cv_.notify_all(); // Wake up any blocked producers so they can exit
         
         if (writer_thread_.joinable()) {
             writer_thread_.join();
@@ -114,7 +115,21 @@ public:
         log_level_ = level;
     }
 
-    void debug(const char* format, ...) {
+    static void emergencyFlush() {
+        // Safe flush for crash handlers - avoid locks and complex logic
+        // Only flush standard streams which are generally safer
+        fflush(stdout);
+        fflush(stderr);
+    }
+
+    // Use format attribute to enable compile-time format string checking
+    #ifdef __GNUC__
+        #define LOG_FORMAT_ATTR __attribute__((format(printf, 2, 3)))
+    #else
+        #define LOG_FORMAT_ATTR
+    #endif
+
+    void debug(const char* format, ...) LOG_FORMAT_ATTR {
         if (log_level_ > LogLevel::DEBUG) return;
         va_list args;
         va_start(args, format);
@@ -122,7 +137,7 @@ public:
         va_end(args);
     }
 
-    void info(const char* format, ...) {
+    void info(const char* format, ...) LOG_FORMAT_ATTR {
         if (log_level_ > LogLevel::INFO) return;
         va_list args;
         va_start(args, format);
@@ -130,7 +145,7 @@ public:
         va_end(args);
     }
 
-    void warn(const char* format, ...) {
+    void warn(const char* format, ...) LOG_FORMAT_ATTR {
         if (log_level_ > LogLevel::WARN) return;
         va_list args;
         va_start(args, format);
@@ -138,12 +153,14 @@ public:
         va_end(args);
     }
 
-    void error(const char* format, ...) {
+    void error(const char* format, ...) LOG_FORMAT_ATTR {
         va_list args;
         va_start(args, format);
         logv(LogLevel::ERROR, format, args);
         va_end(args);
     }
+    
+    #undef LOG_FORMAT_ATTR
 
     void logMemoryAllocation(void* ptr, size_t size, bool locked) {
         debug("MEMORY ALLOC: ptr=0x%016llX size=%zu locked=%d", (unsigned long long)ptr, size, locked);
@@ -183,30 +200,161 @@ public:
     }
 
     void logError(const std::string& context, uint64_t address, uint64_t expected, uint64_t actual) {
-        {
-            std::lock_guard<std::mutex> lock(rate_limit_mutex_);
-            auto now = std::chrono::high_resolution_clock::now();
-            if (std::chrono::duration_cast<std::chrono::seconds>(now - last_summary_time_).count() >= 1) {
-                if (suppressed_count_ > 0) {
-                    char buf[128];
-                    snprintf(buf, sizeof(buf), "ERROR RATE: %u additional errors suppressed", suppressed_count_);
-                    pushMessage(LogLevel::ERROR, std::string(buf));
-                }
-                suppressed_count_ = 0;
-                last_summary_time_ = now;
-            }
-        }
-
-        if (!checkRateLimit()) {
-            std::lock_guard<std::mutex> lock(rate_limit_mutex_);
-            suppressed_count_++;
-            return;
-        }
-
-        error("ERROR: %s at 0x%016llX: expected 0x%016llX, got 0x%016llX",
+        // Build the error message first
+        char error_msg[512];
+        snprintf(error_msg, sizeof(error_msg), 
+            "ERROR: %s at 0x%016llX: expected 0x%016llX, got 0x%016llX",
             context.c_str(), (unsigned long long)address, (unsigned long long)expected, (unsigned long long)actual);
+        
+        // CRITICAL: Always log to file FIRST - this must never be skipped
+        // File logging is the authoritative record
+        pushMessage(LogLevel::ERROR, std::string(error_msg));
+        
+        // Handle console output with rate limiting (console is best-effort)
+        handleConsoleOutput(std::string(error_msg));
     }
     
+    // Separated console output handling for clarity and testability
+    void handleConsoleOutput(const std::string& message) {
+        std::lock_guard<std::mutex> lock(rate_limit_mutex_);
+        auto now = std::chrono::high_resolution_clock::now();
+        
+        // Periodic summary of suppressed errors
+        auto seconds_since_summary = std::chrono::duration_cast<std::chrono::seconds>(now - last_summary_time_).count();
+        if (seconds_since_summary >= 1 && suppressed_count_ > 0) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "ERROR RATE: %u additional errors suppressed (see log file)", suppressed_count_);
+            {
+                std::lock_guard<std::mutex> console_lock(console_mutex_);
+                std::cout << formatLogLine(LogLevel::WARN, buf) << "\n";
+            }
+            suppressed_count_ = 0;
+            last_summary_time_ = now;
+        }
+
+        // Check rate limit for console output only
+        if (error_count_ >= error_rate_limit_) {
+            suppressed_count_++;
+            return;  // Skip console output only
+        }
+
+        error_count_++;
+        
+        // Console output
+        std::lock_guard<std::mutex> console_lock(console_mutex_);
+        std::cout << formatLogLine(LogLevel::ERROR, message) << "\n";
+    }
+
+    void pushMessage(LogLevel level, const std::string& formatted_message) {
+        if (!running_) return;
+        
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            // Never drop ERROR or higher priority messages - use blocking push
+            // For lower priority, use large cap to prevent OOM
+            const size_t MAX_QUEUE_SIZE = 100000; // 10x larger for WARN/INFO/DEBUG
+            
+            if (level >= LogLevel::ERROR) {
+                // Critical: Always queue ERROR messages, even if we have to wait
+                // This ensures no error data is lost
+                log_queue_.push({level, formatted_message});
+            } else {
+                // Non-critical: Drop if queue is extremely full to prevent OOM
+                if (log_queue_.size() < MAX_QUEUE_SIZE) {
+                    log_queue_.push({level, formatted_message});
+                } else {
+                    // Track dropped non-critical messages
+                    static std::atomic<uint64_t> dropped_count{0};
+                    dropped_count++;
+                    // Occasionally log that we're dropping
+                    if ((dropped_count.load() % 1000) == 1) {
+                        char drop_msg[128];
+                        snprintf(drop_msg, sizeof(drop_msg), 
+                            "LOGGER: Dropped %llu non-critical messages due to full queue", 
+                            (unsigned long long)dropped_count.load());
+                        log_queue_.push({LogLevel::WARN, std::string(drop_msg)});
+                    }
+                }
+            }
+        }
+        queue_cv_.notify_one();
+    }
+
+    void logv(LogLevel level, const char* format, va_list args) {
+        va_list args_copy;
+        va_copy(args_copy, args);
+        int len = vsnprintf(nullptr, 0, format, args_copy);
+        va_end(args_copy);
+
+        if (len < 0) return;
+
+        // FIXED: Allocate len+1 bytes to accommodate null terminator during vsnprintf
+        std::string message;
+        message.resize(len + 1); // +1 for null terminator during write
+        vsnprintf(&message[0], len + 1, format, args);
+        message.resize(len); // Remove null terminator from string
+        
+        std::string line = formatLogLine(level, message);
+        
+        // Only print WARN and ERROR to console to prevent spam
+        // INFO and DEBUG still go to the log file via pushMessage
+        if (level >= LogLevel::WARN) {
+            std::lock_guard<std::mutex> console_lock(console_mutex_);
+            std::cout << line << "\n";
+        }
+
+        pushMessage(level, line);
+    }
+
+    void writerThreadFunc() {
+        std::vector<std::pair<LogLevel, std::string>> local_batch;
+        local_batch.reserve(500); // Process in batches
+
+        while (running_) {
+             std::unique_lock<std::mutex> lock(queue_mutex_);
+             
+             // Wait for data or shutdown
+             writer_cv_.wait(lock, [this] {
+                 return !log_queue_.empty() || !running_;
+             });
+
+             if (!running_ && log_queue_.empty()) break;
+
+             // Drain the entire queue into local batch (or up to a reasonable limit)
+             // We want to drain fast to unblock producers
+             while (!log_queue_.empty() && local_batch.size() < 2000) {
+                 local_batch.push_back(std::move(log_queue_.front()));
+                 log_queue_.pop();
+             }
+             
+             // NOTIFY producers that space is available
+             // This wakes up threads blocked in pushMessage
+             queue_cv_.notify_all();
+             
+             lock.unlock();
+
+             // Process batch IO without holding lock
+             if (!local_batch.empty()) {
+                 if (file_handle_) {
+                     bool force_flush = false;
+                     for (const auto& msg : local_batch) {
+                         fprintf(file_handle_, "%s\n", msg.second.c_str());
+                         // Always flush on ERROR to ensure vital data hits disk immediately
+                         if (msg.first == LogLevel::ERROR) force_flush = true;
+                     }
+                     // Regularly flush to ensure no data loss on crash
+                     if (force_flush || local_batch.size() > 100) fflush(file_handle_);
+                 }
+                 local_batch.clear();
+             }
+        }
+        
+        // Final flush
+        if (file_handle_) {
+            fflush(file_handle_);
+        }
+    }
+
     std::mutex& getConsoleMutex() { return console_mutex_; }
     std::mutex& getMutex() { return getConsoleMutex(); } 
 
@@ -219,7 +367,7 @@ public:
 
 private:
     Logger() : running_(false), file_handle_(nullptr), log_filename_(), log_level_(LogLevel::DEBUG),
-               session_id_(0), error_count_(0), error_rate_limit_(100), suppressed_count_(0) {}
+               session_id_(0), error_count_(0), error_rate_limit_(500), suppressed_count_(0) {}
     
     ~Logger() { deinit(); }
 
@@ -231,7 +379,8 @@ private:
     std::mutex console_mutex_; 
     
     std::mutex queue_mutex_;
-    std::condition_variable queue_cv_;
+    std::condition_variable queue_cv_;  // For producers (blocks when full)
+    std::condition_variable writer_cv_; // For consumer (blocks when empty)
     std::queue<std::pair<LogLevel, std::string>> log_queue_;
     std::thread writer_thread_;
     std::atomic<bool> running_;
@@ -292,69 +441,6 @@ private:
         ss << "[" << std::fixed << std::setprecision(3) << getElapsedSeconds() << "s]";
         ss << " " << message;
         return ss.str();
-    }
-
-    void pushMessage(LogLevel level, const std::string& formatted_message) {
-        if (!running_) return;
-        
-        {
-            std::unique_lock<std::mutex> lock(queue_mutex_);
-            if (log_queue_.size() < 10000) { 
-                log_queue_.push({level, formatted_message});
-            }
-        }
-        queue_cv_.notify_one();
-    }
-
-    void logv(LogLevel level, const char* format, va_list args) {
-        char buffer[4096];
-        vsnprintf(buffer, sizeof(buffer), format, args);
-        
-        std::string message(buffer);
-        std::string line = formatLogLine(level, message);
-        
-        {
-            std::lock_guard<std::mutex> console_lock(console_mutex_);
-            std::cout << line << "\n";
-        }
-
-        pushMessage(level, line);
-    }
-
-    void writerThreadFunc() {
-        std::vector<std::pair<LogLevel, std::string>> local_batch;
-        local_batch.reserve(100);
-
-        while (running_) {
-            std::unique_lock<std::mutex> lock(queue_mutex_);
-            queue_cv_.wait(lock, [this] {
-                return !log_queue_.empty() || !running_;
-            });
-
-            if (!running_ && log_queue_.empty()) break;
-
-            while (!log_queue_.empty() && local_batch.size() < 1000) {
-                local_batch.push_back(std::move(log_queue_.front()));
-                log_queue_.pop();
-            }
-            lock.unlock();
-
-            if (!local_batch.empty()) {
-                if (file_handle_) {
-                    bool force_flush = false;
-                    for (const auto& msg : local_batch) {
-                        fprintf(file_handle_, "%s\n", msg.second.c_str());
-                        if (msg.first == LogLevel::ERROR || msg.first == LogLevel::INFO) force_flush = true;
-                    }
-                    if (force_flush) fflush(file_handle_);
-                }
-                local_batch.clear();
-            }
-        }
-        
-        if (file_handle_) {
-            fflush(file_handle_);
-        }
     }
 };
 

@@ -10,15 +10,18 @@ namespace testsmem4u {
 struct TestResult {
     uint64_t hard_errors = 0;
     uint64_t soft_errors = 0;
+    uint64_t unverified_errors = 0;  // Errors detected but not re-read verified (due to limits)
     
     uint64_t bytes_tested = 0;
     uint64_t cycles_completed = 0;
 
-    uint64_t total_errors() const { return hard_errors + soft_errors; }
+    uint64_t total_errors() const { return hard_errors + soft_errors + unverified_errors; }
+    uint64_t verified_errors() const { return hard_errors + soft_errors; }
 
     void merge(const TestResult& other) {
         hard_errors += other.hard_errors;
         soft_errors += other.soft_errors;
+        unverified_errors += other.unverified_errors;
         bytes_tested += other.bytes_tested;
         cycles_completed += other.cycles_completed;
     }

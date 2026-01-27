@@ -69,6 +69,9 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
     if (g_shutdown_callback) {
         g_shutdown_callback();
     }
+    
+    // NOTE: Logger::emergencyFlush() removed - may not be safe during shutdown
+    // Rely on normal process exit to flush pending log entries
 
     if (dwCtrlType == CTRL_CLOSE_EVENT || dwCtrlType == CTRL_LOGOFF_EVENT || dwCtrlType == CTRL_SHUTDOWN_EVENT) {
         if (g_shutdown_event && g_shutdown_event != INVALID_HANDLE_VALUE) {
@@ -87,14 +90,15 @@ static void SignalHandlerWrapper(int signum) {
     // Mark as shutting down (atomic write is async-signal-safe)
     g_shutdown_initiated = true;
     
-    // Callback may not be async-signal-safe, but we need to signal stop
-    // The callback only sets an atomic flag, which IS safe
+    // Callback sets an atomic flag only, which IS async-signal-safe
+    // Note: We assume g_shutdown_callback only manipulates atomics
     if (g_shutdown_callback) {
         g_shutdown_callback();
     }
     
+    // NOTE: Logger::emergencyFlush() removed - NOT async-signal-safe
+    // FILE* operations can deadlock in signal handlers
     // Use _exit() which IS async-signal-safe (exit() is NOT)
-    // No time for cleanup - trust the callback to trigger graceful shutdown
     _exit(128 + signum);
 }
 #endif
@@ -238,8 +242,10 @@ uint64_t Platform::getTotalSystemRAM() {
 
 uint64_t Platform::getMaxTestableMemory(uint64_t total_ram, uint32_t percent_requested) {
     if (percent_requested > 100) percent_requested = 100;
-    uint64_t max_allowed = total_ram * percent_requested / 100;
-    uint64_t min_reserved = 256 * 1024 * 1024; // 256 MB minimum
+    // Reorder operations to prevent overflow: total_ram / 100 * percent
+    // This is safe because total_ram / 100 <= 2^64 / 100 for any realistic RAM size
+    uint64_t max_allowed = (total_ram / 100) * percent_requested;
+    uint64_t min_reserved = 256ULL * 1024 * 1024; // 256 MB minimum
     if (max_allowed <= min_reserved) return 0;
     return max_allowed - min_reserved;
 }

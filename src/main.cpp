@@ -108,14 +108,11 @@ static bool parseUintOrDefault(const std::string& str, uint32_t& result, uint32_
         result = default_val;
         return true;
     }
-    try {
-        size_t pos;
-        uint32_t val = std::stoul(str, &pos);
-        if (pos == str.size()) {
-            result = val;
-            return true;
-        }
-    } catch (...) {
+    char* endptr = nullptr;
+    unsigned long val = std::strtoul(str.c_str(), &endptr, 10);
+    if (endptr && *endptr == '\0') {
+        result = static_cast<uint32_t>(val);
+        return true;
     }
     return false;
 }
@@ -125,14 +122,11 @@ static bool parseUintOrDefault(const std::string& str, uint32_t& result, uint32_
         result = default_val;
         return true;
     }
-    try {
-        size_t pos;
-        int32_t val = std::stoi(str, &pos);
-        if (pos == str.size()) {
-            result = val;
-            return true;
-        }
-    } catch (...) {
+    char* endptr = nullptr;
+    long val = std::strtol(str.c_str(), &endptr, 10);
+    if (endptr && *endptr == '\0') {
+        result = static_cast<int32_t>(val);
+        return true;
     }
     return false;
 }
@@ -308,11 +302,8 @@ Config runConfigWizard() {
         config.preset_file = "default.cfg";
     }
 
-    try {
-        config.preset = loadPreset(config.preset_file);
-    } catch (...) {
-        LOG_WARN("Could not load preset '%s', using internal defaults", config.preset_file.c_str());
-    }
+    if (config.preset_file.empty()) config.preset_file = "default.cfg";
+    config.preset = loadPreset(config.preset_file);
 
     if (config.memory_window_mb == 0) {
         uint64_t max_mem = Platform::getMaxTestableMemory(total_ram, config.memory_window_percent);
@@ -358,7 +349,7 @@ int main(int argc, char* argv[]) {
 
     Logger::get().init("testsmem4u.log", debug ? LogLevel::DEBUG : LogLevel::INFO, true);
     auto& log = Logger::get();
-    log.setErrorRateLimit(10); // Limit error reporting to 10/sec to avoid log spam
+    log.setErrorRateLimit(100); // Allow more detailed error logging for diagnostic purposes
 
     // Check for SeLockMemoryPrivilege (Strict Requirement)
     if (!Platform::hasMemoryLockPrivilege()) {
@@ -393,10 +384,15 @@ int main(int argc, char* argv[]) {
 
     // Try to load config; if fails or doesn't exist, we will setup defaults but allow override
     bool loaded_from_file = false;
+    
+    // Always attempt to load config file first
+    if (loadConfig("config.ini", config)) {
+        loaded_from_file = true;
+        config_loaded = true;
+    }
+
     if (!skip_wizard) {
-        if (loadConfig("config.ini", config)) {
-            loaded_from_file = true;
-        } else {
+        if (!loaded_from_file) {
             // Setup defaults if no config found
             config.memory_window_percent = 85;
             config.memory_window_mb = 0;
@@ -414,24 +410,23 @@ int main(int argc, char* argv[]) {
             config.memory_window_mb = static_cast<uint32_t>(max_mem / 1024 / 1024);
         }
 
-        // Load the preset referenced in the config
-        try {
-            if (config.preset_file.empty()) config.preset_file = "default.cfg";
-            config.preset = loadPreset(config.preset_file);
-        } catch (...) {
-            LOG_WARN("Could not load preset '%s', using internal defaults", config.preset_file.c_str());
-        }
+        if (config.preset_file.empty()) config.preset_file = "default.cfg";
+        config.preset = loadPreset(config.preset_file);
 
         // Show appropriate message
         const char* msg = loaded_from_file ? "Starting with saved settings..." : "Starting with default settings...";
 
-        // Wait for user input
-        if (waitForInput(3, msg)) {
-            skip_wizard = false;
-            config_loaded = false; // Force re-run wizard
+        if (skip_wizard) {
+            std::cout << msg << std::endl;
         } else {
-            skip_wizard = true;
-            config_loaded = true; // Use the current config
+            // Wait for user input
+            if (waitForInput(3, msg)) {
+                skip_wizard = false;
+                config_loaded = false; // Force re-run wizard
+            } else {
+                skip_wizard = true;
+                config_loaded = true; // Use the current config
+            }
         }
     }
 
@@ -440,11 +435,8 @@ int main(int argc, char* argv[]) {
             if (!preset_path.empty()) config.preset_file = preset_path;
             else if (config.preset_file.empty()) config.preset_file = "default.cfg";
 
-            try {
-                config.preset = loadPreset(config.preset_file);
-            } catch (...) {
-                LOG_WARN("Could not load preset '%s'", config.preset_file.c_str());
-            }
+            config.preset = loadPreset(config.preset_file);
+            
             config.cores = plat.cpu_cores;
             uint64_t total_ram = Platform::getTotalSystemRAM();
             uint64_t max_mem = Platform::getMaxTestableMemory(total_ram, 85);
@@ -470,31 +462,35 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    RunResult res = {};
     try {
-        RunResult res = TestEngine::runTests(config);
-
-        std::cout << "\n--- Results ---" << std::endl;
-        std::cout << "Errors: " << res.total_errors() << " (Hard: " << res.hard_errors << ", Soft: " << res.soft_errors << ")" << std::endl;
-        std::cout << "Time: " << res.duration_seconds << "s" << std::endl;
-
-        // Ensure logger flushes all pending messages before exit
-        Logger::get().deinit();
-
-#ifdef _WIN32
-        std::cout << "\nPress any key to exit..." << std::endl;
-        _getch();
-#endif
-
-        return res.total_errors() == 0 ? 0 : 1;
+        res = TestEngine::runTests(config);
     } catch (const std::exception& e) {
-        std::cerr << "CRITICAL ERROR: " << e.what() << std::endl;
-        Logger::get().deinit();
-#ifdef _WIN32
-        std::cout << "\nPress any key to exit..." << std::endl;
-        _getch();
-#endif
-        return 1;
+        log.error("FATAL: Uncaught exception during test execution: %s", e.what());
+        std::cerr << "\n[!] FATAL ERROR: " << e.what() << std::endl;
+        res.hard_errors++; // Count this as a failure
+    } catch (...) {
+        log.error("FATAL: Unknown exception caught during test execution");
+        std::cerr << "\n[!] FATAL ERROR: Unknown exception occurred." << std::endl;
+        res.hard_errors++;
     }
+
+    std::cout << "\n--- Results ---" << std::endl;
+    std::cout << "Total Errors: " << res.total_errors() << std::endl;
+    std::cout << "  Hard (confirmed):   " << res.hard_errors << std::endl;
+    std::cout << "  Soft (transient):   " << res.soft_errors << std::endl;
+    std::cout << "  Unverified:         " << res.unverified_errors << std::endl;
+    std::cout << "Time: " << res.duration_seconds << "s" << std::endl;
+
+    // Ensure logger flushes all pending messages before exit
+    Logger::get().deinit();
+
+#ifdef _WIN32
+    std::cout << "\nPress any key to exit..." << std::endl;
+    _getch();
+#endif
+
+    return res.total_errors() == 0 ? 0 : 1;
 }
 
 } // namespace testsmem4u

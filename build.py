@@ -43,8 +43,13 @@ BASE_CXX_FLAGS = [
     "-O3",
     "-flto",
     "-Wall",
+    "-ffunction-sections",
+    "-fdata-sections",
+    "-fno-rtti",
+    "-DNDEBUG",
     "-Wl,--gc-sections",
     "-Wl,-O3",
+    "-Wl,-s",
 ]
 
 HOST_ONLY_FLAGS = [
@@ -65,19 +70,19 @@ TARGETS = {
         "obj_ext": ".obj"
     },
     "linux-x86": {
-        "zig_target": "x86-linux-gnu",
+        "zig_target": "x86-linux-musl",
         "output": "testsmem4u-linux-x86",
         "extra_flags": ["-pthread"],
         "obj_ext": ".o"
     },
     "linux-x86_64": {
-        "zig_target": "x86_64-linux-gnu",
+        "zig_target": "x86_64-linux-musl",
         "output": "testsmem4u-linux-x86_64",
         "extra_flags": ["-pthread"],
         "obj_ext": ".o"
     },
     "linux-arm64": {
-        "zig_target": "aarch64-linux-gnu",
+        "zig_target": "aarch64-linux-musl",
         "output": "testsmem4u-linux-arm64",
         "extra_flags": ["-pthread"],
         "obj_ext": ".o"
@@ -257,9 +262,19 @@ def main() -> int:
     else:
         names = [t.strip() for t in requested.split(",") if t.strip()]
 
+    print(f"[*] Building {len(names)} targets in parallel...")
     ok = True
-    for n in names:
-        ok = build_target(n) and ok
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(names)) as executor:
+        future_to_target = {executor.submit(build_target, n): n for n in names}
+        for future in concurrent.futures.as_completed(future_to_target):
+            name = future_to_target[future]
+            try:
+                if not future.result():
+                    print(f"[!] Build failed for target: {name}")
+                    ok = False
+            except Exception as e:
+                print(f"[!] Exception building target {name}: {e}")
+                ok = False
 
     if ok:
         print("\nBuild complete.")

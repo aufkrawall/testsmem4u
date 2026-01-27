@@ -35,6 +35,10 @@ static SimdCapabilities detect_x86_capabilities() {
     int info[4];
     __cpuidex(info, 1, 0);
     if (info[3] & (1 << 19)) caps.has_clflush = true;
+    
+    // Check for CLFLUSHOPT (Leaf 7, Subleaf 0, EBX bit 23)
+    __cpuidex(info, 7, 0);
+    if (info[1] & (1 << 23)) caps.has_clflushopt = true;
 
 #if defined(__AVX512F__)
     __cpuidex(info, 7, 0);
@@ -69,8 +73,23 @@ static SimdCapabilities detect_x86_capabilities() {
     return caps;
 }
 
+#ifdef __clang__
+__attribute__((target("clflushopt")))
+static inline void do_clflushopt(void* ptr) {
+    _mm_clflushopt(ptr);
+}
+#else
+static inline void do_clflushopt(void* ptr) {
+    _mm_clflushopt(ptr);
+}
+#endif
+
 void flush_cache_line(void* ptr) {
-    _mm_clflush(ptr);
+    if (getCapabilities().has_clflushopt) {
+        do_clflushopt(ptr);
+    } else {
+        _mm_clflush(ptr);
+    }
 }
 
 void flush_cache_region(void* ptr, size_t bytes) {
@@ -80,7 +99,11 @@ void flush_cache_region(void* ptr, size_t bytes) {
     uint8_t* end = p + bytes;
     
     for (; p < end; p += CACHE_LINE_SIZE) {
-        _mm_clflush(p);
+        if (getCapabilities().has_clflushopt) {
+            do_clflushopt(p);
+        } else {
+            _mm_clflush(p);
+        }
     }
     _mm_sfence(); // Ensure all flushes complete before returning
 }
@@ -342,9 +365,9 @@ static inline __m256i mul64_avx2(__m256i a, __m256i b) {
 template<>
 void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt) {
     size_t i = 0;
+    SimdCapabilities caps = getCapabilities();
 
 #if defined(__AVX512F__)
-    SimdCapabilities caps = getCapabilities();
     if (caps.has_avx512) {
         __m512i v_param0 = _mm512_set1_epi64(param0);
         __m512i v_param1 = _mm512_set1_epi64(param1);
@@ -366,25 +389,38 @@ void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0
 #endif
 
 #if defined(__AVX2__)
-    // Optimized AVX2 path
-    SimdCapabilities caps = getCapabilities();
-    if (caps.has_avx2) {
+    // Optimized AVX2 path - FIXED: removed undefined start_idx dependency
+    if (caps.has_avx2 && i + 4 <= count) {
         __m256i v_param0 = _mm256_set1_epi64x(param0);
         __m256i v_param1 = _mm256_set1_epi64x(param1);
-        __m256i v_idx = _mm256_set_epi64x(3, 2, 1, 0);
+        
+        // Start indices from current position i: {i+3, i+2, i+1, i}
+        __m256i v_idx = _mm256_set_epi64x(
+            static_cast<int64_t>(i + 3), 
+            static_cast<int64_t>(i + 2), 
+            static_cast<int64_t>(i + 1), 
+            static_cast<int64_t>(i)
+        );
         __m256i v_idx_step = _mm256_set1_epi64x(4);
         
+        // Calculate initial term: (idx * param1)
+        __m256i v_term = mul64_avx2(v_idx, v_param1);
+        
+        // Step for the Term is (4 * param1)
+        __m256i v_term_step = _mm256_slli_epi64(v_param1, 2); // param1 * 4
+        
         for (; i + 4 <= count; i += 4) {
-             // val = param0 ^ (idx * param1)
-             __m256i v_mul = mul64_avx2(v_idx, v_param1);
-             __m256i v_val = _mm256_xor_si256(v_param0, v_mul);
+             // val = param0 ^ (term)
+             __m256i v_val = _mm256_xor_si256(v_param0, v_term);
 
              if (use_nt && caps.has_nt_stores) {
                  _mm256_stream_si256((__m256i*)(dst + i), v_val);
              } else {
                  _mm256_storeu_si256((__m256i*)(dst + i), v_val);
              }
-             v_idx = _mm256_add_epi64(v_idx, v_idx_step);
+             
+             // Advance term by adding the step (4 * param1)
+             v_term = _mm256_add_epi64(v_term, v_term_step);
         }
     }
 #endif
@@ -427,11 +463,60 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
     for (; i < count; ++i) dst[i] = val;
 }
 
+template<>
+void generate_pattern_increment<uint64_t>(uint64_t* dst, size_t count, uint64_t start, bool use_nt) {
+    SimdCapabilities caps = getCapabilities();
+    (void)caps;
+    size_t i = 0;
 
+#if defined(__AVX512F__)
+    if (caps.has_avx512) {
+        // v_curr = {start+7, start+6, ..., start+0} (little endian load order)
+        // Set: [7, 6, 5, 4, 3, 2, 1, 0]
+        __m512i v_idx = _mm512_set_epi64(7, 6, 5, 4, 3, 2, 1, 0);
+        __m512i v_base = _mm512_set1_epi64(start);
+        __m512i v_curr = _mm512_add_epi64(v_base, v_idx);
+        __m512i v_step = _mm512_set1_epi64(8);
+
+        for (; i + 8 <= count; i += 8) {
+            if (use_nt && caps.has_nt_stores) {
+                _mm512_stream_si512((void*)(dst + i), v_curr);
+            } else {
+                _mm512_storeu_si512((void*)(dst + i), v_curr);
+            }
+            v_curr = _mm512_add_epi64(v_curr, v_step);
+        }
+    }
+#endif
+
+#if defined(__AVX2__)
+    if (caps.has_avx2) {
+        // AVX2 logic
+        __m256i v_idx = _mm256_set_epi64x(3, 2, 1, 0);
+        __m256i v_base = _mm256_set1_epi64x(start + i); // Start from current i
+        __m256i v_curr = _mm256_add_epi64(v_base, v_idx);
+        __m256i v_step = _mm256_set1_epi64x(4);
+        
+        for (; i + 4 <= count; i += 4) {
+            if (use_nt && caps.has_nt_stores) {
+                _mm256_stream_si256((__m256i*)(dst + i), v_curr);
+            } else {
+                _mm256_storeu_si256((__m256i*)(dst + i), v_curr);
+            }
+            v_curr = _mm256_add_epi64(v_curr, v_step);
+        }
+    }
+#endif
+
+    // Scalar fallback
+    for (; i < count; ++i) {
+        dst[i] = start + i;
+    }
+    sfence();
+}
 
 template<>
-size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, uint64_t* error_indices, size_t max_errors) {
-    size_t errors = 0;
+void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<uint64_t>& error_indices) {
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -446,8 +531,6 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
         );
 
         for (; i + 8 <= count; i += 8) {
-            if (errors >= max_errors) return errors;
-
             // Try to use NT load if aligned (common case with our allocator)
             __m512i actual;
             if (((uintptr_t)(src + i) & 63) == 0) {
@@ -460,7 +543,7 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
             if (mask) {
                 for (int k = 0; k < 8; ++k) {
                     if ((mask >> k) & 1) {
-                         if(errors < max_errors) error_indices[errors++] = i + k;
+                         error_indices.push_back(i + k);
                     }
                 }
             }
@@ -479,8 +562,6 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
     );
 
     for (; i + 4 <= count; i += 4) {
-        if (errors >= max_errors) return errors;
-
         __m256i actual;
         // Use stream load if aligned to 32 bytes
         if (((uintptr_t)(src + i) & 31) == 0) {
@@ -494,7 +575,7 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
         if ((uint32_t)mask != 0xFFFFFFFF) {
             for (size_t k = 0; k < 4; ++k) {
                 if (src[i+k] != (param0 + (start_idx + i + k) * param1)) {
-                   if(errors < max_errors) error_indices[errors++] = i + k;
+                   error_indices.push_back(i + k);
                 }
             }
         }
@@ -503,17 +584,14 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
 #endif
 
     for (; i < count; ++i) {
-        if (errors >= max_errors) break;
         if (src[i] != (param0 + (start_idx + i) * param1)) {
-            error_indices[errors++] = i;
+            error_indices.push_back(i);
         }
     }
-    return errors;
 }
 
 template<>
-size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, uint64_t* error_indices, size_t max_errors) {
-    size_t errors = 0;
+void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<uint64_t>& error_indices) {
     size_t i = 0;
 
     // NOTE: AVX2 doesn't have native 64-bit integer multiply.
@@ -531,8 +609,6 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
         __m512i v_idx_step = _mm512_set1_epi64(8);
 
         for (; i + 8 <= count; i += 8) {
-            if (errors >= max_errors) return errors;
-
             __m512i actual = _mm512_loadu_si512((const __m512i*)(src + i));
             __m512i v_mul = _mm512_mullo_epi64(v_idx, v_param1);
             __m512i v_expect = _mm512_xor_si512(v_param0, v_mul);
@@ -542,7 +618,7 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
                 for (size_t k = 0; k < 8; ++k) {
                     if (!(mask & (1 << k))) {
                         if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                            if (errors < max_errors) error_indices[errors++] = i + k;
+                            error_indices.push_back(i + k);
                         }
                     }
                 }
@@ -561,21 +637,23 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
         __m256i v_idx = _mm256_set_epi64x(start_idx + 3, start_idx + 2, start_idx + 1, start_idx);
         __m256i v_idx_step = _mm256_set1_epi64x(4);
         
+        // Initialize term = idx * param1 using the expensive mul once
+        __m256i v_term = mul64_avx2(v_idx, v_param1);
+        // Step = 4 * param1
+        __m256i v_term_step = _mm256_slli_epi64(v_param1, 2);
+        
         for (; i + 4 <= count; i += 4) {
-            if (errors >= max_errors) return errors;
             
             __m256i actual;
-            // Use stream load if aligned (and supported, but standard allocator aligns)
-            // Just use loadu for safety, stream loads for verify usually need explicit alignment check
             if (((uintptr_t)(src + i) & 31) == 0) {
                  actual = _mm256_stream_load_si256((__m256i*)(src + i));
             } else {
                  actual = _mm256_loadu_si256((const __m256i*)(src + i));
             }
             
-            // Calculate expected
-            __m256i v_mul = mul64_avx2(v_idx, v_param1);
-            __m256i v_expect = _mm256_xor_si256(v_param0, v_mul);
+            // Calculate expected using Add instead of Mul
+            // v_expect = param0 ^ v_term
+            __m256i v_expect = _mm256_xor_si256(v_param0, v_term);
             
             __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
             int mask = _mm256_movemask_epi8(eq);
@@ -584,37 +662,31 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
             if ((uint32_t)mask != 0xFFFFFFFF) {
                  for (size_t k = 0; k < 4; ++k) {
                      if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                         if(errors < max_errors) error_indices[errors++] = i + k;
+                         error_indices.push_back(i + k);
                      }
                  }
             }
-            v_idx = _mm256_add_epi64(v_idx, v_idx_step);
+            v_term = _mm256_add_epi64(v_term, v_term_step);
         }
     }
 #endif
 
     // Scalar fallback - guaranteed correct
     for (; i < count; ++i) {
-        if (errors >= max_errors) break;
         if (src[i] != (param0 ^ ((start_idx + i) * param1))) {
-            if (errors < max_errors) error_indices[errors++] = i;
-            else return errors;
+            error_indices.push_back(i);
         }
     }
-    return errors;
 }
 
 template<>
-size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, uint64_t* error_indices, size_t max_errors) {
-    size_t errors = 0;
+void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, std::vector<uint64_t>& error_indices) {
     size_t i = 0;
 #if defined(__AVX512F__)
     SimdCapabilities caps = getCapabilities();
     if (caps.has_avx512) {
         __m512i v_expect = _mm512_set1_epi64(val);
         for (; i + 8 <= count; i += 8) {
-             if (errors >= max_errors) return errors;
-             
              __m512i actual;
              if (((uintptr_t)(src + i) & 63) == 0) {
                  actual = _mm512_stream_load_si512((void*)(src + i));
@@ -626,7 +698,7 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
              if (mask) {
                  for (int k = 0; k < 8; ++k) {
                      if ((mask >> k) & 1) {
-                         if(errors < max_errors) error_indices[errors++] = i + k;
+                         error_indices.push_back(i + k);
                      }
                  }
              }
@@ -650,21 +722,17 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
         if ((uint32_t)mask != 0xFFFFFFFF) {
             for (size_t k = 0; k < 4; ++k) {
                 if (src[i+k] != val) {
-                    if (errors < max_errors) error_indices[errors++] = i + k;
-                    else return errors;
+                    error_indices.push_back(i + k);
                 }
             }
         }
     }
 #endif
     for (; i < count; ++i) {
-        if (errors >= max_errors) break;
         if (src[i] != val) {
-            if (errors < max_errors) error_indices[errors++] = i;
-            else return errors;
+            error_indices.push_back(i);
         }
     }
-    return errors;
 }
 
 template<>
@@ -688,8 +756,97 @@ void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
 }
 
 template<>
-size_t verify_moving_inv<uint64_t>(const uint64_t* src, size_t count, uint64_t val, uint64_t* error_indices, size_t max_errors) {
-    return verify_uniform(src, count, val, error_indices, max_errors);
+void verify_moving_inv<uint64_t>(const uint64_t* src, size_t count, uint64_t val, std::vector<uint64_t>& error_indices) {
+    verify_uniform(src, count, val, error_indices);
+}
+
+// Safe forced memory read after cache flush
+// Avoids undefined behavior of volatile casts
+// Performs: flush cache line, memory fence, read value
+uint64_t safe_read_u64(const uint64_t* ptr) {
+    // Flush the cache line to ensure we read from RAM
+    flush_cache_line((void*)ptr);
+    memory_fence();  // Ensure flush completes before read
+    
+    // Use compiler barrier to prevent optimization
+    // This is safer than volatile cast which is technically UB
+#if defined(__aarch64__) || defined(_M_ARM64)
+    // ARM64 implementation
+    uint64_t val;
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ volatile(
+        "ldr %0, [%1]"
+        : "=r" (val)
+        : "r" (ptr)
+        : "memory"
+    );
+#else // MSVC ARM64
+    // MSVC doesn't support inline asm on ARM64, use volatile
+    val = *(volatile uint64_t*)ptr;
+#endif
+    return val;
+#elif defined(__x86_64__) || defined(_M_X64)
+    // x86-64 implementation
+#if defined(__GNUC__) || defined(__clang__)
+    uint64_t val;
+    __asm__ volatile(
+        "movq (%1), %0"
+        : "=r" (val)
+        : "r" (ptr)
+        : "memory"
+    );
+    return val;
+#else // MSVC x64
+    _ReadWriteBarrier();
+    uint64_t val = *ptr;
+    _ReadWriteBarrier();
+    return val;
+#endif
+#else
+    // Fallback for other architectures
+    return *(volatile uint64_t*)ptr;
+#endif
+}
+
+uint32_t safe_read_u32(const uint32_t* ptr) {
+    flush_cache_line((void*)ptr);
+    memory_fence();
+    
+#if defined(__aarch64__) || defined(_M_ARM64)
+    // ARM64 implementation
+    uint32_t val;
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ volatile(
+        "ldr %w0, [%1]"
+        : "=r" (val)
+        : "r" (ptr)
+        : "memory"
+    );
+#else // MSVC ARM64
+    val = *(volatile uint32_t*)ptr;
+#endif
+    return val;
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    // x86/x64 implementation
+#if defined(__GNUC__) || defined(__clang__)
+    uint32_t val;
+    __asm__ volatile(
+        "movl (%1), %0"
+        : "=r" (val)
+        : "r" (ptr)
+        : "memory"
+    );
+    return val;
+#else // MSVC
+    _ReadWriteBarrier();
+    uint32_t val = *ptr;
+    _ReadWriteBarrier();
+    return val;
+#endif
+#else
+    // Fallback
+    return *(volatile uint32_t*)ptr;
+#endif
 }
 
 }} // namespace testsmem4u::simd
