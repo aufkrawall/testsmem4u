@@ -48,6 +48,8 @@ static void clearInput() {
     while (_kbhit()) _getch();
 }
 #else
+#include <cstring>
+
 static void enableVirtualTerminal() {}
 
 static bool isInputAvailable() {
@@ -68,6 +70,127 @@ static void clearInput() {
     char c;
     while (read(STDIN_FILENO, &c, 1) > 0);
     fcntl(STDIN_FILENO, F_SETFL, flags);
+}
+
+// Check if running inside a terminal
+static bool isRunningInTerminal() {
+    return isatty(STDOUT_FILENO) != 0;
+}
+
+// Check if in a graphical session
+static bool isGraphicalSession() {
+    const char* display = getenv("DISPLAY");
+    const char* wayland = getenv("WAYLAND_DISPLAY");
+    return (display != nullptr && strlen(display) > 0) ||
+           (wayland != nullptr && strlen(wayland) > 0);
+}
+
+// Get desktop environment
+static std::string getDesktopEnvironment() {
+    const char* de = getenv("XDG_CURRENT_DESKTOP");
+    if (de) return std::string(de);
+    return "";
+}
+
+// Check if command exists in PATH
+static bool commandExists(const char* cmd) {
+    char* path = getenv("PATH");
+    if (!path) return false;
+
+    std::string pathStr(path);
+    size_t start = 0;
+    size_t end = pathStr.find(':');
+
+    while (end != std::string::npos) {
+        std::string dir = pathStr.substr(start, end - start);
+        std::string fullPath = dir + "/" + cmd;
+        if (access(fullPath.c_str(), X_OK) == 0) {
+            return true;
+        }
+        start = end + 1;
+        end = pathStr.find(':', start);
+    }
+
+    // Check last segment
+    std::string dir = pathStr.substr(start);
+    std::string fullPath = dir + "/" + cmd;
+    return access(fullPath.c_str(), X_OK) == 0;
+}
+
+// Terminal emulator entry with execution argument
+struct TerminalEntry {
+    const char* cmd;
+    const char* exec_arg;  // Argument to pass command to execute, nullptr if not needed
+    const char* desktop;   // Preferred desktop, or nullptr for universal
+};
+
+// Find best terminal emulator
+static TerminalEntry findTerminalEmulator() {
+    std::string desktop = getDesktopEnvironment();
+
+    TerminalEntry terminals[] = {
+        {"xdg-terminal-exec", nullptr, nullptr},  // Freedesktop standard
+        {"konsole", "-e", "KDE"},
+        {"gnome-terminal", "--", "GNOME"},
+        {"xfce4-terminal", "-e", "XFCE"},
+        {"mate-terminal", "-e", "MATE"},
+        {"lxterminal", "-e", nullptr},
+        {"terminator", "-e", nullptr},
+        {"alacritty", "-e", nullptr},
+        {"kitty", nullptr, nullptr},  // kitty doesn't need exec arg before command
+        {"xterm", "-e", nullptr},
+        {nullptr, nullptr, nullptr}
+    };
+
+    // First pass: desktop-specific terminals
+    if (!desktop.empty()) {
+        for (const auto& term : terminals) {
+            if (term.cmd == nullptr) break;
+            if (term.desktop != nullptr && desktop.find(term.desktop) != std::string::npos) {
+                if (commandExists(term.cmd)) {
+                    return term;
+                }
+            }
+        }
+    }
+
+    // Second pass: any available terminal
+    for (const auto& term : terminals) {
+        if (term.cmd == nullptr) break;
+        if (commandExists(term.cmd)) {
+            return term;
+        }
+    }
+
+    return {nullptr, nullptr, nullptr};
+}
+
+// Relaunch in terminal emulator
+static void relaunchInTerminal(int argc, char* argv[]) {
+    TerminalEntry terminal = findTerminalEmulator();
+    if (terminal.cmd == nullptr) {
+        // No terminal found, continue anyway
+        return;
+    }
+
+    // Build command arguments
+    std::vector<char*> new_argv;
+    new_argv.push_back(const_cast<char*>(terminal.cmd));
+
+    // Add terminal-specific execution argument if needed
+    if (terminal.exec_arg != nullptr) {
+        new_argv.push_back(const_cast<char*>(terminal.exec_arg));
+    }
+
+    // Add the current executable and its arguments
+    new_argv.push_back(argv[0]);
+    for (int i = 1; i < argc; ++i) {
+        new_argv.push_back(argv[i]);
+    }
+    new_argv.push_back(nullptr);
+
+    execvp(terminal.cmd, new_argv.data());
+    // If execvp fails, just continue with current process
 }
 #endif
 
@@ -322,6 +445,14 @@ void onShutdown() {
 }
 
 int main(int argc, char* argv[]) {
+#ifndef _WIN32
+    // Auto-terminal launch check for Linux - must be first
+    if (!isRunningInTerminal() && isGraphicalSession()) {
+        relaunchInTerminal(argc, argv);
+        // If relaunch failed, continue anyway
+    }
+#endif
+
     enableVirtualTerminal();
     Platform::registerShutdownHandler(onShutdown);
 
@@ -488,6 +619,12 @@ int main(int argc, char* argv[]) {
 #ifdef _WIN32
     std::cout << "\nPress any key to exit..." << std::endl;
     _getch();
+#else
+    // On Linux, if we auto-launched in a terminal, wait for keypress so user can see results
+    if (isGraphicalSession()) {
+        std::cout << "\nPress Enter to exit..." << std::endl;
+        getchar();
+    }
 #endif
 
     return res.total_errors() == 0 ? 0 : 1;
