@@ -1218,7 +1218,7 @@ RunResult TestEngine::runTests(const Config& config) {
     uint64_t needed_bytes = (uint64_t)config.memory_window_mb * 1024 * 1024;
 
     LOG_INFO("Allocating %u MB...", config.memory_window_mb);
-    bool try_large = true;
+    bool try_large = config.use_large_pages;
     bool try_lock = config.use_locked_memory;
 
     auto guard = Platform::allocateMemoryRAII(needed_bytes, try_large, try_lock);

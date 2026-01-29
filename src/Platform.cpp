@@ -5,6 +5,7 @@
 #include <cstring>
 #include <algorithm>
 #include <memory>
+#include <cstdio>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -141,7 +142,26 @@ PlatformInfo Platform::detectPlatform() {
     strcpy(info.arch, "Unknown");
 #endif
 
-    info.large_pages_available = false;
+    // Check for hugepage support on Linux
+    // Try to read /proc/sys/vm/nr_hugepages to see if hugepages are configured
+    FILE* fp = fopen("/proc/sys/vm/nr_hugepages", "r");
+    if (fp) {
+        int nr_hugepages = 0;
+        if (fscanf(fp, "%d", &nr_hugepages) == 1 && nr_hugepages > 0) {
+            info.large_pages_available = true;
+        }
+        fclose(fp);
+    }
+    // Also check if we can allocate hugepages via MAP_HUGETLB
+    // by attempting a small test allocation
+    if (!info.large_pages_available) {
+        void* test = mmap(NULL, 2 * 1024 * 1024, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+        if (test != MAP_FAILED) {
+            info.large_pages_available = true;
+            munmap(test, 2 * 1024 * 1024);
+        }
+    }
 #endif
 
     return info;
@@ -424,6 +444,92 @@ bool Platform::tryAllocateMlock(MemoryRegion& region, size_t size) {
     return true;
 }
 
+static bool reserveHugepages(size_t size_needed) {
+    const size_t hugepage_size = 2ULL * 1024 * 1024;
+    int pages_needed = static_cast<int>((size_needed + hugepage_size - 1) / hugepage_size);
+    
+    // Read current hugepage count
+    FILE* fp = fopen("/proc/sys/vm/nr_hugepages", "r");
+    if (!fp) return false;
+    
+    int current_pages = 0;
+    fscanf(fp, "%d", &current_pages);
+    fclose(fp);
+    
+    // Calculate how many more pages we need
+    int additional_pages = pages_needed - current_pages;
+    if (additional_pages <= 0) {
+        // Already enough hugepages reserved
+        return true;
+    }
+    
+    // Try to reserve more hugepages
+    int new_total = current_pages + additional_pages + 2; // Add a couple extra
+    
+    fp = fopen("/proc/sys/vm/nr_hugepages", "w");
+    if (!fp) return false;
+    
+    bool success = (fprintf(fp, "%d\n", new_total) > 0);
+    fclose(fp);
+    
+    if (success) {
+        LOG_INFO("Reserved %d additional hugepages (total: %d)", additional_pages, new_total);
+        // Give the system a moment to allocate the hugepages
+        usleep(100000); // 100ms
+    }
+    
+    return success;
+}
+
+bool Platform::tryAllocateHugepages(MemoryRegion& region, size_t size) {
+    if (region.base) {
+        munmap(region.base, region.size);
+        region.base = nullptr;
+    }
+
+    // Hugepage size is typically 2MB on x86_64 and ARM64
+    const size_t hugepage_size = 2ULL * 1024 * 1024;
+    
+    // Round up to hugepage boundary
+    size_t aligned_size = (size + hugepage_size - 1) & ~(hugepage_size - 1);
+    
+    // Try to allocate with MAP_HUGETLB
+    void* ptr = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    
+    if (ptr == MAP_FAILED) {
+        // Failed to allocate - try to reserve hugepages automatically (requires root)
+        if (geteuid() == 0) {  // Running as root
+            LOG_INFO("Attempting to reserve hugepages automatically...");
+            if (reserveHugepages(aligned_size)) {
+                // Try allocation again after reserving
+                ptr = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+            }
+        }
+        
+        if (ptr == MAP_FAILED) {
+            return false;
+        }
+    }
+
+    // Lock the hugepages to prevent them from being swapped
+    if (mlock(ptr, aligned_size) == 0) {
+        region.is_locked = true;
+    } else {
+        region.is_locked = false;
+        LOG_WARN("mlock failed for hugepages: %s", strerror(errno));
+    }
+
+    region.base = static_cast<uint8_t*>(ptr);
+    region.size = aligned_size;
+    region.is_large_pages = true;
+    region.locked_bytes = aligned_size;
+    
+    LOG_INFO("Allocated %zu MB using hugepages (2MB pages)", aligned_size / 1024 / 1024);
+    return true;
+}
+
 #endif
 
 bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_pages, bool try_lock, bool allow_swappable) {
@@ -468,20 +574,26 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
     return tryAllocateStandard(region, region.size);
 
 #else
-    (void)try_large_pages;
+    // Linux implementation with hugepages support
+    if (try_large_pages) {
+        if (tryAllocateHugepages(region, region.size)) {
+            return true;
+        }
+        LOG_WARN("Hugepage allocation failed, falling back to standard pages");
+    }
     
     // Linux implementation check for strict locking
     if (try_lock) {
          if (tryAllocateMlock(region, region.size)) {
-             if (region.is_locked) return true;
-             
-             if (!allow_swappable) {
-                 LOG_ERROR("mlock failed (Limit: %zu bytes). Aborting to avoid swapping.", region.size);
-                 freeMemory(region);
-                 return false;
-             }
-         }
-         return region.base != nullptr;
+              if (region.is_locked) return true;
+              
+              if (!allow_swappable) {
+                  LOG_ERROR("mlock failed (Limit: %zu bytes). Aborting to avoid swapping.", region.size);
+                  freeMemory(region);
+                  return false;
+              }
+          }
+          return region.base != nullptr;
     }
 
     return tryAllocateMlock(region, region.size);

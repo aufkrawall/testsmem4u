@@ -23,6 +23,7 @@ bool saveConfig(const std::string& filename, const Config& config) {
     file << "Cores=" << config.cores << "\n";
     file << "Cycles=" << config.cycles << "\n";
     file << "UseLockedMemory=" << (config.use_locked_memory ? "1" : "0") << "\n";
+    file << "UseLargePages=" << (config.use_large_pages ? "1" : "0") << "\n";
     file << "HaltOnError=" << (config.halt_on_error ? "1" : "0") << "\n";
     file << "PresetFile=" << config.preset_file << "\n";
 
@@ -59,6 +60,8 @@ bool loadConfig(const std::string& filename, Config& config) {
             config.cycles = std::strtoul(value.c_str(), &endptr, 10);
         } else if (key == "UseLockedMemory") {
             config.use_locked_memory = (value == "1" || value == "true");
+        } else if (key == "UseLargePages") {
+            config.use_large_pages = (value == "1" || value == "true");
         } else if (key == "HaltOnError") {
             config.halt_on_error = (value == "1" || value == "true");
         } else if (key == "PresetFile") {

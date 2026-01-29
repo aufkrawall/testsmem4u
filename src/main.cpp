@@ -398,6 +398,14 @@ Config runConfigWizard() {
     input = trimString(input);
     config.use_locked_memory = (input != "n" && input != "N");
 
+#ifndef _WIN32
+    // Linux hugepages option
+    std::cout << "Use large pages (hugepages)? Improves RowHammer test effectiveness. (y/n) [Default: y]: ";
+    std::getline(std::cin, input);
+    input = trimString(input);
+    config.use_large_pages = (input != "n" && input != "N");
+#endif
+
     std::cout << "Halt on detected errors? (y/n) [Default: y]: ";
     std::getline(std::cin, input);
     input = trimString(input);
@@ -530,6 +538,7 @@ int main(int argc, char* argv[]) {
             config.cores = plat.cpu_cores;
             config.cycles = 3;
             config.use_locked_memory = true;
+            config.use_large_pages = true;
             config.halt_on_error = true;
             config.preset_file = "default.cfg";
         }
@@ -573,6 +582,7 @@ int main(int argc, char* argv[]) {
             uint64_t max_mem = Platform::getMaxTestableMemory(total_ram, 85);
             config.memory_window_mb = static_cast<uint32_t>(max_mem / 1024 / 1024);
             config.use_locked_memory = true;
+            config.use_large_pages = true;
             config.halt_on_error = false;
             config.cycles = 0;
         }

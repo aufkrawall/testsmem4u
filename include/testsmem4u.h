@@ -58,6 +58,7 @@ struct Config {
     uint32_t cores = 0;
     bool halt_on_error = false;
     bool use_locked_memory = true;
+    bool use_large_pages = true;  // Linux hugepages / Windows large pages
     bool debug_mode = false;
     std::string preset_file;
     PresetInfo preset;

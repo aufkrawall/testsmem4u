@@ -59,6 +59,7 @@ private:
     static bool tryAllocateStandard(MemoryRegion& region, size_t size);
 #else
     static bool tryAllocateMlock(MemoryRegion& region, size_t size);
+    static bool tryAllocateHugepages(MemoryRegion& region, size_t size);
 #endif
 };
 
