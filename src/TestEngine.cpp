@@ -295,7 +295,8 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
 
         // So inverted value = ~(param0 ^ (idx * param1))
         // We need to verify each location individually since verify_pattern_xor can't express this
-        // FIXED: Removed incorrect 'found < 128' check that limited verification after many phase 1 errors
+        // FIXED: Clear errors before Phase 2 to prevent mixing with Phase 1 indices
+        errors.clear();
         size_t found_inv = 0;
         for (size_t i = 0; i < count; ++i) {
             uint64_t expect = ~(config.pattern_param0 ^ (i * config.pattern_param1));

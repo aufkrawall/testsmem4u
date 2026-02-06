@@ -277,7 +277,7 @@ public:
                 }
             }
         }
-        queue_cv_.notify_one();
+        writer_cv_.notify_one();
     }
 
     void logv(LogLevel level, const char* format, va_list args) {
@@ -342,8 +342,8 @@ public:
                          // Always flush on ERROR to ensure vital data hits disk immediately
                          if (msg.first == LogLevel::ERROR) force_flush = true;
                      }
-                     // Regularly flush to ensure no data loss on crash
-                     if (force_flush || local_batch.size() > 100) fflush(file_handle_);
+                     // Always flush after each batch to ensure no data loss on crash/interrupt
+                     fflush(file_handle_);
                  }
                  local_batch.clear();
              }
