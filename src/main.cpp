@@ -240,20 +240,6 @@ static bool parseUintOrDefault(const std::string& str, uint32_t& result, uint32_
     return false;
 }
 
-[[maybe_unused]] static bool parseIntOrDefault(const std::string& str, int32_t& result, int32_t default_val) {
-    if (str.empty()) {
-        result = default_val;
-        return true;
-    }
-    char* endptr = nullptr;
-    long val = std::strtol(str.c_str(), &endptr, 10);
-    if (endptr && *endptr == '\0') {
-        result = static_cast<int32_t>(val);
-        return true;
-    }
-    return false;
-}
-
 static std::string trimString(const std::string& str) {
     size_t start = str.find_first_not_of(" \t\r\n");
     if (start == std::string::npos) return "";

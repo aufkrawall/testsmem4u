@@ -60,6 +60,12 @@ TARGETS = {
     "windows-x86_64": {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64.exe",
+        "extra_flags": ["-ladvapi32"],
+        "obj_ext": ".obj"
+    },
+    "windows-x86_64-v3": {
+        "zig_target": "x86_64-windows-gnu",
+        "output": "testsmem4u-windows-x86_64-v3.exe",
         "extra_flags": HOST_ONLY_FLAGS + ["-ladvapi32"],
         "obj_ext": ".obj"
     },
@@ -72,13 +78,19 @@ TARGETS = {
     "linux-x86": {
         "zig_target": "x86-linux-musl",
         "output": "testsmem4u-linux-x86",
-        "extra_flags": ["-pthread"],
+        "extra_flags": ["-pthread", "-msse2"],
         "obj_ext": ".o"
     },
     "linux-x86_64": {
         "zig_target": "x86_64-linux-musl",
         "output": "testsmem4u-linux-x86_64",
         "extra_flags": ["-pthread"],
+        "obj_ext": ".o"
+    },
+    "linux-x86_64-v3": {
+        "zig_target": "x86_64-linux-musl",
+        "output": "testsmem4u-linux-x86_64-v3",
+        "extra_flags": ["-pthread"] + HOST_ONLY_FLAGS,
         "obj_ext": ".o"
     },
     "linux-arm64": {

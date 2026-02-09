@@ -67,32 +67,6 @@ public:
         error_rate_limit_ = errors_per_second;
     }
 
-    bool checkRateLimit() {
-        std::lock_guard<std::mutex> lock(rate_limit_mutex_);
-        
-        auto now = std::chrono::high_resolution_clock::now();
-        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_error_time_).count();
-
-        if (elapsed_ms > 0) {
-            uint32_t tokens_to_add = static_cast<uint32_t>(elapsed_ms / 10);
-            if (tokens_to_add > 0) {
-                if (error_count_ > tokens_to_add) {
-                    error_count_ -= tokens_to_add;
-                } else {
-                    error_count_ = 0;
-                }
-                last_error_time_ = now;
-            }
-        }
-
-        if (error_count_ >= error_rate_limit_) {
-            return false; 
-        }
-
-        error_count_++;
-        return true;
-    }
-
     void deinit() {
         std::lock_guard<std::mutex> lock(init_mutex_);
         if (!running_) return;

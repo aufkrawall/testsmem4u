@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <memory>
 #include <cstdio>
+#include <atomic>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -51,7 +52,7 @@ namespace fs = std::filesystem;
 namespace testsmem4u {
 
 static void (*g_shutdown_callback)() = nullptr;
-static bool g_shutdown_initiated = false;
+static std::atomic<bool> g_shutdown_initiated{false};
 #ifdef _WIN32
 static HANDLE g_shutdown_event = nullptr;
 #endif
@@ -109,37 +110,37 @@ PlatformInfo Platform::detectPlatform() {
     info.large_pages_available = false;
 
 #ifdef _WIN32
-    strcpy(info.os_name, "Windows");
+    snprintf(info.os_name, sizeof(info.os_name), "Windows");
     SYSTEM_INFO sys_info;
     GetSystemInfo(&sys_info);
     info.cpu_cores = sys_info.dwNumberOfProcessors;
     info.page_size = sys_info.dwPageSize;
 
 #ifdef _M_X64
-    strcpy(info.arch, "x86_64");
+    snprintf(info.arch, sizeof(info.arch), "x86_64");
 #elif defined(_M_IX86) || (defined(__i386__) && !defined(__x86_64__))
-    strcpy(info.arch, "x86");
+    snprintf(info.arch, sizeof(info.arch), "x86");
 #elif _M_ARM64
-    strcpy(info.arch, "ARM64");
+    snprintf(info.arch, sizeof(info.arch), "ARM64");
 #else
-    strcpy(info.arch, "Unknown");
+    snprintf(info.arch, sizeof(info.arch), "Unknown");
 #endif
 
     info.large_pages_available = (GetLargePageMinimum() > 0);
 
 #else
-    strcpy(info.os_name, "Linux");
+    snprintf(info.os_name, sizeof(info.os_name), "Linux");
     info.cpu_cores = std::thread::hardware_concurrency();
     info.page_size = sysconf(_SC_PAGESIZE);
 
 #if defined(__x86_64__) && !defined(__i386__)
-    strcpy(info.arch, "x86_64");
+    snprintf(info.arch, sizeof(info.arch), "x86_64");
 #elif (defined(__x86_64__) && !defined(__i386__)) || defined(__i386__)
-    strcpy(info.arch, "x86");
+    snprintf(info.arch, sizeof(info.arch), "x86");
 #elif __aarch64__
-    strcpy(info.arch, "ARM64");
+    snprintf(info.arch, sizeof(info.arch), "ARM64");
 #else
-    strcpy(info.arch, "Unknown");
+    snprintf(info.arch, sizeof(info.arch), "Unknown");
 #endif
 
     // Check for hugepage support on Linux

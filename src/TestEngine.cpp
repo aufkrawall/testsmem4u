@@ -14,6 +14,10 @@
 #include <windows.h>
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#include <immintrin.h>
+#endif
+
 namespace testsmem4u {
 
 // Static pointer to current TestContext for shutdown handler
@@ -140,7 +144,6 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
     // Initialize random number generator with high-quality seed
     std::random_device rd;
     std::mt19937_64 rng(rd());
-    std::uniform_int_distribution<size_t> dist(0, count - 1);
 
     // RowHammer test parameters (Aggressive)
     // Scale hammer points based on region size
@@ -188,10 +191,11 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
     // Perform hammering on random address triplets (double-sided hammering)
     // FIXED: Proper RowHammer requires TOGGLING aggressor rows (0->1->0->1...)
     // Just reading repeatedly doesn't induce bit flips effectively
+    std::uniform_int_distribution<size_t> hammer_dist(0, count - 2 * stride_elements - 1);
     for (size_t i = 0; i < hammer_points && !ctx.shouldStop(); ++i) {
         // Double-sided hammering: hammer rows above and below a target row
         // We pick idxA as the "bottom" row
-        size_t idxA = dist(rng) % (count - 2 * stride_elements);
+        size_t idxA = hammer_dist(rng);
         size_t idxB = idxA + stride_elements;     // Target row (not hammered)
         size_t idxC = idxA + 2 * stride_elements; // "Top" row
         
@@ -343,11 +347,55 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
 
     for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
-        // Use SIMD-optimized pattern generation for better performance
-        // Write alternating pattern_param0, pattern_param1
-        for (size_t i = 0; i + 1 < count; i += 2) {
-            ptr[i] = config.pattern_param0;
-            ptr[i+1] = config.pattern_param1;
+        // Write alternating pattern {param0, param1} using NT stores for true DRAM testing
+        {
+            size_t i = 0;
+#if defined(__AVX512F__)
+            if (simd::getCapabilities().has_avx512) {
+                __m512i v = _mm512_set_epi64(
+                    config.pattern_param1, config.pattern_param0,
+                    config.pattern_param1, config.pattern_param0,
+                    config.pattern_param1, config.pattern_param0,
+                    config.pattern_param1, config.pattern_param0
+                );
+                for (; i + 8 <= count; i += 8) {
+                    _mm512_stream_si512((void*)(ptr + i), v);
+                }
+            }
+#endif
+#if defined(__AVX2__)
+            if (simd::getCapabilities().has_avx2) {
+                __m256i v = _mm256_set_epi64x(
+                    config.pattern_param1, config.pattern_param0,
+                    config.pattern_param1, config.pattern_param0
+                );
+                for (; i + 4 <= count; i += 4) {
+                    _mm256_stream_si256((__m256i*)(ptr + i), v);
+                }
+            }
+#endif
+#if defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
+            {
+                __m128i v = _mm_set_epi64x(config.pattern_param1, config.pattern_param0);
+                for (; i + 2 <= count; i += 2) {
+                    _mm_stream_si128((__m128i*)(ptr + i), v);
+                }
+            }
+#elif defined(__aarch64__) || defined(_M_ARM64)
+            for (; i + 1 < count; i += 2) {
+                ptr[i] = config.pattern_param0;
+                ptr[i+1] = config.pattern_param1;
+            }
+#else
+            for (; i + 1 < count; i += 2) {
+                ptr[i] = config.pattern_param0;
+                ptr[i+1] = config.pattern_param1;
+            }
+#endif
+            // Handle odd tail
+            if (count % 2 == 1) {
+                ptr[count - 1] = config.pattern_param0;
+            }
         }
         sfence();
         
@@ -547,10 +595,14 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
     uint64_t initial_seed = config.pattern_param0 ? config.pattern_param0 : 0xACE1ACE2DEADBEEFULL;
     uint64_t seed = initial_seed;
 
-    // Generate pattern using 64-bit LFSR
+    // Generate pattern using 64-bit LFSR with NT stores to bypass cache
     for (size_t i = 0; i < count; ++i) {
         if (ctx.shouldStop()) break;
+#if defined(__x86_64__) || defined(_M_X64)
+        _mm_stream_si64((long long*)&ptr[i], (long long)seed);
+#else
         ptr[i] = seed;
+#endif
         seed = lfsr_next(seed);
     }
     sfence();
@@ -836,11 +888,15 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
     bool early_stop = false;
     
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop() && !early_stop; ++r) {
-        // Phase 1: Fill with LFSR pattern
+        // Phase 1: Fill with LFSR pattern using NT stores to bypass cache
         uint64_t seed = initial_seed;
         for (size_t i = 0; i < count; ++i) {
             if (ctx.shouldStop()) break;
+#if defined(__x86_64__) || defined(_M_X64)
+            _mm_stream_si32((int*)&ptr[i], static_cast<int32_t>(seed));
+#else
             ptr[i] = static_cast<uint32_t>(seed);
+#endif
             seed = lfsr_next(seed);
         }
         sfence();
@@ -977,9 +1033,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
             uint64_t actual = ptr[i + j];
             if (actual != expected) {
                 // Initial pattern verification failed - memory unstable
-                simd::flush_cache_line((void*)&ptr[i + j]);
-                simd::memory_fence();
-                uint64_t reread = ptr[i + j];
+                uint64_t reread = simd::safe_read_u64(&ptr[i + j]);
                 if (reread != expected) {
                     res.hard_errors++;
                     LOG_ERROR_DETAIL("RandomAccess (Init - Hard)", (i + j) * 8, expected, reread);
@@ -1062,7 +1116,9 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
             simd::sfence();
             
             // Step 3: Verify inverted pattern was written correctly
-            // This tests write-to-read coherence
+            // Flush cache to ensure we verify DRAM write integrity, not just cache
+            simd::flush_cache_line((void*)&ptr[idx]);
+            simd::memory_fence();
             actual = ptr[idx];
             if (actual != inverted) {
                 simd::flush_cache_line((void*)&ptr[idx]);

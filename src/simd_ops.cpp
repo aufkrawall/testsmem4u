@@ -298,27 +298,6 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
     (void)caps;
     size_t i = 0;
 
-#if defined(__AVX2__)
-    if (use_nt && caps.has_nt_stores) {
-        __m256i v_val = _mm256_set_epi64x(
-            param0 + 3 * param1,
-            param0 + 2 * param1,
-            param0 + 1 * param1,
-            param0 + 0 * param1
-        );
-        __m256i v_idx_step = _mm256_set1_epi64x(4 * param1);
-
-        for (; i + 4 <= count; i += 4) {
-            if (use_nt && caps.has_nt_stores) {
-                _mm256_stream_si256((__m256i*)(dst + i), v_val);
-            } else {
-                _mm256_storeu_si256((__m256i*)(dst + i), v_val);
-            }
-            v_val = _mm256_add_epi64(v_val, v_idx_step);
-        }
-    }
-#endif
-
 #if defined(__AVX512F__)
     if (use_nt && caps.has_nt_stores && caps.has_avx512) {
         __m512i v_val = _mm512_set_epi64(
@@ -330,6 +309,24 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
         for (; i + 8 <= count; i += 8) {
             _mm512_stream_si512((void*)(dst + i), v_val);
             v_val = _mm512_add_epi64(v_val, v_idx_step);
+        }
+    }
+#endif
+
+#if defined(__AVX2__)
+    if (use_nt && caps.has_nt_stores && i + 4 <= count) {
+        // Initialize from current i (may be non-zero after AVX512 processed bulk)
+        __m256i v_val = _mm256_set_epi64x(
+            param0 + (i + 3) * param1,
+            param0 + (i + 2) * param1,
+            param0 + (i + 1) * param1,
+            param0 + (i + 0) * param1
+        );
+        __m256i v_idx_step = _mm256_set1_epi64x(4 * param1);
+
+        for (; i + 4 <= count; i += 4) {
+            _mm256_stream_si256((__m256i*)(dst + i), v_val);
+            v_val = _mm256_add_epi64(v_val, v_idx_step);
         }
     }
 #endif
@@ -440,22 +437,39 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
     (void)caps;
     size_t i = 0;
 
+#if defined(__AVX512F__)
+    if (caps.has_avx512) {
+        __m512i v = _mm512_set1_epi64(val);
+        for (; i + 8 <= count; i += 8) {
+            if (use_nt && caps.has_nt_stores) {
+                _mm512_stream_si512((void*)(dst + i), v);
+            } else {
+                _mm512_storeu_si512((void*)(dst + i), v);
+            }
+        }
+    }
+#endif
+
 #if defined(__AVX2__)
-    __m256i v = _mm256_set1_epi64x(val);
-    for (; i + 4 <= count; i += 4) {
-        if (use_nt && caps.has_nt_stores) {
-            _mm256_stream_si256((__m256i*)(dst + i), v);
-        } else {
-            _mm256_storeu_si256((__m256i*)(dst + i), v);
+    {
+        __m256i v = _mm256_set1_epi64x(val);
+        for (; i + 4 <= count; i += 4) {
+            if (use_nt && caps.has_nt_stores) {
+                _mm256_stream_si256((__m256i*)(dst + i), v);
+            } else {
+                _mm256_storeu_si256((__m256i*)(dst + i), v);
+            }
         }
     }
 #elif defined(__SSE2__)
-    __m128i v = _mm_set1_epi64x(val);
-    for (; i + 2 <= count; i += 2) {
-        if (use_nt && caps.has_nt_stores) {
-            _mm_stream_si128((__m128i*)(dst + i), v);
-        } else {
-            _mm_storeu_si128((__m128i*)(dst + i), v);
+    {
+        __m128i v = _mm_set1_epi64x(val);
+        for (; i + 2 <= count; i += 2) {
+            if (use_nt && caps.has_nt_stores) {
+                _mm_stream_si128((__m128i*)(dst + i), v);
+            } else {
+                _mm_storeu_si128((__m128i*)(dst + i), v);
+            }
         }
     }
 #endif
@@ -740,18 +754,37 @@ void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
     SimdCapabilities caps = getCapabilities();
     (void)caps;
     size_t i = 0;
-#if defined(__AVX2__)
-    __m256i ones = _mm256_set1_epi64x(~0ULL);
-    for (; i + 4 <= count; i += 4) {
-        __m256i v = _mm256_loadu_si256((const __m256i*)(dst + i));
-        v = _mm256_xor_si256(v, ones);
-        if (use_nt && caps.has_nt_stores) {
-            _mm256_stream_si256((__m256i*)(dst + i), v);
-        } else {
-            _mm256_storeu_si256((__m256i*)(dst + i), v);
+
+#if defined(__AVX512F__)
+    if (caps.has_avx512) {
+        __m512i ones = _mm512_set1_epi64(~0ULL);
+        for (; i + 8 <= count; i += 8) {
+            __m512i v = _mm512_loadu_si512((const void*)(dst + i));
+            v = _mm512_xor_si512(v, ones);
+            if (use_nt && caps.has_nt_stores) {
+                _mm512_stream_si512((void*)(dst + i), v);
+            } else {
+                _mm512_storeu_si512((void*)(dst + i), v);
+            }
         }
     }
 #endif
+
+#if defined(__AVX2__)
+    {
+        __m256i ones = _mm256_set1_epi64x(~0ULL);
+        for (; i + 4 <= count; i += 4) {
+            __m256i v = _mm256_loadu_si256((const __m256i*)(dst + i));
+            v = _mm256_xor_si256(v, ones);
+            if (use_nt && caps.has_nt_stores) {
+                _mm256_stream_si256((__m256i*)(dst + i), v);
+            } else {
+                _mm256_storeu_si256((__m256i*)(dst + i), v);
+            }
+        }
+    }
+#endif
+
     for (; i < count; ++i) dst[i] = ~dst[i];
 }
 
