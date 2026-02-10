@@ -5,6 +5,7 @@
 #include <cstring>
 #include <algorithm>
 #include <memory>
+#include <vector>
 #include <cstdio>
 #include <atomic>
 
@@ -45,6 +46,7 @@ static void InitLsaString(PLSA_UNICODE_STRING LsaString, LPWSTR String) {
 #include <errno.h>
 #include <csignal>
 #include <filesystem>
+#include <fcntl.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -55,6 +57,9 @@ static void (*g_shutdown_callback)() = nullptr;
 static std::atomic<bool> g_shutdown_initiated{false};
 #ifdef _WIN32
 static HANDLE g_shutdown_event = nullptr;
+#else
+// Original hugepage count to restore on exit (-1 = not modified)
+static int g_original_hugepages = -1;
 #endif
 
 #ifdef _WIN32
@@ -88,18 +93,58 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
 }
 #pragma clang diagnostic pop
 #else
+// Restore hugepage count using only async-signal-safe functions.
+// Called from signal handler before _exit().
+static void restoreHugepagesSignalSafe() {
+    if (g_original_hugepages < 0) return;
+
+    // Convert integer to string (no snprintf — not async-signal-safe)
+    char buf[16];
+    int val = g_original_hugepages;
+    int pos = 0;
+    if (val == 0) {
+        buf[pos++] = '0';
+    } else {
+        char tmp[16];
+        int tpos = 0;
+        while (val > 0) { tmp[tpos++] = '0' + (val % 10); val /= 10; }
+        while (tpos > 0) buf[pos++] = tmp[--tpos];
+    }
+    buf[pos++] = '\n';
+
+    // open/write/close are all async-signal-safe
+    int fd = open("/proc/sys/vm/nr_hugepages", O_WRONLY);
+    if (fd >= 0) {
+        (void)write(fd, buf, pos);
+        close(fd);
+    }
+}
+
+// Normal-exit hugepage restoration (uses standard I/O, not signal-safe)
+static void restoreHugepages() {
+    if (g_original_hugepages < 0) return;
+
+    FILE* fp = fopen("/proc/sys/vm/nr_hugepages", "w");
+    if (fp) {
+        fprintf(fp, "%d\n", g_original_hugepages);
+        fclose(fp);
+        LOG_INFO("Restored hugepages to original count: %d", g_original_hugepages);
+    }
+    g_original_hugepages = -1;
+}
+
 static void SignalHandlerWrapper(int signum) {
     // Mark as shutting down (atomic write is async-signal-safe)
     g_shutdown_initiated = true;
-    
+
     // Callback sets an atomic flag only, which IS async-signal-safe
-    // Note: We assume g_shutdown_callback only manipulates atomics
     if (g_shutdown_callback) {
         g_shutdown_callback();
     }
-    
-    // NOTE: Logger::emergencyFlush() removed - NOT async-signal-safe
-    // FILE* operations can deadlock in signal handlers
+
+    // Restore hugepage reservation before exiting
+    restoreHugepagesSignalSafe();
+
     // Use _exit() which IS async-signal-safe (exit() is NOT)
     _exit(128 + signum);
 }
@@ -395,6 +440,87 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
     return false;
 }
 
+// Purge the Windows standby list using NtSetSystemInformation.
+// The standby list holds cached pages that fragment 2MB regions.
+// This is the same mechanism used by Sysinternals RAMMap.
+// Requires SE_PROF_SINGLE_PROCESS_NAME privilege.
+static void purgeStandbyList() {
+    // NtSetSystemInformation is not in public headers, load dynamically
+    typedef LONG (NTAPI *NtSetSystemInformation_t)(INT, PVOID, ULONG);
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    if (!ntdll) return;
+
+    auto NtSetSystemInfo = (NtSetSystemInformation_t)GetProcAddress(ntdll, "NtSetSystemInformation");
+    if (!NtSetSystemInfo) return;
+
+    // Enable required privilege
+    Platform::enablePrivilege(SE_PROF_SINGLE_PROCESS_NAME);
+
+    // SystemMemoryListInformation = 80, MemoryPurgeStandbyList = 4
+    const INT SystemMemoryListInformation = 80;
+    INT command = 4; // MemoryPurgeStandbyList
+    LONG status = NtSetSystemInfo(SystemMemoryListInformation, &command, sizeof(command));
+
+    if (status == 0) {
+        LOG_INFO("Purged standby list to free physical memory for large pages");
+    } else {
+        LOG_DEBUG("Standby list purge returned status 0x%08lX (may require higher privileges)", status);
+    }
+}
+
+// Defragment physical memory by trimming working sets and purging caches.
+// This forces the OS to page out scattered 4KB allocations, freeing up
+// contiguous 2MB-aligned regions needed for large pages.
+static void defragPhysicalMemory() {
+    DWORD pids[4096];
+    DWORD bytes_returned = 0;
+
+    if (!EnumProcesses(pids, sizeof(pids), &bytes_returned)) {
+        LOG_WARN("EnumProcesses failed (error %lu), skipping working set trim", GetLastError());
+    } else {
+        DWORD num_pids = bytes_returned / sizeof(DWORD);
+        DWORD my_pid = GetCurrentProcessId();
+        uint32_t trimmed = 0;
+
+        for (DWORD i = 0; i < num_pids; ++i) {
+            if (pids[i] == 0 || pids[i] == my_pid) continue;
+
+            HANDLE hProc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION, FALSE, pids[i]);
+            if (hProc) {
+                if (EmptyWorkingSet(hProc)) {
+                    trimmed++;
+                }
+                CloseHandle(hProc);
+            }
+        }
+        EmptyWorkingSet(GetCurrentProcess());
+        LOG_INFO("Trimmed working sets of %u processes", trimmed);
+    }
+
+    // Shrink system file cache (requires SE_INCREASE_QUOTA_NAME)
+    if (Platform::enablePrivilege(SE_INCREASE_QUOTA_NAME)) {
+        // Setting min=0 max=0 with hard disable flags shrinks the cache
+        if (SetSystemFileCacheSize(0, 0, FILE_CACHE_MIN_HARD_DISABLE | FILE_CACHE_MAX_HARD_DISABLE)) {
+            LOG_INFO("Shrunk system file cache");
+            // Re-enable normal cache behavior immediately after allocation attempt
+            // (done in allocateMemory after large page success/failure)
+        }
+    }
+
+    // Purge the standby list — this is the most impactful step
+    purgeStandbyList();
+
+    // Give the OS a moment to consolidate freed pages
+    Sleep(500);
+}
+
+// Restore normal file cache behavior after defrag
+static void restoreSystemFileCache() {
+    if (Platform::enablePrivilege(SE_INCREASE_QUOTA_NAME)) {
+        SetSystemFileCacheSize(0, 0, FILE_CACHE_MIN_HARD_ENABLE | FILE_CACHE_MAX_HARD_ENABLE);
+    }
+}
+
 bool Platform::tryAllocateLargePages(MemoryRegion& region, size_t size) {
     if (!enablePrivilege(SE_LOCK_MEMORY_NAME)) {
         return false;
@@ -445,41 +571,96 @@ bool Platform::tryAllocateMlock(MemoryRegion& region, size_t size) {
     return true;
 }
 
+// Defragment Linux physical memory to maximize hugepage availability.
+// Drops filesystem caches and triggers kernel memory compaction.
+static void defragLinuxMemory() {
+    if (geteuid() != 0) return;  // Requires root
+
+    // Drop page cache, dentries, and inodes to free physical memory
+    FILE* fp = fopen("/proc/sys/vm/drop_caches", "w");
+    if (fp) {
+        fprintf(fp, "3\n");
+        fclose(fp);
+        LOG_INFO("Dropped filesystem caches to free physical memory");
+    }
+
+    // Trigger kernel memory compaction to consolidate free pages into
+    // contiguous 2MB regions suitable for hugepages
+    fp = fopen("/proc/sys/vm/compact_memory", "w");
+    if (fp) {
+        fprintf(fp, "1\n");
+        fclose(fp);
+        LOG_INFO("Triggered kernel memory compaction");
+    }
+
+    // Brief pause to let compaction work
+    usleep(500000); // 500ms
+}
+
 static bool reserveHugepages(size_t size_needed) {
     const size_t hugepage_size = 2ULL * 1024 * 1024;
     int pages_needed = static_cast<int>((size_needed + hugepage_size - 1) / hugepage_size);
-    
+
     // Read current hugepage count
     FILE* fp = fopen("/proc/sys/vm/nr_hugepages", "r");
     if (!fp) return false;
-    
+
     int current_pages = 0;
-    fscanf(fp, "%d", &current_pages);
+    if (fscanf(fp, "%d", &current_pages) != 1) current_pages = 0;
     fclose(fp);
-    
+
+    // Save original count so we can restore on exit
+    if (g_original_hugepages < 0) {
+        g_original_hugepages = current_pages;
+    }
+
     // Calculate how many more pages we need
     int additional_pages = pages_needed - current_pages;
     if (additional_pages <= 0) {
         // Already enough hugepages reserved
         return true;
     }
-    
-    // Try to reserve more hugepages
+
+    // Try to reserve hugepages directly first
     int new_total = current_pages + additional_pages + 2; // Add a couple extra
-    
+
     fp = fopen("/proc/sys/vm/nr_hugepages", "w");
     if (!fp) return false;
-    
-    bool success = (fprintf(fp, "%d\n", new_total) > 0);
+
+    fprintf(fp, "%d\n", new_total);
     fclose(fp);
-    
-    if (success) {
-        LOG_INFO("Reserved %d additional hugepages (total: %d)", additional_pages, new_total);
-        // Give the system a moment to allocate the hugepages
-        usleep(100000); // 100ms
+
+    // Check how many we actually got
+    fp = fopen("/proc/sys/vm/nr_hugepages", "r");
+    if (!fp) return false;
+    int actual_pages = 0;
+    if (fscanf(fp, "%d", &actual_pages) != 1) actual_pages = 0;
+    fclose(fp);
+
+    if (actual_pages >= pages_needed) {
+        LOG_INFO("Reserved %d hugepages (requested %d)", actual_pages, pages_needed);
+        return true;
     }
-    
-    return success;
+
+    // Not enough — defrag memory and retry
+    LOG_INFO("Got %d/%d hugepages, defragmenting memory and retrying...", actual_pages, pages_needed);
+    defragLinuxMemory();
+
+    fp = fopen("/proc/sys/vm/nr_hugepages", "w");
+    if (!fp) return false;
+    fprintf(fp, "%d\n", new_total);
+    fclose(fp);
+
+    // Check result
+    fp = fopen("/proc/sys/vm/nr_hugepages", "r");
+    if (fp) {
+        if (fscanf(fp, "%d", &actual_pages) != 1) actual_pages = 0;
+        fclose(fp);
+        LOG_INFO("After defrag: got %d/%d hugepages", actual_pages, pages_needed);
+    }
+
+    usleep(100000); // 100ms
+    return actual_pages >= pages_needed;
 }
 
 bool Platform::tryAllocateHugepages(MemoryRegion& region, size_t size) {
@@ -550,9 +731,45 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
 
 #ifdef _WIN32
     if (try_large_pages) {
+        // Step 1: Try full size allocation directly
         if (tryAllocateLargePages(region, region.size)) {
             return true;
         }
+
+        // Step 2: Full size failed — defrag physical memory and retry
+        LOG_INFO("Large page allocation failed at %zu MB, defragmenting physical memory...",
+                 region.size / (1024*1024));
+        defragPhysicalMemory();
+
+        if (tryAllocateLargePages(region, region.size)) {
+            LOG_INFO("Large page allocation succeeded after memory defragmentation");
+            restoreSystemFileCache();
+            return true;
+        }
+
+        // Step 3: Still failed — try decreasing sizes
+        size_t try_size = region.size;
+        size_t min_lp_size = region.size * 70 / 100;  // Don't go below 70% of requested
+        SIZE_T lp_min = GetLargePageMinimum();
+        if (lp_min > 0) {
+            min_lp_size = (min_lp_size + lp_min - 1) & ~(lp_min - 1);
+        }
+
+        while (try_size >= min_lp_size) {
+            try_size -= try_size / 20;  // Reduce by ~5%
+            if (lp_min > 0) {
+                try_size = (try_size + lp_min - 1) & ~(lp_min - 1);  // Keep aligned
+            }
+            if (tryAllocateLargePages(region, try_size)) {
+                LOG_WARN("Large pages: allocated %zu MB (%.0f%% of requested %zu MB) due to memory fragmentation",
+                         try_size / (1024*1024), 100.0 * try_size / size, size / (1024*1024));
+                restoreSystemFileCache();
+                return true;
+            }
+        }
+        restoreSystemFileCache();
+        LOG_WARN("Large page allocation failed even at reduced size (%zu MB), falling back to VirtualLock",
+                 min_lp_size / (1024*1024));
     }
 
     if (try_lock) {
@@ -632,6 +849,11 @@ void Platform::freeMemory(MemoryRegion& region) {
         munlock(region.base, region.size);
     }
     munmap(region.base, region.size);
+
+    // Restore hugepage reservation to original count
+    if (region.is_large_pages) {
+        restoreHugepages();
+    }
 #endif
 
     region.base = nullptr;
@@ -639,6 +861,58 @@ void Platform::freeMemory(MemoryRegion& region) {
     region.is_locked = false;
     region.is_large_pages = false;
     region.locked_bytes = 0;
+}
+
+bool Platform::checkMemoryResident(const uint8_t* base, size_t size) {
+#ifdef _WIN32
+    // On Windows, VirtualLock'd and Large Pages memory is guaranteed resident
+    // Use VirtualQuery to verify the region is still committed
+    MEMORY_BASIC_INFORMATION mbi;
+    const uint8_t* addr = base;
+    size_t remaining = size;
+    while (remaining > 0) {
+        if (VirtualQuery(addr, &mbi, sizeof(mbi)) == 0) return false;
+        if (mbi.State != MEM_COMMIT) return false;
+        size_t chunk = mbi.RegionSize - (addr - static_cast<const uint8_t*>(mbi.BaseAddress));
+        if (chunk >= remaining) break;
+        remaining -= chunk;
+        addr += chunk;
+    }
+    return true;
+#else
+    // Use mincore() to check if pages are resident in physical RAM
+    size_t page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    size_t num_pages = (size + page_size - 1) / page_size;
+
+    std::vector<unsigned char> vec(num_pages);
+    // mincore requires page-aligned address
+    uintptr_t aligned_base = reinterpret_cast<uintptr_t>(base) & ~(page_size - 1);
+    size_t aligned_size = size + (reinterpret_cast<uintptr_t>(base) - aligned_base);
+    aligned_size = (aligned_size + page_size - 1) & ~(page_size - 1);
+    num_pages = aligned_size / page_size;
+    vec.resize(num_pages);
+
+    if (mincore(reinterpret_cast<void*>(aligned_base), aligned_size, vec.data()) != 0) {
+        // mincore failed — can't verify, assume OK
+        LOG_WARN("mincore() failed: %s", strerror(errno));
+        return true;
+    }
+
+    size_t non_resident = 0;
+    for (size_t i = 0; i < num_pages; ++i) {
+        if (!(vec[i] & 1)) {
+            non_resident++;
+        }
+    }
+
+    if (non_resident > 0) {
+        double pct = 100.0 * non_resident / num_pages;
+        LOG_ERROR("Memory residency check: %zu of %zu pages (%.1f%%) NOT resident in RAM!",
+                  non_resident, num_pages, pct);
+        return false;
+    }
+    return true;
+#endif
 }
 
 bool Platform::setThreadAffinity(uint32_t thread_id, uint32_t num_threads) {
@@ -695,6 +969,7 @@ void Platform::registerShutdownHandler(void (*callback)()) {
 #else
     std::signal(SIGINT, SignalHandlerWrapper);
     std::signal(SIGTERM, SignalHandlerWrapper);
+    std::signal(SIGBUS, SignalHandlerWrapper);  // Hugepage access fault
 #endif
 }
 

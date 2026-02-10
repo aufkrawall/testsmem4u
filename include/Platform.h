@@ -42,6 +42,9 @@ public:
     static void setProcessPriorityHigh();
     static void registerShutdownHandler(void (*callback)());
 
+    // Verify memory is still resident in physical RAM (not swapped/reclaimed)
+    static bool checkMemoryResident(const uint8_t* base, size_t size);
+
     // Safe memory allocation with bounds checking
     static uint64_t getMaxTestableMemory(uint64_t total_ram, uint32_t percent_requested);
     
@@ -51,13 +54,15 @@ public:
     // Capability Granting (Windows only, requires Admin)
     static bool grantMemoryLockPrivilege();
 
-private:
 #ifdef _WIN32
+    // Exposed for use by memory defrag helpers
     static bool enablePrivilege(const char* privilege_name);
+private:
     static bool tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t min_required_bytes);
     static bool tryAllocateLargePages(MemoryRegion& region, size_t size);
     static bool tryAllocateStandard(MemoryRegion& region, size_t size);
 #else
+private:
     static bool tryAllocateMlock(MemoryRegion& region, size_t size);
     static bool tryAllocateHugepages(MemoryRegion& region, size_t size);
 #endif

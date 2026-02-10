@@ -1,4 +1,5 @@
 #include "TestEngine.h"
+#include "Platform.h"
 #include "Logger.h"
 #include "simd_ops.h"
 #include <chrono>
@@ -102,36 +103,41 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
     size_t count = region.size / 8;
 
     bool use_nt = true;
+    uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
 
-    // Write pattern to memory
-    if (config.pattern_mode == 0) {
-        generate_pattern_uniform(ptr, count, config.pattern_param0, use_nt);
-    } else if (config.pattern_mode == 1) {
-        generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt);
-    } else {
-        generate_pattern_linear(ptr, count, config.pattern_param0, config.pattern_param1, use_nt);
-    }
-
-    sfence();
-    
-    // CRITICAL: Flush entire region from cache to ensure verification reads from RAM
-    // This is essential for detecting real RAM errors vs cache hits
-    simd::flush_cache_region(ptr, region.size);
-
-    // Verify in blocks (2MB chunks)
-    size_t block = 256 * 1024; 
-
-    for (size_t i = 0; i < count; i += block) {
+    for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
-        size_t n = std::min(block, count - i);
 
-        TestEngine::verifyAndReport(ptr + i, n, i, config.pattern_mode, config.pattern_param0, 
-                                    config.pattern_param1, res, ctx, "SimpleTest", stop);
+        // Write pattern to memory
+        if (config.pattern_mode == 0) {
+            generate_pattern_uniform(ptr, count, config.pattern_param0, use_nt);
+        } else if (config.pattern_mode == 1) {
+            generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt);
+        } else {
+            generate_pattern_linear(ptr, count, config.pattern_param0, config.pattern_param1, use_nt);
+        }
 
-        if (stop && ctx.shouldStop()) break;
+        sfence();
+
+        // CRITICAL: Flush entire region from cache to ensure verification reads from RAM
+        // This is essential for detecting real RAM errors vs cache hits
+        simd::flush_cache_region(ptr, region.size);
+
+        // Verify in blocks (2MB chunks)
+        size_t block = 256 * 1024;
+
+        for (size_t i = 0; i < count; i += block) {
+            if (ctx.shouldStop()) break;
+            size_t n = std::min(block, count - i);
+
+            TestEngine::verifyAndReport(ptr + i, n, i, config.pattern_mode, config.pattern_param0,
+                                        config.pattern_param1, res, ctx, "SimpleTest", stop);
+
+            if (stop && ctx.shouldStop()) break;
+        }
     }
 
-    res.bytes_tested = region.size;  // Count once at the end (was double-counted before)
+    res.bytes_tested = region.size * repeats;
     return res;
 }
 
@@ -766,11 +772,9 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
     TestResult res = {};
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
-    
-    // Default to 1 iteration per bit if not specified
-    // But Memtest86+ does "iterations" per pass?
-    // We'll just do 1 pass per bit.
-    
+    uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
+
+    for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
     for (int bit = 0; bit < 64 && !ctx.shouldStop(); ++bit) {
         uint64_t pattern = 1ULL << bit;
         
@@ -852,8 +856,9 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
             }
         }
     }
-    
-    res.bytes_tested = region.size * 2 * 64; // 2 passes (fwd/bwd) * 64 bits
+    }
+
+    res.bytes_tested = region.size * 2 * 64 * repeats;
     return res;
 }
 
@@ -1155,87 +1160,90 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
     TestResult res = {};
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
-    
+
     if (count < 2) return res;
-    
+
     size_t half_count = count / 2;
     uint64_t* src = ptr;
     uint64_t* dst = ptr + half_count;
-    
+
     uint64_t pattern = config.pattern_param0 ? config.pattern_param0 : 0x5555AAAA5555AAAAULL;
-    
-    // Fill Src
-    simd::generate_pattern_uniform(src, half_count, pattern, true);
-    sfence();
-    
-    // Move Src -> Dst using std::memcpy (optimized)
-    // Note: overlapping regions not an issue here as we split perfectly, but memmove safer if we ever change logic
-    std::memmove(dst, src, half_count * 8);
-    sfence();
-    simd::flush_cache_region(ptr, region.size);
-    
-    // Verify Dst
+    uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
+
     std::vector<uint64_t> error_indices;
     error_indices.reserve(128);
     size_t block = 256 * 1024;
-    for (size_t i = 0; i < half_count && !ctx.shouldStop(); i += block) {
-        size_t n = std::min(block, half_count - i);
-        error_indices.clear();
-        simd::verify_uniform(dst + i, n, pattern, error_indices);
-        size_t found = error_indices.size();
-        
-        if (found > 0) {
-            for (size_t k = 0; k < found; ++k) {
-                uint64_t offset = half_count + i + error_indices[k];
-                simd::flush_cache_line((void*)&ptr[offset]);
-                simd::memory_fence();
-                uint64_t actual = simd::safe_read_u64(&ptr[offset]);
-                if (actual != pattern) {
-                    res.hard_errors++;
-                    LOG_ERROR_DETAIL("BlockMove (Dst - Hard)", (uint64_t)(offset * 8), pattern, actual);
-                } else {
-                    res.soft_errors++;
-                    LOG_ERROR_DETAIL("BlockMove (Dst - Soft)", (uint64_t)(offset * 8), pattern, actual);
-                }
-            }
-            // All errors have been individually logged above
-            if (stop) {
-                ctx.requestStop();
-                break;
-            }
-        }
-    }
-    
-    // Verify Src (should still be intact)
-    if (!ctx.shouldStop()) {
+
+    for (uint32_t r = 0; r < repeats; ++r) {
+        if (ctx.shouldStop()) break;
+
+        // Fill Src
+        simd::generate_pattern_uniform(src, half_count, pattern, true);
+        sfence();
+
+        // Move Src -> Dst using std::memcpy (optimized)
+        std::memmove(dst, src, half_count * 8);
+        sfence();
+        simd::flush_cache_region(ptr, region.size);
+
+        // Verify Dst
         for (size_t i = 0; i < half_count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, half_count - i);
             error_indices.clear();
-            simd::verify_uniform(src + i, n, pattern, error_indices);
+            simd::verify_uniform(dst + i, n, pattern, error_indices);
             size_t found = error_indices.size();
-            
+
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
-                    uint64_t offset = i + error_indices[k];
+                    uint64_t offset = half_count + i + error_indices[k];
+                    simd::flush_cache_line((void*)&ptr[offset]);
+                    simd::memory_fence();
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
                     if (actual != pattern) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("BlockMove (Src - Hard)", (uint64_t)(offset * 8), pattern, actual);
+                        LOG_ERROR_DETAIL("BlockMove (Dst - Hard)", (uint64_t)(offset * 8), pattern, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("BlockMove (Src - Soft)", (uint64_t)(offset * 8), pattern, actual);
+                        LOG_ERROR_DETAIL("BlockMove (Dst - Soft)", (uint64_t)(offset * 8), pattern, actual);
                     }
                 }
-                // All errors have been individually logged above
                 if (stop) {
                     ctx.requestStop();
                     break;
                 }
             }
         }
+
+        // Verify Src (should still be intact)
+        if (!ctx.shouldStop()) {
+            for (size_t i = 0; i < half_count && !ctx.shouldStop(); i += block) {
+                size_t n = std::min(block, half_count - i);
+                error_indices.clear();
+                simd::verify_uniform(src + i, n, pattern, error_indices);
+                size_t found = error_indices.size();
+
+                if (found > 0) {
+                    for (size_t k = 0; k < found; ++k) {
+                        uint64_t offset = i + error_indices[k];
+                        uint64_t actual = simd::safe_read_u64(&ptr[offset]);
+                        if (actual != pattern) {
+                            res.hard_errors++;
+                            LOG_ERROR_DETAIL("BlockMove (Src - Hard)", (uint64_t)(offset * 8), pattern, actual);
+                        } else {
+                            res.soft_errors++;
+                            LOG_ERROR_DETAIL("BlockMove (Src - Soft)", (uint64_t)(offset * 8), pattern, actual);
+                        }
+                    }
+                    if (stop) {
+                        ctx.requestStop();
+                        break;
+                    }
+                }
+            }
+        }
     }
 
-    res.bytes_tested = region.size; // Effectively tested whole region (half src, half dst)
+    res.bytes_tested = region.size * repeats;
     return res;
 }
 
@@ -1440,6 +1448,18 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             uint32_t cycle = 0;
             while ((config.cycles == 0 || cycle < config.cycles) && !ctx.shouldStop()) {
                 if (t == 0) {
+                    // Verify memory is still resident before each cycle
+                    if (!Platform::checkMemoryResident(region.base, region.size)) {
+                        LOG_ERROR("FATAL: Memory region is no longer fully resident! "
+                                  "RAM may have been reclaimed by the OS. Halting tests.");
+                        {
+                            std::lock_guard<std::mutex> lock(Logger::get().getConsoleMutex());
+                            std::cout << "\n*** ERROR: Memory lost! OS reclaimed allocated RAM. ***\n"
+                                      << "*** Test results may be unreliable. Stopping. ***\n" << std::endl;
+                        }
+                        ctx.requestStop();
+                        break;
+                    }
                     ctx.current_cycle.store(cycle + 1, std::memory_order_release);
                     LOG_INFO("=== Cycle %u Started ===", cycle + 1);
                 }

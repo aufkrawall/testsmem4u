@@ -46,6 +46,8 @@ BASE_CXX_FLAGS = [
     "-ffunction-sections",
     "-fdata-sections",
     "-fno-rtti",
+    "-fno-asynchronous-unwind-tables",
+    "-fno-ident",
     "-DNDEBUG",
     "-Wl,--gc-sections",
     "-Wl,-O3",
