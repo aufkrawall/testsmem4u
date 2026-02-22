@@ -102,7 +102,12 @@ static bool isValidPath(const std::string& path_str) {
 #else
     char buffer[PATH_MAX];
     if (realpath(path_str.c_str(), buffer) == nullptr) {
-        return false;
+        if (errno == ENOENT) {
+            // File does not exist yet — path traversal was already ruled out above.
+            // Let the caller's file-open produce the correct "not found" error.
+            return true;
+        }
+        return false; // Permission error or other OS-level rejection
     }
     full_path = buffer;
 
@@ -212,6 +217,7 @@ PresetInfo loadPreset(const std::string& filepath) {
             TestConfig& tc = preset.test_configs[current_test];
 
             if (key == "Enable") {
+                tc.enabled = (Utils::parseUint(value) != 0);
             } else if (key == "Time (%)") {
                 tc.time_percent = Utils::parseUint(value);
             } else if (key == "Function") {

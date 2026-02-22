@@ -63,7 +63,7 @@ public:
     static TestResult runBlockMove(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
     static TestResult runRandomAccess(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
 
-    static size_t verifyAndReport(const uint64_t* ptr, size_t count, size_t start_idx,
+    static size_t verifyAndReport(const MemoryRegion& region, const uint64_t* ptr, size_t count, size_t start_idx,
                                    uint8_t pattern_mode, uint64_t param0, uint64_t param1,
                                    TestResult& res, TestContext& ctx, const std::string& test_name, bool halt_on_error);
 

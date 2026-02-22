@@ -33,9 +33,17 @@ static void enableVirtualTerminal() {
         DWORD dwMode = 0;
         if (GetConsoleMode(hOut, &dwMode)) {
             dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            SetConsoleMode(hOut, dwMode);
+        }
+    }
+    // QuickEdit and Extended Flags are input mode settings
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (hIn != INVALID_HANDLE_VALUE) {
+        DWORD dwMode = 0;
+        if (GetConsoleMode(hIn, &dwMode)) {
             dwMode &= ~ENABLE_QUICK_EDIT_MODE; // Disable QuickEdit to prevent pausing on selection
             dwMode |= ENABLE_EXTENDED_FLAGS; // Required when disabling QuickEdit
-            SetConsoleMode(hOut, dwMode);
+            SetConsoleMode(hIn, dwMode);
         }
     }
 }
@@ -247,6 +255,34 @@ static std::string trimString(const std::string& str) {
     return str.substr(start, end - start + 1);
 }
 
+static uint64_t getSizingBaselineRAM() {
+    uint64_t available_ram = Platform::getAvailableSystemRAM();
+    if (available_ram != 0) return available_ram;
+    return Platform::getTotalSystemRAM();
+}
+
+static uint32_t normalizeWindowMBForLargePages(uint32_t memory_window_mb, bool use_large_pages) {
+#ifdef _WIN32
+    if (!use_large_pages || memory_window_mb == 0) return memory_window_mb;
+    SIZE_T large_page_min = GetLargePageMinimum();
+    if (large_page_min == 0) return memory_window_mb;
+
+    uint64_t bytes = static_cast<uint64_t>(memory_window_mb) * 1024ULL * 1024ULL;
+    uint64_t aligned = (bytes / large_page_min) * large_page_min;
+    if (aligned == 0) return memory_window_mb;
+    return static_cast<uint32_t>(aligned / 1024ULL / 1024ULL);
+#else
+    (void)use_large_pages;
+    return memory_window_mb;
+#endif
+}
+
+static uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent, bool use_large_pages) {
+    uint64_t max_mem = Platform::getMaxTestableMemory(sizing_ram, percent);
+    uint32_t window_mb = static_cast<uint32_t>(max_mem / 1024 / 1024);
+    return normalizeWindowMBForLargePages(window_mb, use_large_pages);
+}
+
 static bool isPrivileged() {
 #ifdef _WIN32
     BOOL fRet = FALSE;
@@ -325,9 +361,15 @@ Config runConfigWizard() {
     Config config;
     PlatformInfo plat = Platform::detectPlatform();
     uint64_t total_ram = Platform::getTotalSystemRAM();
+    uint64_t sizing_ram = getSizingBaselineRAM();
+    if (sizing_ram == 0) sizing_ram = total_ram;
 
     std::cout << "\n--- testsmem4u Configuration Wizard ---\n";
-    std::cout << "Detected " << plat.cpu_cores << " cores, " << (total_ram / 1024 / 1024) << " MB RAM.\n\n";
+    std::cout << "Detected " << plat.cpu_cores << " cores, " << (total_ram / 1024 / 1024) << " MB RAM";
+    if (sizing_ram > 0 && sizing_ram != total_ram) {
+        std::cout << " (" << (sizing_ram / 1024 / 1024) << " MB currently available)";
+    }
+    std::cout << ".\n\n";
 
     std::string input;
 
@@ -423,10 +465,10 @@ Config runConfigWizard() {
     config.preset = loadPreset(config.preset_file);
 
     if (config.memory_window_mb == 0) {
-        uint64_t max_mem = Platform::getMaxTestableMemory(total_ram, config.memory_window_percent);
-        config.memory_window_mb = static_cast<uint32_t>(max_mem / 1024 / 1024);
+        config.memory_window_mb = computeWindowMBFromPercent(sizing_ram, config.memory_window_percent, config.use_large_pages);
         if (config.memory_window_mb == 0) {
-            config.memory_window_mb = static_cast<uint32_t>(total_ram / 1024 / 1024 / 2);
+            uint32_t fallback_mb = static_cast<uint32_t>(sizing_ram / 1024 / 1024 / 2);
+            config.memory_window_mb = normalizeWindowMBForLargePages(fallback_mb, config.use_large_pages);
         }
     }
 
@@ -434,7 +476,6 @@ Config runConfigWizard() {
 }
 
 void onShutdown() {
-    LOG_INFO("Shutdown request received. Stopping tests...");
     TestEngine::requestStop();
 }
 
@@ -531,9 +572,8 @@ int main(int argc, char* argv[]) {
 
         // Ensure calculations are correct based on current config (loaded or default)
         if (config.memory_window_mb == 0) {
-            uint64_t total_ram = Platform::getTotalSystemRAM();
-            uint64_t max_mem = Platform::getMaxTestableMemory(total_ram, config.memory_window_percent);
-            config.memory_window_mb = static_cast<uint32_t>(max_mem / 1024 / 1024);
+            uint64_t sizing_ram = getSizingBaselineRAM();
+            config.memory_window_mb = computeWindowMBFromPercent(sizing_ram, config.memory_window_percent, config.use_large_pages);
         }
 
         if (config.preset_file.empty()) config.preset_file = "default.cfg";
@@ -564,9 +604,8 @@ int main(int argc, char* argv[]) {
             config.preset = loadPreset(config.preset_file);
             
             config.cores = plat.cpu_cores;
-            uint64_t total_ram = Platform::getTotalSystemRAM();
-            uint64_t max_mem = Platform::getMaxTestableMemory(total_ram, 85);
-            config.memory_window_mb = static_cast<uint32_t>(max_mem / 1024 / 1024);
+            uint64_t sizing_ram = getSizingBaselineRAM();
+            config.memory_window_mb = computeWindowMBFromPercent(sizing_ram, 85, config.use_large_pages);
             config.use_locked_memory = true;
             config.use_large_pages = true;
             config.halt_on_error = false;
@@ -577,8 +616,17 @@ int main(int argc, char* argv[]) {
         saveConfig("config.ini", config);
     }
 
+    uint32_t normalized_window_mb = normalizeWindowMBForLargePages(config.memory_window_mb, config.use_large_pages);
+    if (normalized_window_mb != config.memory_window_mb) {
+        LOG_INFO("Adjusted memory window from %u MB to %u MB to match large-page granularity",
+                 config.memory_window_mb, normalized_window_mb);
+        config.memory_window_mb = normalized_window_mb;
+    }
+
     std::cout << "\nStarting tests with " << config.cores << " threads, " << config.memory_window_mb << " MB memory." << std::endl;
     std::cout << "Tip: Press Ctrl+C to stop and save results.\n" << std::endl;
+
+    config.debug_mode = debug; // Propagate --debug flag into config struct
 
     if (config.preset.test_configs.empty()) {
         std::cerr << "\n[!] ERROR: No tests loaded! Please verify " << config.preset_file << " exists and is valid." << std::endl;

@@ -134,19 +134,28 @@ static void restoreHugepages() {
 }
 
 static void SignalHandlerWrapper(int signum) {
+    // Second signal: force immediate exit.
+    if (g_shutdown_initiated) {
+        _exit(128 + signum);
+    }
+
     // Mark as shutting down (atomic write is async-signal-safe)
     g_shutdown_initiated = true;
 
-    // Callback sets an atomic flag only, which IS async-signal-safe
+    // Callback should only set atomic stop flags.
     if (g_shutdown_callback) {
         g_shutdown_callback();
     }
 
-    // Restore hugepage reservation before exiting
-    restoreHugepagesSignalSafe();
+    // SIGBUS indicates potentially unsafe memory access state.
+    // Exit immediately after signal-safe cleanup.
+    if (signum == SIGBUS) {
+        restoreHugepagesSignalSafe();
+        _exit(128 + signum);
+    }
 
-    // Use _exit() which IS async-signal-safe (exit() is NOT)
-    _exit(128 + signum);
+    // SIGINT/SIGTERM: return so the normal shutdown path can flush logs,
+    // release memory, and report final results.
 }
 #endif
 
@@ -306,6 +315,23 @@ uint64_t Platform::getTotalSystemRAM() {
 #endif
 }
 
+uint64_t Platform::getAvailableSystemRAM() {
+#ifdef _WIN32
+    MEMORYSTATUSEX status;
+    status.dwLength = sizeof(status);
+    if (GlobalMemoryStatusEx(&status)) {
+        return status.ullAvailPhys;
+    }
+    return 0;
+#else
+    struct sysinfo info;
+    if (sysinfo(&info) == 0) {
+        return info.freeram * info.mem_unit;
+    }
+    return 0;
+#endif
+}
+
 uint64_t Platform::getMaxTestableMemory(uint64_t total_ram, uint32_t percent_requested) {
     if (percent_requested > 100) percent_requested = 100;
     // Reorder operations to prevent overflow: total_ram / 100 * percent
@@ -367,11 +393,12 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
     // Free any existing allocation before reassigning
     if (region.base) {
         if (region.locked_bytes > 0) {
-            VirtualUnlock(region.base, region.locked_bytes);
+            VirtualUnlock(region.base + region.locked_offset, region.locked_bytes);
         }
         VirtualFree(region.base, 0, MEM_RELEASE);
         region.base = nullptr;
         region.size = 0;
+        region.locked_offset = 0;
         region.locked_bytes = 0;
     }
 
@@ -401,6 +428,7 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
         }
     }
 
+    region.locked_offset = 0;
     region.locked_bytes = locked;
     region.is_locked = (locked >= min_required_bytes);
     
@@ -415,6 +443,7 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
         VirtualFree(region.base, 0, MEM_RELEASE);
         region.base = nullptr;
         region.size = 0;
+        region.locked_offset = 0;
         region.locked_bytes = 0;
         return false;
     }
@@ -425,9 +454,14 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
 bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
     // Free any existing allocation before reassigning
     if (region.base) {
+        if (region.locked_bytes > 0) {
+            VirtualUnlock(region.base + region.locked_offset, region.locked_bytes);
+        }
         VirtualFree(region.base, 0, MEM_RELEASE);
         region.base = nullptr;
         region.size = 0;
+        region.locked_offset = 0;
+        region.locked_bytes = 0;
     }
 
     region.base = static_cast<uint8_t*>(VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
@@ -435,6 +469,8 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
         LOG_INFO("Allocated %zu MB (Standard)", size / 1024 / 1024);
         region.is_locked = false;
         region.is_large_pages = false;
+        region.locked_offset = 0;
+        region.locked_bytes = 0;
         return true;
     }
     return false;
@@ -456,10 +492,20 @@ static void purgeStandbyList() {
     // Enable required privilege
     Platform::enablePrivilege(SE_PROF_SINGLE_PROCESS_NAME);
 
-    // SystemMemoryListInformation = 80, MemoryPurgeStandbyList = 4
     const INT SystemMemoryListInformation = 80;
-    INT command = 4; // MemoryPurgeStandbyList
-    LONG status = NtSetSystemInfo(SystemMemoryListInformation, &command, sizeof(command));
+
+    // Flush modified pages to disk first — dirty pages cannot be reused for
+    // large pages until written out. This converts modified → standby.
+    INT flush_cmd = 3; // MemoryFlushModifiedList
+    LONG status = NtSetSystemInfo(SystemMemoryListInformation, &flush_cmd, sizeof(flush_cmd));
+    if (status == 0) {
+        LOG_INFO("Flushed modified page list to disk");
+    }
+
+    // Now purge the standby list — frees both original standby pages and
+    // the newly-flushed pages, maximizing free 2MB-aligned regions.
+    INT purge_cmd = 4; // MemoryPurgeStandbyList
+    status = NtSetSystemInfo(SystemMemoryListInformation, &purge_cmd, sizeof(purge_cmd));
 
     if (status == 0) {
         LOG_INFO("Purged standby list to free physical memory for large pages");
@@ -539,10 +585,237 @@ bool Platform::tryAllocateLargePages(MemoryRegion& region, size_t size) {
         region.size = lp_size;
         region.is_large_pages = true;
         region.is_locked = true;
-        region.locked_bytes = lp_size;
+        region.locked_offset = 0;
+        region.locked_bytes = 0;
         LOG_INFO("Allocated %zu MB using MEM_LARGE_PAGES", lp_size / 1024 / 1024);
         return true;
     }
+    return false;
+}
+
+// Chunked large-page allocation: allocates large pages in 1GB chunks within
+// a contiguous virtual address range. Each chunk independently needs only 512
+// contiguous 2MB physical regions (vs ~11000 for 22GB), making success far
+// more likely under physical memory fragmentation.
+//
+// Strategy: reserve a contiguous VA range, free it, then immediately re-allocate
+// each chunk at the same addresses with MEM_LARGE_PAGES. Since we're single-threaded
+// and act immediately, the addresses are almost always still available.
+bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
+    if (!enablePrivilege(SE_LOCK_MEMORY_NAME)) return false;
+
+    SIZE_T large_page_min = GetLargePageMinimum();
+    if (large_page_min == 0) return false;
+
+    // Try progressively smaller chunk sizes. Smaller chunks increase success
+    // probability on fragmented systems while preserving contiguous VA layout.
+    const size_t chunk_candidates[] = {
+        1ULL * 1024 * 1024 * 1024,  // 1GB
+        512ULL * 1024 * 1024,       // 512MB
+        256ULL * 1024 * 1024,       // 256MB
+        128ULL * 1024 * 1024,       // 128MB
+        64ULL * 1024 * 1024,        // 64MB
+        32ULL * 1024 * 1024,        // 32MB
+        16ULL * 1024 * 1024,        // 16MB
+        8ULL * 1024 * 1024,         // 8MB
+        4ULL * 1024 * 1024,         // 4MB
+        2ULL * 1024 * 1024          // 2MB (single large page)
+    };
+
+    const size_t candidate_count = sizeof(chunk_candidates) / sizeof(chunk_candidates[0]);
+    for (size_t candidate_index = 0; candidate_index < candidate_count; candidate_index++) {
+        size_t candidate = chunk_candidates[candidate_index];
+        size_t aligned_chunk = (candidate + large_page_min - 1) & ~(large_page_min - 1);
+        if (aligned_chunk == 0) continue;
+        if (aligned_chunk < static_cast<size_t>(large_page_min)) continue;
+
+        size_t num_chunks = (size + aligned_chunk - 1) / aligned_chunk;
+        size_t aligned_total = num_chunks * aligned_chunk;
+        size_t reserve_size = aligned_total + large_page_min;
+        LOG_INFO("Chunked LP: trying %zu MB chunks (%zu chunks)", aligned_chunk / (1024 * 1024), num_chunks);
+        const bool allow_hybrid_tail_lock = (candidate_index == candidate_count - 1); // only at smallest chunk size
+
+        // Retry the whole reserve-free-reallocate sequence a few times.
+        for (int attempt = 0; attempt < 3; attempt++) {
+            // Step 1: Reserve slightly larger VA space so we can pick a base
+            // aligned to large_page_min.
+            void* reserved = VirtualAlloc(NULL, reserve_size, MEM_RESERVE, PAGE_NOACCESS);
+            if (!reserved) {
+                DWORD err = GetLastError();
+                LOG_WARN("Chunked LP: failed to reserve %zu MB VA space (error %lu)",
+                         reserve_size / (1024 * 1024), err);
+                break;
+            }
+
+            uintptr_t reserved_addr = reinterpret_cast<uintptr_t>(reserved);
+            uintptr_t aligned_addr = (reserved_addr + large_page_min - 1) & ~(static_cast<uintptr_t>(large_page_min) - 1);
+            uint8_t* aligned_base = reinterpret_cast<uint8_t*>(aligned_addr);
+
+            // Step 2: Free reservation, then immediately allocate large-page chunks
+            // at aligned addresses inside that previously reserved area.
+            VirtualFree(reserved, 0, MEM_RELEASE);
+
+            if (!allow_hybrid_tail_lock) {
+                bool all_ok = true;
+                size_t chunks_allocated = 0;
+                for (size_t i = 0; i < num_chunks; i++) {
+                    uint8_t* chunk_addr = aligned_base + i * aligned_chunk;
+                    void* result = VirtualAlloc(chunk_addr, aligned_chunk,
+                                                MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
+                                                PAGE_READWRITE);
+                    if (result != chunk_addr) {
+                        DWORD err = GetLastError();
+                        LOG_DEBUG("Chunked LP: chunk %zu/%zu at %p failed (error %lu, chunk %zu MB, attempt %d)",
+                                  i + 1, num_chunks, chunk_addr, err, aligned_chunk / (1024 * 1024), attempt + 1);
+                        all_ok = false;
+                        break;
+                    }
+                    chunks_allocated++;
+                }
+
+                if (all_ok) {
+                    region.base = aligned_base;
+                    region.size = aligned_total;
+                    region.is_large_pages = true;
+                    region.is_locked = true;
+                    region.locked_offset = 0;
+                    region.locked_bytes = 0;
+                    region.lp_chunk_size = aligned_chunk;
+
+                    LOG_INFO("Allocated %zu MB using chunked large pages (%zu x %zu MB chunks)",
+                             aligned_total / (1024 * 1024), num_chunks, aligned_chunk / (1024 * 1024));
+                    return true;
+                }
+
+                for (size_t j = 0; j < chunks_allocated; j++) {
+                    VirtualFree(aligned_base + j * aligned_chunk, 0, MEM_RELEASE);
+                }
+            } else {
+                // Final (2MB) candidate: opportunistically try LP per chunk and fallback
+                // only failing chunks to VirtualLock, maximizing LP share while keeping
+                // full requested bytes locked.
+                HANDLE hProcess = GetCurrentProcess();
+                bool ws_set = false;
+                bool stop_lp_probing = false;
+                size_t probe_lp_attempts = 0;
+                size_t probe_lp_successes = 0;
+                constexpr size_t PROBE_WINDOW_CHUNKS = 256;
+                constexpr size_t MIN_LP_HIT_PERCENT = 2;
+                size_t lp_chunks = 0;
+                size_t std_locked_chunks = 0;
+                size_t chunks_committed = 0;
+                bool hybrid_ok = true;
+
+                for (size_t i = 0; i < num_chunks; i++) {
+                    uint8_t* chunk_addr = aligned_base + i * aligned_chunk;
+
+                    if (!stop_lp_probing) {
+                        void* lp_ptr = VirtualAlloc(chunk_addr, aligned_chunk,
+                                                    MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
+                                                    PAGE_READWRITE);
+                        if (lp_ptr == chunk_addr) {
+                            lp_chunks++;
+                            chunks_committed++;
+                            if (ws_set) {
+                                probe_lp_attempts++;
+                                probe_lp_successes++;
+                                if (probe_lp_attempts >= PROBE_WINDOW_CHUNKS) {
+                                    size_t hit_rate = (probe_lp_successes * 100) / probe_lp_attempts;
+                                    if (hit_rate < MIN_LP_HIT_PERCENT) {
+                                        stop_lp_probing = true;
+                                        size_t remaining_mb = ((num_chunks - i - 1) * aligned_chunk) / (1024 * 1024);
+                                        LOG_INFO("Chunked LP: LP hit-rate %zu%% in hybrid window; switching remaining %zu MB to VirtualLock tail",
+                                                 hit_rate, remaining_mb);
+                                    }
+                                    probe_lp_attempts = 0;
+                                    probe_lp_successes = 0;
+                                }
+                            }
+                            continue;
+                        }
+
+                        if (ws_set) {
+                            probe_lp_attempts++;
+                            if (probe_lp_attempts >= PROBE_WINDOW_CHUNKS) {
+                                size_t hit_rate = (probe_lp_successes * 100) / probe_lp_attempts;
+                                if (hit_rate < MIN_LP_HIT_PERCENT) {
+                                    stop_lp_probing = true;
+                                    size_t remaining_mb = ((num_chunks - i) * aligned_chunk) / (1024 * 1024);
+                                    LOG_INFO("Chunked LP: LP hit-rate %zu%% in hybrid window; switching remaining %zu MB to VirtualLock tail",
+                                             hit_rate, remaining_mb);
+                                }
+                                probe_lp_attempts = 0;
+                                probe_lp_successes = 0;
+                            }
+                        }
+                    }
+
+                    if (!ws_set) {
+                        SIZE_T remaining_bytes = (num_chunks - i) * aligned_chunk;
+                        SIZE_T overhead = 128 * 1024 * 1024;
+                        SIZE_T min_ws = remaining_bytes + overhead;
+                        SIZE_T max_ws = remaining_bytes + overhead + (512 * 1024 * 1024);
+                        if (!SetProcessWorkingSetSize(hProcess, min_ws, max_ws)) {
+                            DWORD err = GetLastError();
+                            LOG_DEBUG("Chunked LP hybrid: SetProcessWorkingSetSize(min=%zu MB, max=%zu MB) failed: error %lu",
+                                      min_ws / 1024 / 1024, max_ws / 1024 / 1024, err);
+                            hybrid_ok = false;
+                            break;
+                        }
+                        ws_set = true;
+                        probe_lp_attempts = 0;
+                        probe_lp_successes = 0;
+                        LOG_INFO("Chunked LP: entering hybrid mode at chunk %zu/%zu (%zu MB LP already allocated)",
+                                 i + 1, num_chunks, (lp_chunks * aligned_chunk) / (1024 * 1024));
+                    }
+
+                    void* std_ptr = VirtualAlloc(chunk_addr, aligned_chunk, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+                    if (std_ptr != chunk_addr) {
+                        DWORD err = GetLastError();
+                        LOG_DEBUG("Chunked LP hybrid: standard alloc chunk %zu/%zu at %p failed (error %lu)",
+                                  i + 1, num_chunks, chunk_addr, err);
+                        hybrid_ok = false;
+                        break;
+                    }
+
+                    if (!VirtualLock(chunk_addr, aligned_chunk)) {
+                        DWORD err = GetLastError();
+                        LOG_DEBUG("Chunked LP hybrid: VirtualLock chunk %zu/%zu at %p failed (error %lu)",
+                                  i + 1, num_chunks, chunk_addr, err);
+                        VirtualFree(chunk_addr, 0, MEM_RELEASE);
+                        hybrid_ok = false;
+                        break;
+                    }
+
+                    std_locked_chunks++;
+                    chunks_committed++;
+                }
+
+                if (hybrid_ok && chunks_committed == num_chunks) {
+                    region.base = aligned_base;
+                    region.size = aligned_total;
+                    region.is_large_pages = (lp_chunks > 0);
+                    region.is_locked = true;
+                    region.locked_offset = 0;
+                    region.locked_bytes = 0; // mixed/sparse locks released by VirtualFree per chunk
+                    region.lp_chunk_size = aligned_chunk;
+
+                    LOG_INFO("Allocated %zu MB with hybrid pages (%zu MB large pages + %zu MB VirtualLock)",
+                             aligned_total / (1024 * 1024),
+                             (lp_chunks * aligned_chunk) / (1024 * 1024),
+                             (std_locked_chunks * aligned_chunk) / (1024 * 1024));
+                    return true;
+                }
+
+                for (size_t j = 0; j < chunks_committed; j++) {
+                    VirtualFree(aligned_base + j * aligned_chunk, 0, MEM_RELEASE);
+                }
+            }
+
+            Sleep(100);
+        }
+    }
+
     return false;
 }
 
@@ -717,9 +990,12 @@ bool Platform::tryAllocateHugepages(MemoryRegion& region, size_t size) {
 bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_pages, bool try_lock, bool allow_swappable) {
     region.size = size;
     region.base = nullptr;
+    region.base_offset_bytes = 0;
     region.is_large_pages = false;
     region.is_locked = false;
+    region.locked_offset = 0;
     region.locked_bytes = 0;
+    region.lp_chunk_size = 0;
 
     size_t page_align = 4096;
     region.size = (size + page_align - 1) & ~(page_align - 1);
@@ -731,45 +1007,46 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
 
 #ifdef _WIN32
     if (try_large_pages) {
-        // Step 1: Try full size allocation directly
-        if (tryAllocateLargePages(region, region.size)) {
-            return true;
-        }
-
-        // Step 2: Full size failed — defrag physical memory and retry
-        LOG_INFO("Large page allocation failed at %zu MB, defragmenting physical memory...",
-                 region.size / (1024*1024));
+        // Step 1: Pre-defrag to maximize contiguous 2MB regions before first attempt
+        LOG_INFO("Defragmenting physical memory before large page allocation...");
         defragPhysicalMemory();
 
         if (tryAllocateLargePages(region, region.size)) {
-            LOG_INFO("Large page allocation succeeded after memory defragmentation");
             restoreSystemFileCache();
             return true;
         }
 
-        // Step 3: Still failed — try decreasing sizes
-        size_t try_size = region.size;
-        size_t min_lp_size = region.size * 70 / 100;  // Don't go below 70% of requested
-        SIZE_T lp_min = GetLargePageMinimum();
-        if (lp_min > 0) {
-            min_lp_size = (min_lp_size + lp_min - 1) & ~(lp_min - 1);
-        }
+        // Step 2: More aggressive defrag — multiple rounds with longer pauses
+        LOG_INFO("Large page allocation failed at %zu MB, performing aggressive defragmentation...",
+                 region.size / (1024 * 1024));
+        for (uint32_t round = 1; round <= 3; ++round) {
+            defragPhysicalMemory();
+            Sleep(500 * round); // Increasing delay: 500ms, 1s, 1.5s
 
-        while (try_size >= min_lp_size) {
-            try_size -= try_size / 20;  // Reduce by ~5%
-            if (lp_min > 0) {
-                try_size = (try_size + lp_min - 1) & ~(lp_min - 1);  // Keep aligned
-            }
-            if (tryAllocateLargePages(region, try_size)) {
-                LOG_WARN("Large pages: allocated %zu MB (%.0f%% of requested %zu MB) due to memory fragmentation",
-                         try_size / (1024*1024), 100.0 * try_size / size, size / (1024*1024));
+            if (tryAllocateLargePages(region, region.size)) {
+                LOG_INFO("Large page allocation succeeded after defrag round %u", round);
                 restoreSystemFileCache();
                 return true;
             }
         }
         restoreSystemFileCache();
-        LOG_WARN("Large page allocation failed even at reduced size (%zu MB), falling back to VirtualLock",
-                 min_lp_size / (1024*1024));
+
+        // Step 3: Single large-page allocation failed — try chunked allocation (1GB chunks)
+        // Each chunk independently finds contiguous 2MB physical regions
+        LOG_INFO("Attempting chunked large page allocation (%zu MB in 1GB chunks)...",
+                 region.size / (1024 * 1024));
+        defragPhysicalMemory();
+
+        if (tryAllocateLargePagesChunked(region, region.size)) {
+            restoreSystemFileCache();
+            return true;
+        }
+        restoreSystemFileCache();
+
+        // Large pages failed — fall through to VirtualLock which reliably locks memory
+        LOG_WARN("Large page allocation failed at %zu MB after all defrag attempts. "
+                 "Falling back to VirtualLock to guarantee memory locking.",
+                 region.size / (1024 * 1024));
     }
 
     if (try_lock) {
@@ -797,7 +1074,8 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
         if (tryAllocateHugepages(region, region.size)) {
             return true;
         }
-        LOG_WARN("Hugepage allocation failed, falling back to standard pages");
+        LOG_WARN("Hugepage allocation failed at %zu MB, falling back to standard pages with mlock",
+                 region.size / (1024 * 1024));
     }
     
     // Linux implementation check for strict locking
@@ -821,17 +1099,20 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
 MemoryGuard Platform::allocateMemoryRAII(size_t size, bool try_large_pages, bool try_lock, bool allow_swappable) {
     MemoryRegion region{};
     if (allocateMemory(region, size, try_large_pages, try_lock, allow_swappable)) {
-        return MemoryGuard(region.base, region.size, region.is_large_pages, region.is_locked);
+        return MemoryGuard(region.base, region.size, region.is_large_pages, region.is_locked, region.locked_offset, region.locked_bytes, region.lp_chunk_size);
     }
     return MemoryGuard();
 }
 
-void MemoryGuard::freeInternal(uint8_t* base, size_t size, bool large_pages, bool locked) {
+void MemoryGuard::freeInternal(uint8_t* base, size_t size, bool large_pages, bool locked, size_t locked_offset, size_t locked_bytes, size_t lp_chunk_size) {
      MemoryRegion region;
      region.base = base;
      region.size = size;
      region.is_large_pages = large_pages;
      region.is_locked = locked;
+     region.locked_offset = locked_offset;
+     region.locked_bytes = locked_bytes;
+     region.lp_chunk_size = lp_chunk_size;
      Platform::freeMemory(region);
 }
 
@@ -839,11 +1120,19 @@ void Platform::freeMemory(MemoryRegion& region) {
     if (!region.base) return;
 
 #ifdef _WIN32
-    if (region.locked_bytes > 0 && !region.is_large_pages) {
-        VirtualUnlock(region.base, region.locked_bytes);
+    if (region.locked_bytes > 0) {
+        VirtualUnlock(region.base + region.locked_offset, region.locked_bytes);
     }
 
-    VirtualFree(region.base, 0, MEM_RELEASE);
+    if (region.lp_chunk_size > 0) {
+        // Chunked large-page allocation: free each chunk separately
+        size_t num_chunks = region.size / region.lp_chunk_size;
+        for (size_t i = 0; i < num_chunks; i++) {
+            VirtualFree(region.base + i * region.lp_chunk_size, 0, MEM_RELEASE);
+        }
+    } else {
+        VirtualFree(region.base, 0, MEM_RELEASE);
+    }
 #else
     if (region.is_locked) {
         munlock(region.base, region.size);
@@ -858,9 +1147,12 @@ void Platform::freeMemory(MemoryRegion& region) {
 
     region.base = nullptr;
     region.size = 0;
+    region.base_offset_bytes = 0;
     region.is_locked = false;
     region.is_large_pages = false;
+    region.locked_offset = 0;
     region.locked_bytes = 0;
+    region.lp_chunk_size = 0;
 }
 
 bool Platform::checkMemoryResident(const uint8_t* base, size_t size) {
@@ -893,9 +1185,9 @@ bool Platform::checkMemoryResident(const uint8_t* base, size_t size) {
     vec.resize(num_pages);
 
     if (mincore(reinterpret_cast<void*>(aligned_base), aligned_size, vec.data()) != 0) {
-        // mincore failed — can't verify, assume OK
-        LOG_WARN("mincore() failed: %s", strerror(errno));
-        return true;
+        // Fail closed: if residency cannot be verified, test integrity is uncertain.
+        LOG_ERROR("mincore() failed: %s", strerror(errno));
+        return false;
     }
 
     size_t non_resident = 0;
@@ -933,6 +1225,7 @@ bool Platform::setThreadAffinity(uint32_t thread_id, uint32_t num_threads) {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     uint32_t num_cores = std::thread::hardware_concurrency();
+    if (num_cores == 0) return false;
 
     if (num_threads <= num_cores) {
         CPU_SET(thread_id, &cpuset);

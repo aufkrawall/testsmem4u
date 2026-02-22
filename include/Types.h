@@ -30,6 +30,7 @@ struct TestResult {
 // Per-test configuration from preset
 struct TestConfig {
     uint8_t test_number = 0;
+    bool enabled = true;
     std::string function;
     uint8_t pattern_mode = 0;
     uint64_t pattern_param0 = 0;
@@ -42,14 +43,14 @@ struct TestConfig {
 // RAII wrapper for MemoryRegion - ensures proper cleanup on all code paths
 class MemoryGuard {
 public:
-    MemoryGuard() : base_(nullptr), size_(0), is_large_pages_(false), is_locked_(false) {}
+    MemoryGuard() : base_(nullptr), size_(0), is_large_pages_(false), is_locked_(false), locked_offset_(0), locked_bytes_(0), lp_chunk_size_(0) {}
 
-    explicit MemoryGuard(uint8_t* base, size_t size, bool large_pages, bool locked)
-        : base_(base), size_(size), is_large_pages_(large_pages), is_locked_(locked) {}
+    explicit MemoryGuard(uint8_t* base, size_t size, bool large_pages, bool locked, size_t locked_offset = 0, size_t locked_bytes = 0, size_t lp_chunk_size = 0)
+        : base_(base), size_(size), is_large_pages_(large_pages), is_locked_(locked), locked_offset_(locked_offset), locked_bytes_(locked_bytes), lp_chunk_size_(lp_chunk_size) {}
 
     ~MemoryGuard() {
         if (base_) {
-            freeInternal(base_, size_, is_large_pages_, is_locked_);
+            freeInternal(base_, size_, is_large_pages_, is_locked_, locked_offset_, locked_bytes_, lp_chunk_size_);
         }
     }
 
@@ -60,24 +61,33 @@ public:
     // Movable
     MemoryGuard(MemoryGuard&& other) noexcept
         : base_(other.base_), size_(other.size_),
-          is_large_pages_(other.is_large_pages_), is_locked_(other.is_locked_) {
+          is_large_pages_(other.is_large_pages_), is_locked_(other.is_locked_), locked_offset_(other.locked_offset_), locked_bytes_(other.locked_bytes_), lp_chunk_size_(other.lp_chunk_size_) {
         other.base_ = nullptr;
         other.size_ = 0;
         other.is_large_pages_ = false;
         other.is_locked_ = false;
+        other.locked_offset_ = 0;
+        other.locked_bytes_ = 0;
+        other.lp_chunk_size_ = 0;
     }
 
     MemoryGuard& operator=(MemoryGuard&& other) noexcept {
         if (this != &other) {
-            if (base_) freeInternal(base_, size_, is_large_pages_, is_locked_);
+            if (base_) freeInternal(base_, size_, is_large_pages_, is_locked_, locked_offset_, locked_bytes_, lp_chunk_size_);
             base_ = other.base_;
             size_ = other.size_;
             is_large_pages_ = other.is_large_pages_;
             is_locked_ = other.is_locked_;
+            locked_offset_ = other.locked_offset_;
+            locked_bytes_ = other.locked_bytes_;
+            lp_chunk_size_ = other.lp_chunk_size_;
             other.base_ = nullptr;
             other.size_ = 0;
             other.is_large_pages_ = false;
             other.is_locked_ = false;
+            other.locked_offset_ = 0;
+            other.locked_bytes_ = 0;
+            other.lp_chunk_size_ = 0;
         }
         return *this;
     }
@@ -93,11 +103,14 @@ public:
 
     void release() {
         if (base_) {
-            freeInternal(base_, size_, is_large_pages_, is_locked_);
+            freeInternal(base_, size_, is_large_pages_, is_locked_, locked_offset_, locked_bytes_, lp_chunk_size_);
             base_ = nullptr;
             size_ = 0;
             is_large_pages_ = false;
             is_locked_ = false;
+            locked_offset_ = 0;
+            locked_bytes_ = 0;
+            lp_chunk_size_ = 0;
         }
     }
 
@@ -106,8 +119,11 @@ private:
     size_t size_;
     bool is_large_pages_;
     bool is_locked_;
+    size_t locked_offset_;
+    size_t locked_bytes_;
+    size_t lp_chunk_size_;
 
-    static void freeInternal(uint8_t* base, size_t size, bool large_pages, bool locked);
+    static void freeInternal(uint8_t* base, size_t size, bool large_pages, bool locked, size_t locked_offset, size_t locked_bytes, size_t lp_chunk_size);
 };
 
 } // namespace testsmem4u

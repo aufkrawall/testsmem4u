@@ -51,7 +51,12 @@ static inline void generatePatternValue(uint64_t index, uint8_t mode, uint64_t p
     else val = index;
 }
 
-size_t TestEngine::verifyAndReport(const uint64_t* ptr, size_t count, size_t start_idx,
+static inline uint64_t reportAddress(const MemoryRegion& region, const void* ptr) {
+    const auto* byte_ptr = static_cast<const uint8_t*>(ptr);
+    return static_cast<uint64_t>(region.base_offset_bytes + static_cast<size_t>(byte_ptr - region.base));
+}
+
+size_t TestEngine::verifyAndReport(const MemoryRegion& region, const uint64_t* ptr, size_t count, size_t start_idx,
                                    uint8_t pattern_mode, uint64_t param0, uint64_t param1,
                                    TestResult& res, TestContext& ctx, const std::string& test_name, bool halt_on_error) {
     std::vector<uint64_t> error_indices;
@@ -79,12 +84,12 @@ size_t TestEngine::verifyAndReport(const uint64_t* ptr, size_t count, size_t sta
 
         if (actual != expect) {
             // Hard Error: Re-read from RAM confirmed the mismatch
-            LOG_ERROR_DETAIL((test_name + " (Hard)").c_str(), (uint64_t)((start_idx + idx) * 8), expect, actual);
+            LOG_ERROR_DETAIL((test_name + " (Hard)").c_str(), reportAddress(region, &ptr[idx]), expect, actual);
             res.hard_errors++;
         } else {
             // Soft/Transient Error: Initial read failed but RAM now has correct value
             // This indicates a transient bit flip - still a real RAM error
-            LOG_ERROR_DETAIL((test_name + " (Soft/Transient)").c_str(), (uint64_t)((start_idx + idx) * 8), expect, actual);
+            LOG_ERROR_DETAIL((test_name + " (Soft/Transient)").c_str(), reportAddress(region, &ptr[idx]), expect, actual);
             res.soft_errors++;
         }
         
@@ -130,7 +135,7 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
             if (ctx.shouldStop()) break;
             size_t n = std::min(block, count - i);
 
-            TestEngine::verifyAndReport(ptr + i, n, i, config.pattern_mode, config.pattern_param0,
+            TestEngine::verifyAndReport(region, ptr + i, n, i, config.pattern_mode, config.pattern_param0,
                                         config.pattern_param1, res, ctx, "SimpleTest", stop);
 
             if (stop && ctx.shouldStop()) break;
@@ -164,7 +169,9 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
     // Allow override via parameter if needed
     if (config.parameter > 0) hammer_points = config.parameter;
 
-    const size_t stride_elements = 65536 / 8; // 64KB stride in 64-bit words (typical row structure alignment)
+    // 8 KB stride = 1 typical DDR4/DDR5 row (64-bit bus × 8K columns / 8 = 8192 bytes).
+    // Aggressors must sit in rows adjacent to the victim; 64 KB was 8× too large.
+    const size_t stride_elements = 8192 / 8; // 8 KB in uint64_t words
     const size_t hammer_iterations = 200000;
 
     if (stride_elements * 2 >= count) {
@@ -172,85 +179,69 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         return res;
     }
 
-    // Fill memory with solid pattern (all ones - most susceptible to RowHammer)
-    generate_pattern_uniform(ptr, count, ~0ULL, true);
-    sfence();
-    
-    // Flush to RAM before initial verification
-    simd::flush_cache_region(ptr, region.size);
-    
     if (!region.is_large_pages) {
         LOG_WARN("RowHammer test effectiveness is significantly reduced without Large Pages (2MB).");
         LOG_WARN("Try running with Administrator privileges or enable 'Lock Pages in Memory'.");
     }
 
-    // Verify initial write before hammering
-    std::vector<uint64_t> initial_errors_vec;
-    simd::verify_uniform(ptr, count, ~0ULL, initial_errors_vec);
-    size_t initial_errors = initial_errors_vec.size();
-    if (initial_errors > 0) {
-        LOG_ERROR("Initial pattern verification failed - memory may be unstable");
-        res.hard_errors += initial_errors;
-        return res;
-    }
+    // Run two passes: all-ones victim pattern, then all-zeros.
+    // DRAM cells can be "true" or "inverted"; each type is susceptible to the opposite fill.
+    const uint64_t victim_patterns[2] = { ~0ULL, 0ULL };
+    for (int pass = 0; pass < 2 && !ctx.shouldStop(); ++pass) {
+        const uint64_t victim_fill  = victim_patterns[pass];
+        const uint64_t aggr_toggle0 = ~victim_fill; // first toggle value
+        const uint64_t aggr_toggle1 =  victim_fill; // second toggle value
 
-    // Perform hammering on random address triplets (double-sided hammering)
-    // FIXED: Proper RowHammer requires TOGGLING aggressor rows (0->1->0->1...)
-    // Just reading repeatedly doesn't induce bit flips effectively
-    std::uniform_int_distribution<size_t> hammer_dist(0, count - 2 * stride_elements - 1);
-    for (size_t i = 0; i < hammer_points && !ctx.shouldStop(); ++i) {
-        // Double-sided hammering: hammer rows above and below a target row
-        // We pick idxA as the "bottom" row
-        size_t idxA = hammer_dist(rng);
-        size_t idxB = idxA + stride_elements;     // Target row (not hammered)
-        size_t idxC = idxA + 2 * stride_elements; // "Top" row
-        
-        // Ensure we don't go out of bounds
-        if (idxC >= count) continue;
+        // Fill memory with the victim pattern
+        generate_pattern_uniform(ptr, count, victim_fill, true);
+        sfence();
+        simd::flush_cache_region(ptr, region.size);
 
-        // Hammer the two aggressor rows repeatedly to stress the victim row (idxB)
-        // Use toggling pattern: write 0, flush, write 1, flush, repeat
-        // This creates the rapid charge/discharge that induces bit flips
-        volatile uint64_t* vptr = reinterpret_cast<volatile uint64_t*>(ptr);
-        bool toggle_state = false;
-        
-        for (size_t k = 0; k < hammer_iterations && !ctx.shouldStop(); ++k) {
-            uint64_t pattern = toggle_state ? 0ULL : ~0ULL;
-            
-            // Write to both aggressor rows
-            vptr[idxA] = pattern;
-            vptr[idxC] = pattern;
-            
-            // Memory fence to ensure writes are ordered
-            simd::memory_fence();
-            
-            // Flush to force DRAM access (by passing volatile* to non-volatile param)
-            simd::flush_cache_line((void*)&vptr[idxA]);
-            simd::flush_cache_line((void*)&vptr[idxC]);
-            
-            // Toggle for next iteration
-            toggle_state = !toggle_state;
+        // Verify initial write
+        std::vector<uint64_t> initial_errors_vec;
+        simd::verify_uniform(ptr, count, victim_fill, initial_errors_vec);
+        if (!initial_errors_vec.empty()) {
+            LOG_ERROR("RowHammer pass %d: initial pattern verification failed - memory may be unstable", pass);
+            res.hard_errors += initial_errors_vec.size();
+            break;
         }
-        
-        // Restore aggressor rows to all-ones to match victim row pattern for verification
-        vptr[idxA] = ~0ULL;
-        vptr[idxC] = ~0ULL;
-        simd::sfence();
+
+        // Double-sided hammering over random aggressor pairs
+        std::uniform_int_distribution<size_t> hammer_dist(0, count - 2 * stride_elements - 1);
+        volatile uint64_t* vptr = reinterpret_cast<volatile uint64_t*>(ptr);
+
+        for (size_t i = 0; i < hammer_points && !ctx.shouldStop(); ++i) {
+            size_t idxA = hammer_dist(rng);
+            size_t idxC = idxA + 2 * stride_elements;
+            if (idxC >= count) continue;
+
+            // Toggle aggressors rapidly: charge/discharge cycle stresses adjacent victim row
+            for (size_t k = 0; k < hammer_iterations && !ctx.shouldStop(); ++k) {
+                uint64_t pattern = (k & 1) ? aggr_toggle1 : aggr_toggle0;
+                vptr[idxA] = pattern;
+                vptr[idxC] = pattern;
+                simd::memory_fence();
+                simd::flush_cache_line((void*)&vptr[idxA]);
+                simd::flush_cache_line((void*)&vptr[idxC]);
+            }
+
+            // Restore aggressors to victim fill for clean verification
+            vptr[idxA] = victim_fill;
+            vptr[idxC] = victim_fill;
+            simd::sfence();
+        }
+
+        // Flush entire region then verify for bit flips in victim rows
+        simd::flush_cache_region(ptr, region.size);
+        size_t block = 256 * 1024;
+        for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
+            size_t n = std::min(block, count - i);
+            TestEngine::verifyAndReport(region, ptr + i, n, i, 0, victim_fill, 0, res, ctx, "RowHammer", stop);
+            if (stop && res.total_errors() > 0) break;
+        }
     }
-    
-    // Flush entire region before verification to ensure we read from RAM
-    simd::flush_cache_region(ptr, region.size);
-    
-    // Verify memory still contains the pattern
-    size_t block = 256 * 1024;
-    for (size_t i = 0; i < count; i += block) {
-        if (ctx.shouldStop()) break;
-        size_t n = std::min(block, count - i);
-        
-        TestEngine::verifyAndReport(ptr + i, n, i, 0, ~0ULL, 0, res, ctx, "RowHammer", stop);
-    }
-    
-    res.bytes_tested = region.size;
+
+    res.bytes_tested = region.size * 2;
     return res;
 }
 
@@ -284,10 +275,10 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
                 
                 if (actual != expect) {
                     res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove (Init - Hard)", (uint64_t)(idx * 8), expect, actual);
+                    LOG_ERROR_DETAIL("MirrorMove (Init - Hard)", reportAddress(region, &ptr[idx]), expect, actual);
                 } else {
                     res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove (Init - Soft)", (uint64_t)(idx * 8), expect, actual);
+                    LOG_ERROR_DETAIL("MirrorMove (Init - Soft)", reportAddress(region, &ptr[idx]), expect, actual);
                 }
             }
             
@@ -303,41 +294,17 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
         // Flush cache before verification
         simd::flush_cache_region(ptr, region.size);
 
-        // So inverted value = ~(param0 ^ (idx * param1))
-        // We need to verify each location individually since verify_pattern_xor can't express this
-        // FIXED: Clear errors before Phase 2 to prevent mixing with Phase 1 indices
-        errors.clear();
-        size_t found_inv = 0;
-        for (size_t i = 0; i < count; ++i) {
-            uint64_t expect = ~(config.pattern_param0 ^ (i * config.pattern_param1));
-            if (ptr[i] != expect) {
-                errors.push_back(i);
-                found_inv++;
-            }
-        }
-        found = found_inv;  // Update found for error reporting below
-        
-        if (found > 0) {
-            for (size_t k = 0; k < found; ++k) {
-                uint64_t idx = errors[k];
-                uint64_t expect = ~(config.pattern_param0 ^ (idx * config.pattern_param1));
-                
-                // Re-read check using safe read
-                uint64_t actual = simd::safe_read_u64(&ptr[idx]);
+        // Inverted value: ~(param0 ^ (idx * param1)) = (~param0) ^ (idx * param1)
+        // This is equivalent to XOR mode (pattern_mode=1) with param0 inverted
+        size_t block = 256 * 1024;
+        for (size_t i = 0; i < count; i += block) {
+            if (ctx.shouldStop()) break;
+            size_t n = std::min(block, count - i);
 
-                if (actual != expect) {
-                    res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove (Inv - Hard)", (uint64_t)(idx * 8), expect, actual);
-                } else {
-                    res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove (Inv - Soft)", (uint64_t)(idx * 8), expect, actual);
-                }
-            }
+            TestEngine::verifyAndReport(region, ptr + i, n, i, 1, ~config.pattern_param0,
+                                        config.pattern_param1, res, ctx, "MirrorMove (Inv)", stop);
 
-            if (stop && res.total_errors() > 0) {
-                ctx.requestStop();
-                break;
-            }
+            if (stop && ctx.shouldStop()) break;
         }
     }
 
@@ -419,10 +386,10 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
                 
                 if (actual != config.pattern_param0) {
                     res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (L - Hard)", (uint64_t)(i * 8), config.pattern_param0, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (L - Hard)", reportAddress(region, &ptr[i]), config.pattern_param0, actual);
                 } else {
                     res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (L - Soft)", (uint64_t)(i * 8), config.pattern_param0, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (L - Soft)", reportAddress(region, &ptr[i]), config.pattern_param0, actual);
                 }
 
                 if (stop && res.total_errors() > 0) {
@@ -438,10 +405,10 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
 
                 if (actual != config.pattern_param1) {
                     res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (H - Hard)", (uint64_t)((i+1) * 8), config.pattern_param1, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (H - Hard)", reportAddress(region, &ptr[i + 1]), config.pattern_param1, actual);
                 } else {
                     res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (H - Soft)", (uint64_t)((i+1) * 8), config.pattern_param1, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (H - Soft)", reportAddress(region, &ptr[i + 1]), config.pattern_param1, actual);
                 }
 
                 if (stop && res.total_errors() > 0) {
@@ -460,10 +427,10 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
 
                 if (actual != config.pattern_param0) {
                     res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Hard)", (uint64_t)(last * 8), config.pattern_param0, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Hard)", reportAddress(region, &ptr[last]), config.pattern_param0, actual);
                 } else {
                     res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Soft)", (uint64_t)(last * 8), config.pattern_param0, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Soft)", reportAddress(region, &ptr[last]), config.pattern_param0, actual);
                 }
 
                 if (stop) ctx.requestStop();
@@ -476,7 +443,6 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
 }
 
 TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
-    (void)stop;
     TestResult res = {};
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
@@ -503,17 +469,19 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
             uint64_t idx = errors[k];
             
             // Re-read check
-            simd::flush_cache_line((void*)&ptr[idx]);
-            simd::memory_fence();
             uint64_t actual = simd::safe_read_u64(&ptr[idx]);
             
             if (actual != config.pattern_param0) {
                 res.hard_errors++;
-                LOG_ERROR_DETAIL("RefreshStable (Hard)", (uint64_t)(idx * 8), config.pattern_param0, actual);
+                LOG_ERROR_DETAIL("RefreshStable (Hard)", reportAddress(region, &ptr[idx]), config.pattern_param0, actual);
             } else {
                 res.soft_errors++;
-                LOG_ERROR_DETAIL("RefreshStable (Soft)", (uint64_t)(idx * 8), config.pattern_param0, actual);
+                LOG_ERROR_DETAIL("RefreshStable (Soft)", reportAddress(region, &ptr[idx]), config.pattern_param0, actual);
             }
+        }
+
+        if (stop && res.total_errors() > 0) {
+            ctx.requestStop();
         }
     }
 
@@ -558,10 +526,10 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
                     const char* name = invert ? "WalkingZeros" : "WalkingOnes";
                     if (actual != pattern) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL((std::string(name) + " (Hard)").c_str(), (uint64_t)(offset * 8), pattern, actual);
+                        LOG_ERROR_DETAIL((std::string(name) + " (Hard)").c_str(), reportAddress(region, &ptr[offset]), pattern, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL((std::string(name) + " (Soft)").c_str(), (uint64_t)(offset * 8), pattern, actual);
+                        LOG_ERROR_DETAIL((std::string(name) + " (Soft)").c_str(), reportAddress(region, &ptr[offset]), pattern, actual);
                     }
                 }
                 
@@ -632,8 +600,8 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
         }
 
         size_t found = 0;
-        uint64_t error_indices[128];
-        for (size_t j = 0; j < n && found < 128; ++j) {
+        uint64_t error_indices[512];
+        for (size_t j = 0; j < n; ++j) {
             if (ptr[i + j] != expected_values[j]) {
                 error_indices[found++] = j;
             }
@@ -647,10 +615,10 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
                 
                 if (actual != expected_values[idx]) {
                      res.hard_errors++;
-                     LOG_ERROR_DETAIL("LFSR (Hard)", (uint64_t)((i + idx) * 8), expected_values[idx], actual);
+                     LOG_ERROR_DETAIL("LFSR (Hard)", reportAddress(region, &ptr[i + idx]), expected_values[idx], actual);
                 } else {
                      res.soft_errors++;
-                     LOG_ERROR_DETAIL("LFSR (Soft)", (uint64_t)((i + idx) * 8), expected_values[idx], actual);
+                     LOG_ERROR_DETAIL("LFSR (Soft)", reportAddress(region, &ptr[i + idx]), expected_values[idx], actual);
                 }
             }
             if (stop) {
@@ -704,10 +672,10 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
                     uint64_t actual = simd::safe_read_u64(&ptr[i + error_indices[k]]);
                     if (actual != pattern) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Fwd - Hard)", (uint64_t)((i + error_indices[k]) * 8), pattern, actual);
+                        LOG_ERROR_DETAIL("MovingInv (Fwd - Hard)", reportAddress(region, &ptr[i + error_indices[k]]), pattern, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Fwd - Soft)", (uint64_t)((i + error_indices[k]) * 8), pattern, actual);
+                        LOG_ERROR_DETAIL("MovingInv (Fwd - Soft)", reportAddress(region, &ptr[i + error_indices[k]]), pattern, actual);
                     }
                 }
                 
@@ -745,10 +713,10 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
                     uint64_t actual = simd::safe_read_u64(&ptr[chunk_start + error_indices[k]]);
                     if (actual != inverted) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Bwd - Hard)", (uint64_t)((chunk_start + error_indices[k]) * 8), inverted, actual);
+                        LOG_ERROR_DETAIL("MovingInv (Bwd - Hard)", reportAddress(region, &ptr[chunk_start + error_indices[k]]), inverted, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Bwd - Soft)", (uint64_t)((chunk_start + error_indices[k]) * 8), inverted, actual);
+                        LOG_ERROR_DETAIL("MovingInv (Bwd - Soft)", reportAddress(region, &ptr[chunk_start + error_indices[k]]), inverted, actual);
                     }
                 }
                 // All errors have been individually logged above
@@ -801,10 +769,10 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
                     uint64_t actual = simd::safe_read_u64(&ptr[i + error_indices[k]]);
                     if (actual != pattern) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Fwd - Hard)", (uint64_t)((i + error_indices[k]) * 8), pattern, actual);
+                        LOG_ERROR_DETAIL("MovInvWalk (Fwd - Hard)", reportAddress(region, &ptr[i + error_indices[k]]), pattern, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Fwd - Soft)", (uint64_t)((i + error_indices[k]) * 8), pattern, actual);
+                        LOG_ERROR_DETAIL("MovInvWalk (Fwd - Soft)", reportAddress(region, &ptr[i + error_indices[k]]), pattern, actual);
                     }
                 }
                 
@@ -842,10 +810,10 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
                     uint64_t actual = simd::safe_read_u64(&ptr[chunk_start + error_indices[k]]);
                     if (actual != inverted) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Bwd - Hard)", (uint64_t)((chunk_start + error_indices[k]) * 8), inverted, actual);
+                        LOG_ERROR_DETAIL("MovInvWalk (Bwd - Hard)", reportAddress(region, &ptr[chunk_start + error_indices[k]]), inverted, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Bwd - Soft)", (uint64_t)((chunk_start + error_indices[k]) * 8), inverted, actual);
+                        LOG_ERROR_DETAIL("MovInvWalk (Bwd - Soft)", reportAddress(region, &ptr[chunk_start + error_indices[k]]), inverted, actual);
                     }
                 }
                 
@@ -924,10 +892,10 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
                     uint32_t actual = simd::safe_read_u32(&ptr[i+j]);
                     if (actual != expected[j]) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Hard)", (uint64_t)((i+j)*4), expected[j], actual);
+                        LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Hard)", reportAddress(region, &ptr[i + j]), expected[j], actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Soft)", (uint64_t)((i+j)*4), expected[j], actual);
+                        LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Soft)", reportAddress(region, &ptr[i + j]), expected[j], actual);
                     }
                     if (stop && res.total_errors() > 0) {
                         ctx.requestStop();
@@ -961,10 +929,10 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
                     uint32_t actual = simd::safe_read_u32(&ptr[i+j]);
                     if (actual != expected[j]) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovInvLFSR (Inv - Hard)", (uint64_t)((i+j)*4), expected[j], actual);
+                        LOG_ERROR_DETAIL("MovInvLFSR (Inv - Hard)", reportAddress(region, &ptr[i + j]), expected[j], actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvLFSR (Inv - Soft)", (uint64_t)((i+j)*4), expected[j], actual);
+                        LOG_ERROR_DETAIL("MovInvLFSR (Inv - Soft)", reportAddress(region, &ptr[i + j]), expected[j], actual);
                     }
                     if (stop && res.total_errors() > 0) {
                         ctx.requestStop();
@@ -1041,10 +1009,10 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
                 uint64_t reread = simd::safe_read_u64(&ptr[i + j]);
                 if (reread != expected) {
                     res.hard_errors++;
-                    LOG_ERROR_DETAIL("RandomAccess (Init - Hard)", (i + j) * 8, expected, reread);
+                    LOG_ERROR_DETAIL("RandomAccess (Init - Hard)", reportAddress(region, &ptr[i + j]), expected, reread);
                 } else {
                     res.soft_errors++;
-                    LOG_ERROR_DETAIL("RandomAccess (Init - Soft)", (i + j) * 8, expected, actual);
+                    LOG_ERROR_DETAIL("RandomAccess (Init - Soft)", reportAddress(region, &ptr[i + j]), expected, actual);
                 }
                 if (stop) {
                     ctx.requestStop();
@@ -1100,16 +1068,14 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
             
             if (actual != expected) {
                 // Read-path error detected - classify with re-read
-                simd::flush_cache_line((void*)&ptr[idx]);
-                simd::memory_fence();
-                uint64_t reread_val = ptr[idx];
+                uint64_t reread_val = simd::safe_read_u64(&ptr[idx]);
                 
                 if (reread_val != expected) {
                     res.hard_errors++;
-                    LOG_ERROR_DETAIL("RandomAccess (Read - Hard)", idx * 8, expected, reread_val);
+                    LOG_ERROR_DETAIL("RandomAccess (Read - Hard)", reportAddress(region, &ptr[idx]), expected, reread_val);
                 } else {
                     res.soft_errors++;
-                    LOG_ERROR_DETAIL("RandomAccess (Read - Soft)", idx * 8, expected, actual);
+                    LOG_ERROR_DETAIL("RandomAccess (Read - Soft)", reportAddress(region, &ptr[idx]), expected, actual);
                 }
                 // Continue to write test even after read error - don't skip!
             }
@@ -1122,20 +1088,16 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
             
             // Step 3: Verify inverted pattern was written correctly
             // Flush cache to ensure we verify DRAM write integrity, not just cache
-            simd::flush_cache_line((void*)&ptr[idx]);
-            simd::memory_fence();
-            actual = ptr[idx];
+            actual = simd::safe_read_u64(&ptr[idx]);
             if (actual != inverted) {
-                simd::flush_cache_line((void*)&ptr[idx]);
-                simd::memory_fence();
-                uint64_t reread_val = ptr[idx];
+                uint64_t reread_val = simd::safe_read_u64(&ptr[idx]);
                 
                 if (reread_val != inverted) {
                     res.hard_errors++;
-                    LOG_ERROR_DETAIL("RandomAccess (WriteCheck - Hard)", idx * 8, inverted, reread_val);
+                    LOG_ERROR_DETAIL("RandomAccess (WriteCheck - Hard)", reportAddress(region, &ptr[idx]), inverted, reread_val);
                 } else {
                     res.soft_errors++;
-                    LOG_ERROR_DETAIL("RandomAccess (WriteCheck - Soft)", idx * 8, inverted, actual);
+                    LOG_ERROR_DETAIL("RandomAccess (WriteCheck - Soft)", reportAddress(region, &ptr[idx]), inverted, actual);
                 }
             }
             
@@ -1201,10 +1163,10 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
                     if (actual != pattern) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("BlockMove (Dst - Hard)", (uint64_t)(offset * 8), pattern, actual);
+                        LOG_ERROR_DETAIL("BlockMove (Dst - Hard)", reportAddress(region, &ptr[offset]), pattern, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("BlockMove (Dst - Soft)", (uint64_t)(offset * 8), pattern, actual);
+                        LOG_ERROR_DETAIL("BlockMove (Dst - Soft)", reportAddress(region, &ptr[offset]), pattern, actual);
                     }
                 }
                 if (stop) {
@@ -1228,10 +1190,10 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
                         uint64_t actual = simd::safe_read_u64(&ptr[offset]);
                         if (actual != pattern) {
                             res.hard_errors++;
-                            LOG_ERROR_DETAIL("BlockMove (Src - Hard)", (uint64_t)(offset * 8), pattern, actual);
+                            LOG_ERROR_DETAIL("BlockMove (Src - Hard)", reportAddress(region, &ptr[offset]), pattern, actual);
                         } else {
                             res.soft_errors++;
-                            LOG_ERROR_DETAIL("BlockMove (Src - Soft)", (uint64_t)(offset * 8), pattern, actual);
+                            LOG_ERROR_DETAIL("BlockMove (Src - Soft)", reportAddress(region, &ptr[offset]), pattern, actual);
                         }
                     }
                     if (stop) {
@@ -1265,6 +1227,7 @@ TestResult TestEngine::runRegionWork(TestContext& ctx, const MemoryRegion& regio
         MemoryRegion sub = region;
         sub.base += offset;
         sub.size = len;
+        sub.base_offset_bytes += offset;
 
         TestResult r = runTest(ctx, test_config.function, sub, test_config, halt_on_error);
         total.merge(r);
@@ -1286,21 +1249,60 @@ RunResult TestEngine::runTests(const Config& config) {
     bool try_large = config.use_large_pages;
     bool try_lock = config.use_locked_memory;
 
+    auto prep_start = std::chrono::steady_clock::now();
+    std::atomic<bool> prep_done{false};
+    std::thread prep_status_thread([&prep_done]() {
+        uint64_t seconds = 0;
+        while (!prep_done.load(std::memory_order_acquire)) {
+            {
+                std::lock_guard<std::mutex> lock(Logger::get().getConsoleMutex());
+                std::cout << "\r[Preparation] Optimizing memory layout and lock strategy... "
+                          << seconds << "s elapsed" << std::flush;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            ++seconds;
+        }
+    });
+
     auto guard = Platform::allocateMemoryRAII(needed_bytes, try_large, try_lock);
+    prep_done.store(true, std::memory_order_release);
+    if (prep_status_thread.joinable()) prep_status_thread.join();
+    auto prep_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - prep_start).count();
+    {
+        std::lock_guard<std::mutex> lock(Logger::get().getConsoleMutex());
+        std::cout << "\r[Preparation] Completed in " << prep_seconds << "s.                          \n";
+    }
+
     if (!guard.valid()) {
         LOG_ERROR("Found no suitable memory allocation method. Aborting.");
+        result.hard_errors = 1;
         return result;
     }
 
     region.base = guard.base();
     region.size = guard.size();
+    region.base_offset_bytes = 0;
     region.is_large_pages = guard.is_large_pages();
     region.is_locked = guard.is_locked();
+
+    if (region.size < needed_bytes) {
+        LOG_ERROR("Allocation contract violated: requested %u MB but got only %zu MB. Aborting.",
+                  config.memory_window_mb, region.size / (1024 * 1024));
+        result.hard_errors = 1;
+        return result;
+    }
+    if (try_lock && !region.is_locked) {
+        LOG_ERROR("Allocation contract violated: requested locked memory but allocation is not locked. Aborting.");
+        result.hard_errors = 1;
+        return result;
+    }
 
     // User requested explicit console output for locking status
     {
         std::lock_guard<std::mutex> lock(Logger::get().getConsoleMutex());
         std::cout << "\n[Memory Allocation]\n";
+        std::cout << "  Requested:  " << config.memory_window_mb << " MB\n";
         std::cout << "  Size:       " << (region.size / 1024 / 1024) << " MB\n";
         std::cout << "  Locked:     " << (region.is_locked ? "Yes" : "No") << "\n";
         std::cout << "  LargePages: " << (region.is_large_pages ? "Yes" : "No") << "\n";
@@ -1444,6 +1446,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             MemoryRegion my_region = region;
             my_region.base += offset;
             my_region.size = size;
+            my_region.base_offset_bytes += offset;
 
             uint32_t cycle = 0;
             while ((config.cycles == 0 || cycle < config.cycles) && !ctx.shouldStop()) {
@@ -1470,6 +1473,15 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                     if (ctx.shouldStop()) break;
                     if (configs.count(test_id)) {
                         const TestConfig& tc = configs.at(test_id);
+                        if (!tc.enabled) {
+                            if (t == 0) {
+                                ctx.setActiveTestName("Disabled");
+                                ctx.current_test_idx.store(++seq_idx, std::memory_order_release);
+                                LOG_INFO("Test %u: %s Skipped (disabled)", seq_idx, tc.function.c_str());
+                            }
+                            continue;
+                        }
+
                         if (t == 0) {
                             ctx.setActiveTestName(tc.function);
                             ctx.current_test_idx.store(++seq_idx, std::memory_order_release);
@@ -1525,6 +1537,8 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     result.hard_errors = ctx.total_hard_errors.load(std::memory_order_relaxed);
     result.soft_errors = ctx.total_soft_errors.load(std::memory_order_relaxed);
     result.unverified_errors = ctx.total_unverified_errors.load(std::memory_order_relaxed);
+    result.bytes_tested = ctx.total_bytes.load(std::memory_order_relaxed);
+    result.cycles_completed = ctx.current_cycle.load(std::memory_order_relaxed);
     result.duration_seconds = std::chrono::duration<double>(end - start).count();
 
     // Clear global context pointer before returning

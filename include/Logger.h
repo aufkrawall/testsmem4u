@@ -47,7 +47,6 @@ public:
         error_count_ = 0;
         error_rate_limit_ = 100;
         suppressed_count_ = 0;
-        last_error_time_ = std::chrono::high_resolution_clock::now();
         last_summary_time_ = std::chrono::high_resolution_clock::now();
 
         if (!filename.empty()) {
@@ -193,16 +192,20 @@ public:
         std::lock_guard<std::mutex> lock(rate_limit_mutex_);
         auto now = std::chrono::high_resolution_clock::now();
         
-        // Periodic summary of suppressed errors
+        // Periodic summary of suppressed errors + reset the per-second error counter
         auto seconds_since_summary = std::chrono::duration_cast<std::chrono::seconds>(now - last_summary_time_).count();
-        if (seconds_since_summary >= 1 && suppressed_count_ > 0) {
-            char buf[128];
-            snprintf(buf, sizeof(buf), "ERROR RATE: %u additional errors suppressed (see log file)", suppressed_count_);
-            {
-                std::lock_guard<std::mutex> console_lock(console_mutex_);
-                std::cout << formatLogLine(LogLevel::WARN, buf) << "\n";
+        if (seconds_since_summary >= 1) {
+            if (suppressed_count_ > 0) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "ERROR RATE: %u additional errors suppressed (see log file)", suppressed_count_);
+                {
+                    std::lock_guard<std::mutex> console_lock(console_mutex_);
+                    std::cout << formatLogLine(LogLevel::WARN, buf) << "\n";
+                }
+                suppressed_count_ = 0;
             }
-            suppressed_count_ = 0;
+            // Reset per-second counter so error details keep appearing on console
+            error_count_ = 0;
             last_summary_time_ = now;
         }
 
@@ -369,7 +372,6 @@ private:
     uint32_t error_count_;
     uint32_t error_rate_limit_;
     uint32_t suppressed_count_;
-    std::chrono::high_resolution_clock::time_point last_error_time_;
     std::chrono::high_resolution_clock::time_point last_summary_time_;
 
     uint32_t generateSessionId() {

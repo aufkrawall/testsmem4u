@@ -19,9 +19,12 @@ struct PlatformInfo {
 struct MemoryRegion {
     uint8_t* base = nullptr;
     size_t size = 0;
+    size_t base_offset_bytes = 0; // Offset from root test allocation for global error reporting
     bool is_large_pages = false;
     bool is_locked = false;
+    size_t locked_offset = 0; // Offset into base where VirtualUnlock should start
     size_t locked_bytes = 0;
+    size_t lp_chunk_size = 0;  // >0 when allocated as chunked large pages (each chunk freed separately)
 };
 
 class Platform {
@@ -36,6 +39,7 @@ public:
     // System Info
     static PlatformInfo detectPlatform();
     static uint64_t getTotalSystemRAM();
+    static uint64_t getAvailableSystemRAM();
 
     // Process Management
     static bool setThreadAffinity(uint32_t thread_id, uint32_t num_threads);
@@ -60,6 +64,7 @@ public:
 private:
     static bool tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t min_required_bytes);
     static bool tryAllocateLargePages(MemoryRegion& region, size_t size);
+    static bool tryAllocateLargePagesChunked(MemoryRegion& region, size_t size);
     static bool tryAllocateStandard(MemoryRegion& region, size_t size);
 #else
 private:

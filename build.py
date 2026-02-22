@@ -56,6 +56,7 @@ BASE_CXX_FLAGS = [
 
 HOST_ONLY_FLAGS = [
     "-mcpu=x86_64_v3",
+    "-mprefer-vector-width=256",  # Prefer 256-bit AVX2 auto-vectorisation on v3 targets
 ]
 
 TARGETS = {
@@ -130,8 +131,6 @@ def download_zig() -> bool:
         return False
 
 
-def generate_compile_commands(target_name: str, cmd_base: list, files: list):
-    pass
 
 
 def compile_object(args):
@@ -168,12 +167,13 @@ def build_target(name: str) -> bool:
     output_path = DIST_DIR / t["output"]
 
     flags = list(BASE_CXX_FLAGS)
-    # Remove link-time flags from compile step if they cause warnings, but -flto is fine
-    # Remove -Wl flags for compilation step
+    target_extra_flags = t.get("extra_flags", [])
+    # Remove linker-only flags from compile step, but keep target CPU/thread flags.
     compile_flags = [f for f in flags if not f.startswith("-Wl")]
+    compile_flags += [f for f in target_extra_flags if not f.startswith("-l") and not f.startswith("-Wl")]
     
     link_flags = list(flags) # Keep all flags for linking (LTO needs optimization flags)
-    link_flags += t.get("extra_flags", [])
+    link_flags += target_extra_flags
     
     # Base compile command
     base_compile_cmd = [

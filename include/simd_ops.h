@@ -13,8 +13,7 @@ enum class SimdLevel {
     SSE4_1 = 1,
     AVX2 = 2,
     AVX512 = 3,
-    NEON = 4,
-    NEON_SVE = 5
+    NEON = 4
 };
 
 struct SimdCapabilities {
@@ -85,12 +84,6 @@ void generate_pattern_linear(T* dst, size_t count, uint64_t param0, uint64_t par
 
 template<typename T>
 void generate_pattern_xor(T* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt);
-
-template<typename T>
-void generate_pattern_moving_inv(T* dst, size_t count, uint64_t val, bool use_nt);
-
-template<typename T>
-void generate_pattern_lfsr(T* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt);
 
 template<typename T>
 void generate_pattern_increment(T* dst, size_t count, uint64_t start, bool use_nt);

@@ -29,20 +29,51 @@ namespace simd {
     #define __cpuidex(info, func, sub) call_cpuidex(info, func, sub)
 #endif
 
+static inline uint64_t read_xcr0() {
+#if defined(_MSC_VER)
+    return _xgetbv(0);
+#elif defined(__GNUC__) || defined(__clang__)
+    uint32_t eax = 0;
+    uint32_t edx = 0;
+    __asm__ volatile (".byte 0x0f, 0x01, 0xd0" : "=a"(eax), "=d"(edx) : "c"(0));
+    return (static_cast<uint64_t>(edx) << 32) | eax;
+#else
+    return 0;
+#endif
+}
+
 static SimdCapabilities detect_x86_capabilities() {
     SimdCapabilities caps;
 
-    int info[4];
+    int info[4] = {0, 0, 0, 0};
+    __cpuidex(info, 0, 0);
+    const int max_leaf = info[0];
+
     __cpuidex(info, 1, 0);
-    if (info[3] & (1 << 19)) caps.has_clflush = true;
-    
-    // Check for CLFLUSHOPT (Leaf 7, Subleaf 0, EBX bit 23)
-    __cpuidex(info, 7, 0);
-    if (info[1] & (1 << 23)) caps.has_clflushopt = true;
+    const bool cpu_has_sse41 = (info[2] & (1 << 19)) != 0;
+    const bool cpu_has_avx = (info[2] & (1 << 28)) != 0;
+    const bool cpu_has_osxsave = (info[2] & (1 << 27)) != 0;
+    caps.has_clflush = (info[3] & (1 << 19)) != 0;
+
+    bool os_has_avx_state = false;
+    bool os_has_avx512_state = false;
+    if (cpu_has_osxsave) {
+        const uint64_t xcr0 = read_xcr0();
+        os_has_avx_state = (xcr0 & 0x6ULL) == 0x6ULL;        // XMM + YMM state
+        os_has_avx512_state = os_has_avx_state && ((xcr0 & 0xE0ULL) == 0xE0ULL); // Opmask + ZMM_Hi256 + Hi16_ZMM
+    }
+
+    bool cpu_has_avx2 = false;
+    bool cpu_has_avx512f = false;
+    if (max_leaf >= 7) {
+        __cpuidex(info, 7, 0);
+        caps.has_clflushopt = (info[1] & (1 << 23)) != 0;
+        cpu_has_avx2 = (info[1] & (1 << 5)) != 0;
+        cpu_has_avx512f = (info[1] & (1 << 16)) != 0;
+    }
 
 #if defined(__AVX512F__)
-    __cpuidex(info, 7, 0);
-    if (info[1] & (1 << 16)) {
+    if (cpu_has_avx512f && cpu_has_avx && os_has_avx512_state) {
         caps.level = SimdLevel::AVX512;
         caps.has_avx512 = true;
         caps.has_avx2 = true;
@@ -52,16 +83,14 @@ static SimdCapabilities detect_x86_capabilities() {
     } else
 #endif
     {
-        __cpuidex(info, 7, 0);
-        if (info[1] & (1 << 5)) {
+        if (cpu_has_avx2 && cpu_has_avx && os_has_avx_state) {
             caps.level = SimdLevel::AVX2;
             caps.has_avx2 = true;
             caps.has_sse4_1 = true;
             caps.has_nt_stores = true;
             caps.vector_width = 32;
         } else {
-            __cpuidex(info, 1, 0);
-            if (info[2] & (1 << 19)) {
+            if (cpu_has_sse41) {
                 caps.level = SimdLevel::SSE4_1;
                 caps.has_sse4_1 = true;
                 caps.has_nt_stores = true;
@@ -98,14 +127,15 @@ void flush_cache_region(void* ptr, size_t bytes) {
     uint8_t* p = static_cast<uint8_t*>(ptr);
     uint8_t* end = p + bytes;
     
+    const bool use_opt = getCapabilities().has_clflushopt;
     for (; p < end; p += CACHE_LINE_SIZE) {
-        if (getCapabilities().has_clflushopt) {
+        if (use_opt) {
             do_clflushopt(p);
         } else {
             _mm_clflush(p);
         }
     }
-    _mm_sfence(); // Ensure all flushes complete before returning
+    _mm_mfence(); // MFENCE required after CLFLUSH/CLFLUSHOPT to order both subsequent stores AND loads
 }
 
 #elif defined(__aarch64__) || defined(_M_ARM64)
@@ -186,7 +216,7 @@ const char* getSimdLevelName(SimdLevel level) {
 }
 
 void memory_fence() {
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     _mm_mfence();
 #else
     std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -194,7 +224,7 @@ void memory_fence() {
 }
 
 void sfence() {
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     _mm_sfence();
 #else
     std::atomic_thread_fence(std::memory_order_release);
@@ -202,7 +232,7 @@ void sfence() {
 }
 
 void lfence() {
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     _mm_lfence();
 #else
     std::atomic_thread_fence(std::memory_order_acquire);
@@ -334,6 +364,7 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
     for (; i < count; ++i) {
         dst[i] = param0 + (i * param1);
     }
+    sfence();
 }
 
 #if defined(__AVX2__)
@@ -475,6 +506,7 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
 #endif
 
     for (; i < count; ++i) dst[i] = val;
+    sfence();
 }
 
 template<>
@@ -569,10 +601,10 @@ void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t s
 #if defined(__AVX2__)
     __m256i v_step4 = _mm256_set1_epi64x(param1 * 4);
     __m256i v_expect = _mm256_set_epi64x(
-        param0 + (start_idx + 3) * param1,
-        param0 + (start_idx + 2) * param1,
-        param0 + (start_idx + 1) * param1,
-        param0 + (start_idx + 0) * param1
+        param0 + (start_idx + i + 3) * param1,
+        param0 + (start_idx + i + 2) * param1,
+        param0 + (start_idx + i + 1) * param1,
+        param0 + (start_idx + i + 0) * param1
     );
 
     for (; i + 4 <= count; i += 4) {
@@ -609,11 +641,14 @@ void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t star
     size_t i = 0;
 
     // NOTE: AVX2 doesn't have native 64-bit integer multiply.
-    // Previous SIMD emulation was incorrect. For RAM testing, correctness > speed.
     // Only AVX512 has _mm512_mullo_epi64, so use that if available.
+    // Hoist caps outside the preprocessor blocks to avoid duplicate declaration when
+    // both __AVX512F__ and __AVX2__ are defined simultaneously (e.g. v4 builds).
+#if defined(__AVX512F__) || defined(__AVX2__)
+    SimdCapabilities caps = getCapabilities();
+#endif
 
 #if defined(__AVX512F__)
-    SimdCapabilities caps = getCapabilities();
     if (caps.has_avx512 && count >= 8) {
         __m512i v_param0 = _mm512_set1_epi64(param0);
         __m512i v_param1 = _mm512_set1_epi64(param1);
@@ -628,7 +663,6 @@ void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t star
             __m512i v_expect = _mm512_xor_si512(v_param0, v_mul);
             __mmask8 mask = _mm512_cmpeq_epi64_mask(actual, v_expect);
             if (mask != 0xFF) {
-                // Scalar verification for mismatches
                 for (size_t k = 0; k < 8; ++k) {
                     if (!(mask & (1 << k))) {
                         if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
@@ -643,42 +677,35 @@ void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t star
 #endif
 
 #if defined(__AVX2__)
-    // Optimized AVX2 Path
-    SimdCapabilities caps = getCapabilities();
-    if (caps.has_avx2 && count >= 4) {
+    if (caps.has_avx2 && i + 4 <= count) {
         __m256i v_param0 = _mm256_set1_epi64x(param0);
         __m256i v_param1 = _mm256_set1_epi64x(param1);
-        __m256i v_idx = _mm256_set_epi64x(start_idx + 3, start_idx + 2, start_idx + 1, start_idx);
-        __m256i v_idx_step = _mm256_set1_epi64x(4);
-        
-        // Initialize term = idx * param1 using the expensive mul once
-        __m256i v_term = mul64_avx2(v_idx, v_param1);
-        // Step = 4 * param1
-        __m256i v_term_step = _mm256_slli_epi64(v_param1, 2);
-        
+
+        // Must account for elements already processed by AVX-512 (i may be > 0).
+        // Compute initial term = (start_idx + i) * param1 for each lane.
+        __m256i v_base = _mm256_set_epi64x((int64_t)(start_idx + i + 3), (int64_t)(start_idx + i + 2),
+                                           (int64_t)(start_idx + i + 1), (int64_t)(start_idx + i));
+        __m256i v_term = mul64_avx2(v_base, v_param1);
+        __m256i v_term_step = _mm256_slli_epi64(v_param1, 2); // 4 * param1
+
         for (; i + 4 <= count; i += 4) {
-            
             __m256i actual;
             if (((uintptr_t)(src + i) & 31) == 0) {
-                 actual = _mm256_stream_load_si256((__m256i*)(src + i));
+                actual = _mm256_stream_load_si256((__m256i*)(src + i));
             } else {
-                 actual = _mm256_loadu_si256((const __m256i*)(src + i));
+                actual = _mm256_loadu_si256((const __m256i*)(src + i));
             }
-            
-            // Calculate expected using Add instead of Mul
-            // v_expect = param0 ^ v_term
+
             __m256i v_expect = _mm256_xor_si256(v_param0, v_term);
-            
             __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
             int mask = _mm256_movemask_epi8(eq);
-            
-            // 0xFFFFFFFF means all bytes equal
+
             if ((uint32_t)mask != 0xFFFFFFFF) {
-                 for (size_t k = 0; k < 4; ++k) {
-                     if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                         error_indices.push_back(i + k);
-                     }
-                 }
+                for (size_t k = 0; k < 4; ++k) {
+                    if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
+                        error_indices.push_back(i + k);
+                    }
+                }
             }
             v_term = _mm256_add_epi64(v_term, v_term_step);
         }
@@ -780,6 +807,19 @@ void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
                 _mm256_stream_si256((__m256i*)(dst + i), v);
             } else {
                 _mm256_storeu_si256((__m256i*)(dst + i), v);
+            }
+        }
+    }
+#elif defined(__SSE2__)
+    {
+        __m128i ones = _mm_set1_epi64x(~0ULL);
+        for (; i + 2 <= count; i += 2) {
+            __m128i v = _mm_loadu_si128((const __m128i*)(dst + i));
+            v = _mm_xor_si128(v, ones);
+            if (use_nt && caps.has_nt_stores) {
+                _mm_stream_si128((__m128i*)(dst + i), v);
+            } else {
+                _mm_storeu_si128((__m128i*)(dst + i), v);
             }
         }
     }
