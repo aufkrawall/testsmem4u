@@ -1,6 +1,7 @@
 #include "TestEngine.h"
 #include "Platform.h"
 #include "Logger.h"
+#include "ConsoleDisplay.h"
 #include "simd_ops.h"
 #include <chrono>
 #include <iostream>
@@ -570,15 +571,35 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
     uint64_t seed = initial_seed;
 
     // Generate pattern using 64-bit LFSR with NT stores to bypass cache
-    for (size_t i = 0; i < count; ++i) {
-        if (ctx.shouldStop()) break;
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(__AVX2__)
+    // Batch 4 LFSR values into 256-bit AVX2 NT stores for better bandwidth
+    size_t i = 0;
+    for (; i + 4 <= count; i += 4) {
+        if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
+        uint64_t v0 = seed; seed = lfsr_next(seed);
+        uint64_t v1 = seed; seed = lfsr_next(seed);
+        uint64_t v2 = seed; seed = lfsr_next(seed);
+        uint64_t v3 = seed; seed = lfsr_next(seed);
+        __m256i vec = _mm256_set_epi64x((long long)v3, (long long)v2, (long long)v1, (long long)v0);
+        _mm256_stream_si256((__m256i*)&ptr[i], vec);
+    }
+    for (; i < count; ++i) {
         _mm_stream_si64((long long*)&ptr[i], (long long)seed);
-#else
-        ptr[i] = seed;
-#endif
         seed = lfsr_next(seed);
     }
+#elif defined(__x86_64__) || defined(_M_X64)
+    for (size_t i = 0; i < count; ++i) {
+        if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
+        _mm_stream_si64((long long*)&ptr[i], (long long)seed);
+        seed = lfsr_next(seed);
+    }
+#else
+    for (size_t i = 0; i < count; ++i) {
+        if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
+        ptr[i] = seed;
+        seed = lfsr_next(seed);
+    }
+#endif
     sfence();
     
     // Flush cache for true RAM testing
@@ -853,43 +874,63 @@ TestResult TestEngine::runTest(TestContext& ctx, const std::string& name, const 
 
 TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
     TestResult res = {};
-    uint32_t* ptr = reinterpret_cast<uint32_t*>(region.base);
-    size_t count = region.size / 4;
+    uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
+    size_t count = region.size / 8;
     
-    uint64_t initial_seed = config.pattern_param0 ? config.pattern_param0 : 0x12345678;
+    uint64_t initial_seed = config.pattern_param0 ? config.pattern_param0 : 0xACE1ACE2DEADBEEFULL;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
     bool early_stop = false;
     
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop() && !early_stop; ++r) {
         // Phase 1: Fill with LFSR pattern using NT stores to bypass cache
         uint64_t seed = initial_seed;
+#if defined(__AVX2__)
+        {
+            size_t i = 0;
+            for (; i + 4 <= count; i += 4) {
+                if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
+                uint64_t v0 = seed; seed = lfsr_next(seed);
+                uint64_t v1 = seed; seed = lfsr_next(seed);
+                uint64_t v2 = seed; seed = lfsr_next(seed);
+                uint64_t v3 = seed; seed = lfsr_next(seed);
+                __m256i vec = _mm256_set_epi64x((long long)v3, (long long)v2, (long long)v1, (long long)v0);
+                _mm256_stream_si256((__m256i*)&ptr[i], vec);
+            }
+            for (; i < count; ++i) {
+                _mm_stream_si64((long long*)&ptr[i], (long long)seed);
+                seed = lfsr_next(seed);
+            }
+        }
+#elif defined(__x86_64__) || defined(_M_X64)
         for (size_t i = 0; i < count; ++i) {
-            if (ctx.shouldStop()) break;
-#if defined(__x86_64__) || defined(_M_X64)
-            _mm_stream_si32((int*)&ptr[i], static_cast<int32_t>(seed));
-#else
-            ptr[i] = static_cast<uint32_t>(seed);
-#endif
+            if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
+            _mm_stream_si64((long long*)&ptr[i], (long long)seed);
             seed = lfsr_next(seed);
         }
+#else
+        for (size_t i = 0; i < count; ++i) {
+            if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
+            ptr[i] = seed;
+            seed = lfsr_next(seed);
+        }
+#endif
         sfence();
         simd::flush_cache_region(ptr, region.size);
         
         // Phase 2: Verify pattern
         seed = initial_seed;
-        for (size_t i = 0; i < count && !ctx.shouldStop() && !early_stop; i += 1024) {
-            size_t n = std::min((size_t)1024, count - i);
+        for (size_t i = 0; i < count && !ctx.shouldStop() && !early_stop; i += 512) {
+            size_t n = std::min((size_t)512, count - i);
             
-            uint32_t expected[1024];
+            uint64_t expected[512];
             for (size_t j = 0; j < n; ++j) {
-                expected[j] = static_cast<uint32_t>(seed);
+                expected[j] = seed;
                 seed = lfsr_next(seed);
             }
             
             for (size_t j = 0; j < n; ++j) {
                 if (ptr[i+j] != expected[j]) {
-                    // Re-read
-                    uint32_t actual = simd::safe_read_u32(&ptr[i+j]);
+                    uint64_t actual = simd::safe_read_u64(&ptr[i+j]);
                     if (actual != expected[j]) {
                         res.hard_errors++;
                         LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Hard)", reportAddress(region, &ptr[i + j]), expected[j], actual);
@@ -909,24 +950,24 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
         if (ctx.shouldStop() || early_stop) break;
         
         // Phase 3: Invert
-        simd::invert_array(reinterpret_cast<uint64_t*>(ptr), region.size / 8, true);
+        simd::invert_array(ptr, count, true);
         sfence();
         simd::flush_cache_region(ptr, region.size);
         
         // Phase 4: Verify Inverted
         seed = initial_seed;
-        for (size_t i = 0; i < count && !ctx.shouldStop() && !early_stop; i += 1024) {
-            size_t n = std::min((size_t)1024, count - i);
+        for (size_t i = 0; i < count && !ctx.shouldStop() && !early_stop; i += 512) {
+            size_t n = std::min((size_t)512, count - i);
             
-            uint32_t expected[1024];
+            uint64_t expected[512];
             for (size_t j = 0; j < n; ++j) {
-                expected[j] = ~static_cast<uint32_t>(seed); // Expect inverted
+                expected[j] = ~seed;
                 seed = lfsr_next(seed);
             }
             
             for (size_t j = 0; j < n; ++j) {
                 if (ptr[i+j] != expected[j]) {
-                    uint32_t actual = simd::safe_read_u32(&ptr[i+j]);
+                    uint64_t actual = simd::safe_read_u64(&ptr[i+j]);
                     if (actual != expected[j]) {
                         res.hard_errors++;
                         LOG_ERROR_DETAIL("MovInvLFSR (Inv - Hard)", reportAddress(region, &ptr[i + j]), expected[j], actual);
@@ -1104,7 +1145,6 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
             // Step 4: Restore original pattern for next iteration
             ptr[idx] = idx;
             simd::flush_cache_line((void*)&ptr[idx]);
-            simd::sfence();
             
             if (stop && res.total_errors() > 0) {
                 ctx.requestStop();
@@ -1254,11 +1294,9 @@ RunResult TestEngine::runTests(const Config& config) {
     std::thread prep_status_thread([&prep_done]() {
         uint64_t seconds = 0;
         while (!prep_done.load(std::memory_order_acquire)) {
-            {
-                std::lock_guard<std::mutex> lock(Logger::get().getConsoleMutex());
-                std::cout << "\r[Preparation] Optimizing memory layout and lock strategy... "
-                          << seconds << "s elapsed" << std::flush;
-            }
+            std::ostringstream ss;
+            ss << "[Preparation] Optimizing memory layout... " << seconds << "s elapsed";
+            ConsoleDisplay::get().updateProgressLine(ss.str());
             std::this_thread::sleep_for(std::chrono::seconds(1));
             ++seconds;
         }
@@ -1270,8 +1308,9 @@ RunResult TestEngine::runTests(const Config& config) {
     auto prep_seconds = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - prep_start).count();
     {
-        std::lock_guard<std::mutex> lock(Logger::get().getConsoleMutex());
-        std::cout << "\r[Preparation] Completed in " << prep_seconds << "s.                          \n";
+        std::ostringstream ss;
+        ss << "[Preparation] Completed in " << prep_seconds << "s.";
+        ConsoleDisplay::get().printLine(ss.str());
     }
 
     if (!guard.valid()) {
@@ -1298,16 +1337,34 @@ RunResult TestEngine::runTests(const Config& config) {
         return result;
     }
 
-    // User requested explicit console output for locking status
+    ConsoleDisplay::get().printLine("");
+    ConsoleDisplay::get().printLine("[Memory Allocation]");
     {
-        std::lock_guard<std::mutex> lock(Logger::get().getConsoleMutex());
-        std::cout << "\n[Memory Allocation]\n";
-        std::cout << "  Requested:  " << config.memory_window_mb << " MB\n";
-        std::cout << "  Size:       " << (region.size / 1024 / 1024) << " MB\n";
-        std::cout << "  Locked:     " << (region.is_locked ? "Yes" : "No") << "\n";
-        std::cout << "  LargePages: " << (region.is_large_pages ? "Yes" : "No") << "\n";
-        std::cout << "  Method:     " << (region.is_large_pages ? "Large Pages" : (region.is_locked ? "VirtualLock/Mlock" : "Standard Malloc (Swappable)")) << "\n" << std::endl;
+        std::ostringstream ss;
+        ss << "  Requested:  " << config.memory_window_mb << " MB";
+        ConsoleDisplay::get().printLine(ss.str());
     }
+    {
+        std::ostringstream ss;
+        ss << "  Size:       " << (region.size / 1024 / 1024) << " MB";
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Locked:     " << (region.is_locked ? "Yes" : "No");
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  LargePages: " << (region.is_large_pages ? "Yes" : "No");
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Method:     " << (region.is_large_pages ? "Large Pages" : (region.is_locked ? "VirtualLock/Mlock" : "Standard Malloc (Swappable)"));
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    ConsoleDisplay::get().printLine("");
 
     std::string seq_str = config.preset.test_sequence.empty() ? "0" : config.preset.test_sequence;
     std::vector<uint32_t> seq = parseTestSequence(seq_str);
@@ -1332,15 +1389,9 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    std::thread monitor([&]() {
-        std::string last_line;
-        char buffer[256];
-#ifdef _WIN32
-        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-        CONSOLE_SCREEN_BUFFER_INFO csbi;
-        COORD cursorPos;
-#endif
+    ConsoleDisplay::get().setTestingActive(true);
 
+    std::thread monitor([&]() {
         auto last_update = std::chrono::steady_clock::now();
 
         while (!ctx.shouldStop()) {
@@ -1348,90 +1399,28 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             if (ctx.shouldStop()) break;
 
             auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_update).count() < 1000) {
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_update).count() < 500) {
                 continue;
             }
             last_update = now;
 
-            // Fetch status outside of lock to avoid deadlock
-            uint64_t h_errs = ctx.total_hard_errors.load(std::memory_order_relaxed);
-            uint64_t s_errs = ctx.total_soft_errors.load(std::memory_order_relaxed);
-            uint64_t u_errs = ctx.total_unverified_errors.load(std::memory_order_relaxed);
-            uint64_t bytes = ctx.total_bytes.load(std::memory_order_relaxed);
-            double gb = bytes / (1024.0 * 1024.0 * 1024.0);
+            StatusInfo info;
+            info.cycle = ctx.current_cycle.load(std::memory_order_relaxed);
+            info.total_cycles = config.cycles;
+            info.test_idx = ctx.current_test_idx.load(std::memory_order_relaxed);
+            info.total_tests = seq.size();
+            info.test_name = ctx.getActiveTestName();
+            info.bytes_tested = ctx.total_bytes.load(std::memory_order_relaxed);
+            info.total_bytes = region.size;
+            info.errors = ctx.total_hard_errors.load(std::memory_order_relaxed) +
+                          ctx.total_soft_errors.load(std::memory_order_relaxed) +
+                          ctx.total_unverified_errors.load(std::memory_order_relaxed);
+            info.elapsed_seconds = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::seconds>(now - start).count());
 
-            std::string name = ctx.getActiveTestName();
-            uint32_t cycle = ctx.current_cycle.load(std::memory_order_relaxed);
-            uint32_t test_idx = ctx.current_test_idx.load(std::memory_order_relaxed);
-
-            auto elapsed_duration = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
-            uint32_t hours = static_cast<uint32_t>(elapsed_duration / 3600);
-            uint32_t minutes = static_cast<uint32_t>((elapsed_duration % 3600) / 60);
-            uint32_t seconds = static_cast<uint32_t>(elapsed_duration % 60);
-
-            int len = snprintf(buffer, sizeof(buffer),
-                "[Cycle %u/%s] Test %u/%zu (%s): %.2f GB | Err: %llu | %02u:%02u:%02u",
-                cycle,
-                config.cycles ? std::to_string(config.cycles).c_str() : "inf",
-                test_idx,
-                seq.size(),
-                name.c_str(),
-                gb,
-                (unsigned long long)(h_errs + s_errs + u_errs),
-                hours, minutes, seconds);
-
-#ifdef _WIN32
-            if (len > 0 && last_line != buffer) {
-                // Only lock for the actual console I/O
-                std::lock_guard<std::mutex> lock(Logger::get().getMutex());
-                GetConsoleScreenBufferInfo(hOut, &csbi);
-                int width = csbi.dwSize.X;
-                
-                // Prevent line wrapping by limiting to width - 1
-                if (width > 1) {
-                    cursorPos = csbi.dwCursorPosition;
-                    cursorPos.X = 0;
-                    SetConsoleCursorPosition(hOut, cursorPos);
-
-                    int max_len = width - 1;
-                    int actual_len = std::min(len, max_len);
-                    
-                    DWORD written;
-                    WriteConsoleA(hOut, buffer, static_cast<DWORD>(actual_len), &written, nullptr);
-
-                    // Clear remaining part of line up to width - 1
-                    int cellsToClear = max_len - actual_len;
-                    if (cellsToClear > 0) {
-                        std::string spaces(cellsToClear, ' ');
-                        WriteConsoleA(hOut, spaces.c_str(), static_cast<DWORD>(cellsToClear), &written, nullptr);
-                    }
-                }
-                last_line = buffer;
-            }
-#else
-            if (len > 0 && last_line != buffer) {
-                // Only lock for the actual console I/O
-                std::lock_guard<std::mutex> lock(Logger::get().getMutex());
-                // Simple carriage return + clear line (ANSI)
-                printf("\r\033[K%s", buffer);
-                fflush(stdout);
-                last_line = buffer;
-            }
-#endif
+            ConsoleDisplay::get().updateStatus(info);
         }
-
-#ifdef _WIN32
-        {
-             std::lock_guard<std::mutex> lock(Logger::get().getMutex());
-             GetConsoleScreenBufferInfo(hOut, &csbi);
-             cursorPos = csbi.dwCursorPosition;
-             cursorPos.X = 0;
-             SetConsoleCursorPosition(hOut, cursorPos);
-             printf("\n");
-        }
-#else
-         printf("\n");
-#endif
+        ConsoleDisplay::get().clearStatus();
     });
 
     for (uint32_t t = 0; t < threads; ++t) {
@@ -1455,11 +1444,8 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                     if (!Platform::checkMemoryResident(region.base, region.size)) {
                         LOG_ERROR("FATAL: Memory region is no longer fully resident! "
                                   "RAM may have been reclaimed by the OS. Halting tests.");
-                        {
-                            std::lock_guard<std::mutex> lock(Logger::get().getConsoleMutex());
-                            std::cout << "\n*** ERROR: Memory lost! OS reclaimed allocated RAM. ***\n"
-                                      << "*** Test results may be unreliable. Stopping. ***\n" << std::endl;
-                        }
+                        ConsoleDisplay::get().printError("*** ERROR: Memory lost! OS reclaimed allocated RAM. ***");
+                        ConsoleDisplay::get().printError("*** Test results may be unreliable. Stopping. ***");
                         ctx.requestStop();
                         break;
                     }
@@ -1532,6 +1518,8 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 
     ctx.requestStop();
     if (monitor.joinable()) monitor.join();
+
+    ConsoleDisplay::get().setTestingActive(false);
 
     auto end = std::chrono::high_resolution_clock::now();
     result.hard_errors = ctx.total_hard_errors.load(std::memory_order_relaxed);

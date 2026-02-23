@@ -189,7 +189,7 @@ PlatformInfo Platform::detectPlatform() {
 
 #if defined(__x86_64__) && !defined(__i386__)
     snprintf(info.arch, sizeof(info.arch), "x86_64");
-#elif (defined(__x86_64__) && !defined(__i386__)) || defined(__i386__)
+#elif defined(__i386__)
     snprintf(info.arch, sizeof(info.arch), "x86");
 #elif __aarch64__
     snprintf(info.arch, sizeof(info.arch), "ARM64");

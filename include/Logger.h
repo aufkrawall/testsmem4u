@@ -22,8 +22,10 @@ enum class LogLevel {
     DEBUG,
     INFO,
     WARN,
-    ERROR
+    ERR
 };
+
+extern std::atomic<bool> g_testing_active;
 
 class Logger {
 public:
@@ -129,7 +131,7 @@ public:
     void error(const char* format, ...) LOG_FORMAT_ATTR {
         va_list args;
         va_start(args, format);
-        logv(LogLevel::ERROR, format, args);
+        logv(LogLevel::ERR, format, args);
         va_end(args);
     }
     
@@ -179,9 +181,12 @@ public:
             "ERROR: %s at 0x%016llX: expected 0x%016llX, got 0x%016llX",
             context.c_str(), (unsigned long long)address, (unsigned long long)expected, (unsigned long long)actual);
         
+        // Format with timestamp/thread/elapsed for log file consistency
+        std::string formatted = formatLogLine(LogLevel::ERR, std::string(error_msg));
+        
         // CRITICAL: Always log to file FIRST - this must never be skipped
         // File logging is the authoritative record
-        pushMessage(LogLevel::ERROR, std::string(error_msg));
+        pushMessage(LogLevel::ERR, formatted);
         
         // Handle console output with rate limiting (console is best-effort)
         handleConsoleOutput(std::string(error_msg));
@@ -189,37 +194,34 @@ public:
     
     // Separated console output handling for clarity and testability
     void handleConsoleOutput(const std::string& message) {
+        if (g_testing_active.load(std::memory_order_relaxed)) {
+            return;
+        }
+        
         std::lock_guard<std::mutex> lock(rate_limit_mutex_);
         auto now = std::chrono::high_resolution_clock::now();
         
-        // Periodic summary of suppressed errors + reset the per-second error counter
         auto seconds_since_summary = std::chrono::duration_cast<std::chrono::seconds>(now - last_summary_time_).count();
         if (seconds_since_summary >= 1) {
             if (suppressed_count_ > 0) {
                 char buf[128];
                 snprintf(buf, sizeof(buf), "ERROR RATE: %u additional errors suppressed (see log file)", suppressed_count_);
-                {
-                    std::lock_guard<std::mutex> console_lock(console_mutex_);
-                    std::cout << formatLogLine(LogLevel::WARN, buf) << "\n";
-                }
+                std::lock_guard<std::mutex> console_lock(console_mutex_);
+                std::cout << formatLogLine(LogLevel::WARN, buf) << "\n" << std::flush;
                 suppressed_count_ = 0;
             }
-            // Reset per-second counter so error details keep appearing on console
             error_count_ = 0;
             last_summary_time_ = now;
         }
 
-        // Check rate limit for console output only
         if (error_count_ >= error_rate_limit_) {
             suppressed_count_++;
-            return;  // Skip console output only
+            return;
         }
 
         error_count_++;
-        
-        // Console output
         std::lock_guard<std::mutex> console_lock(console_mutex_);
-        std::cout << formatLogLine(LogLevel::ERROR, message) << "\n";
+        std::cout << formatLogLine(LogLevel::ERR, message) << "\n" << std::flush;
     }
 
     void pushMessage(LogLevel level, const std::string& formatted_message) {
@@ -231,7 +233,7 @@ public:
             // For lower priority, use large cap to prevent OOM
             const size_t MAX_QUEUE_SIZE = 100000; // 10x larger for WARN/INFO/DEBUG
             
-            if (level >= LogLevel::ERROR) {
+            if (level >= LogLevel::ERR) {
                 // Critical: Always queue ERROR messages, even if we have to wait
                 // This ensures no error data is lost
                 log_queue_.push({level, formatted_message});
@@ -317,7 +319,7 @@ public:
                      for (const auto& msg : local_batch) {
                          fprintf(file_handle_, "%s\n", msg.second.c_str());
                          // Always flush on ERROR to ensure vital data hits disk immediately
-                         if (msg.first == LogLevel::ERROR) force_flush = true;
+                         if (msg.first == LogLevel::ERR) force_flush = true;
                      }
                      // Always flush after each batch to ensure no data loss on crash/interrupt
                      fflush(file_handle_);
@@ -404,7 +406,7 @@ private:
             case LogLevel::DEBUG: return "DEBUG";
             case LogLevel::INFO:  return "INFO";
             case LogLevel::WARN:  return "WARN";
-            case LogLevel::ERROR: return "ERROR";
+            case LogLevel::ERR: return "ERROR";
         }
         return "UNKNOWN";
     }

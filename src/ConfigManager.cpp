@@ -49,15 +49,14 @@ bool loadConfig(const std::string& filename, Config& config) {
         std::string key, value;
         if (!Utils::parseKeyValue(line, key, value)) continue;
 
-        char* endptr = nullptr;
         if (key == "MemoryWindowPercent") {
-            config.memory_window_percent = std::strtoul(value.c_str(), &endptr, 10);
+            config.memory_window_percent = std::strtoul(value.c_str(), nullptr, 10);
         } else if (key == "MemoryWindowMB") {
-            config.memory_window_mb = std::strtoul(value.c_str(), &endptr, 10);
+            config.memory_window_mb = std::strtoul(value.c_str(), nullptr, 10);
         } else if (key == "Cores") {
-            config.cores = std::strtoul(value.c_str(), &endptr, 10);
+            config.cores = std::strtoul(value.c_str(), nullptr, 10);
         } else if (key == "Cycles") {
-            config.cycles = std::strtoul(value.c_str(), &endptr, 10);
+            config.cycles = std::strtoul(value.c_str(), nullptr, 10);
         } else if (key == "UseLockedMemory") {
             config.use_locked_memory = (value == "1" || value == "true");
         } else if (key == "UseLargePages") {

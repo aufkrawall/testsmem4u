@@ -2,7 +2,9 @@
 #include "Logger.h"
 #include "Platform.h"
 #include "ConfigManager.h"
-#include "simd_ops.h" // Added include
+#include "ConsoleDisplay.h"
+#include "simd_ops.h"
+#include "Utils.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -27,27 +29,6 @@
 namespace testsmem4u {
 
 #ifdef _WIN32
-static void enableVirtualTerminal() {
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hOut != INVALID_HANDLE_VALUE) {
-        DWORD dwMode = 0;
-        if (GetConsoleMode(hOut, &dwMode)) {
-            dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-            SetConsoleMode(hOut, dwMode);
-        }
-    }
-    // QuickEdit and Extended Flags are input mode settings
-    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
-    if (hIn != INVALID_HANDLE_VALUE) {
-        DWORD dwMode = 0;
-        if (GetConsoleMode(hIn, &dwMode)) {
-            dwMode &= ~ENABLE_QUICK_EDIT_MODE; // Disable QuickEdit to prevent pausing on selection
-            dwMode |= ENABLE_EXTENDED_FLAGS; // Required when disabling QuickEdit
-            SetConsoleMode(hIn, dwMode);
-        }
-    }
-}
-
 static bool isInputAvailable() {
     return _kbhit() != 0;
 }
@@ -57,8 +38,6 @@ static void clearInput() {
 }
 #else
 #include <cstring>
-
-static void enableVirtualTerminal() {}
 
 static bool isInputAvailable() {
     struct timeval tv;
@@ -207,20 +186,19 @@ static bool waitForInput(int seconds, const char* startMessage) {
     auto start = std::chrono::steady_clock::now();
     int last_print = -1;
 
-    // Flush any pending input
     clearInput();
 
     while (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start).count() < seconds) {
         auto remaining = seconds - std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start).count();
         
         if (remaining != last_print) {
-            std::cout << "\r" << startMessage << " " << remaining << "s... Press any key to configure.   " << std::flush;
+            std::string line = std::string(startMessage) + " " + std::to_string(remaining) + "s... Press any key to configure.";
+            ConsoleDisplay::get().updateProgressLine(line);
             last_print = (int)remaining;
         }
 
         if (isInputAvailable()) {
-            std::cout << std::endl;
-            // Consume the key
+            ConsoleDisplay::get().printLine("");
             #ifdef _WIN32
             _getch();
             #else
@@ -230,7 +208,7 @@ static bool waitForInput(int seconds, const char* startMessage) {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    std::cout << "\rStarting tests...                                             " << std::endl;
+    ConsoleDisplay::get().printLine("Starting tests...");
     return false;
 }
 
@@ -248,17 +226,10 @@ static bool parseUintOrDefault(const std::string& str, uint32_t& result, uint32_
     return false;
 }
 
-static std::string trimString(const std::string& str) {
-    size_t start = str.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) return "";
-    size_t end = str.find_last_not_of(" \t\r\n");
-    return str.substr(start, end - start + 1);
-}
-
 static uint64_t getSizingBaselineRAM() {
-    uint64_t available_ram = Platform::getAvailableSystemRAM();
-    if (available_ram != 0) return available_ram;
-    return Platform::getTotalSystemRAM();
+    uint64_t total_ram = Platform::getTotalSystemRAM();
+    if (total_ram != 0) return total_ram;
+    return Platform::getAvailableSystemRAM();
 }
 
 static uint32_t normalizeWindowMBForLargePages(uint32_t memory_window_mb, bool use_large_pages) {
@@ -375,7 +346,7 @@ Config runConfigWizard() {
 
     std::cout << "Enter memory to test (e.g. '85%', '2048' for MB) [Default: 85%]: ";
     std::getline(std::cin, input);
-    input = trimString(input);
+    input = Utils::trim(input);
 
     if (input.empty()) {
         config.memory_window_percent = 85;
@@ -404,7 +375,7 @@ Config runConfigWizard() {
 
     std::cout << "Enter number of threads to use (1-" << plat.cpu_cores << ") [Default: all]: ";
     std::getline(std::cin, input);
-    input = trimString(input);
+    input = Utils::trim(input);
 
     uint32_t cores;
     if (parseUintOrDefault(input, cores, plat.cpu_cores)) {
@@ -417,26 +388,26 @@ Config runConfigWizard() {
 
     std::cout << "Enter number of cycles (0 for infinite) [Default: 3]: ";
     std::getline(std::cin, input);
-    input = trimString(input);
+    input = Utils::trim(input);
 
     parseUintOrDefault(input, config.cycles, 3);
 
     std::cout << "Use locked memory? (y/n) [Default: y]: ";
     std::getline(std::cin, input);
-    input = trimString(input);
+    input = Utils::trim(input);
     config.use_locked_memory = (input != "n" && input != "N");
 
 #ifndef _WIN32
     // Linux hugepages option
     std::cout << "Use large pages (hugepages)? Improves RowHammer test effectiveness. (y/n) [Default: y]: ";
     std::getline(std::cin, input);
-    input = trimString(input);
+    input = Utils::trim(input);
     config.use_large_pages = (input != "n" && input != "N");
 #endif
 
     std::cout << "Halt on detected errors? (y/n) [Default: y]: ";
     std::getline(std::cin, input);
-    input = trimString(input);
+    input = Utils::trim(input);
     config.halt_on_error = (input.empty() || (input != "n" && input != "N"));
 
     std::cout << "Select Preset:\n";
@@ -447,7 +418,7 @@ Config runConfigWizard() {
     std::cout << "Enter selection [1]: ";
     
     std::getline(std::cin, input);
-    input = trimString(input);
+    input = Utils::trim(input);
     
     if (input == "2") {
         config.preset_file = "anta777extreme.cfg";
@@ -456,7 +427,7 @@ Config runConfigWizard() {
     } else if (input == "4") {
         std::cout << "Enter preset file path: ";
         std::getline(std::cin, input);
-        config.preset_file = trimString(input);
+        config.preset_file = Utils::trim(input);
     } else {
         config.preset_file = "default.cfg";
     }
@@ -488,7 +459,7 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
-    enableVirtualTerminal();
+    ConsoleDisplay::get().init();
     Platform::registerShutdownHandler(onShutdown);
 
     Config config = {};
@@ -507,40 +478,41 @@ int main(int argc, char* argv[]) {
         else if (arg[0] != '-') { preset_path = arg; skip_wizard = true; }
     }
 
-    if (!no_elevation && !isPrivileged()) {
-        std::cout << "Requesting elevation... (Use --no-elevation to skip)" << std::endl;
+if (!no_elevation && !isPrivileged()) {
+        ConsoleDisplay::get().printLine("Requesting elevation... (Use --no-elevation to skip)");
         relaunchAsPrivileged(argc, argv);
-        return 0; // Exit this instance, the elevated one should take over
+        return 0;
     }
 
     Logger::get().init("testsmem4u.log", debug ? LogLevel::DEBUG : LogLevel::INFO, true);
     auto& log = Logger::get();
-    log.setErrorRateLimit(100); // Allow more detailed error logging for diagnostic purposes
+    log.setErrorRateLimit(100);
 
-    // Check for SeLockMemoryPrivilege (Strict Requirement)
     if (!Platform::hasMemoryLockPrivilege()) {
-        std::cout << "\n[!] 'Lock Pages in Memory' privilege (SeLockMemoryPrivilege) is MISSING.\n"
-                  << "    This is required for reliable RAM testing to prevent swapping.\n"
-                  << "    Do you want to grant this privilege to the current user now?\n"
-                  << "    (Requires 'Yes' and then a Sign-out/Reboot to take effect)\n"
-                  << "    [Y/n]: ";
+        ConsoleDisplay::get().printLine("");
+        ConsoleDisplay::get().printLine("[!] 'Lock Pages in Memory' privilege (SeLockMemoryPrivilege) is MISSING.");
+        ConsoleDisplay::get().printLine("    This is required for reliable RAM testing to prevent swapping.");
+        ConsoleDisplay::get().printLine("    Do you want to grant this privilege to the current user now?");
+        ConsoleDisplay::get().printLine("    (Requires 'Yes' and then a Sign-out/Reboot to take effect)");
+        std::cout << "    [Y/n]: ";
         
         std::string answer;
         if (!skip_wizard) {
              std::getline(std::cin, answer);
         } else {
-             std::cout << "N (Non-interactive mode)" << std::endl;
+             ConsoleDisplay::get().printLine("N (Non-interactive mode)");
              answer = "n";
         }
 
         if (answer.empty() || answer == "y" || answer == "Y") {
             if (Platform::grantMemoryLockPrivilege()) {
-                std::cout << "\n[+] Privilege granted successfully!\n"
-                          << "    PLEASE SIGN OUT AND SIGN BACK IN for the changes to take effect.\n"
-                          << "    The program will now exit." << std::endl;
+                ConsoleDisplay::get().printLine("");
+                ConsoleDisplay::get().printLine("[+] Privilege granted successfully!");
+                ConsoleDisplay::get().printLine("    PLEASE SIGN OUT AND SIGN BACK IN for the changes to take effect.");
+                ConsoleDisplay::get().printLine("    The program will now exit.");
                 return 0;
             } else {
-                std::cerr << "\n[-] Failed to grant privilege. You may need to run as Administrator manually or use the Group Policy Editor." << std::endl;
+                ConsoleDisplay::get().printError("[-] Failed to grant privilege. You may need to run as Administrator manually.");
             }
         }
     }
@@ -571,9 +543,11 @@ int main(int argc, char* argv[]) {
         }
 
         // Ensure calculations are correct based on current config (loaded or default)
-        if (config.memory_window_mb == 0) {
+        // Recompute percent-based memory windows on each run from total system RAM.
+        if (config.memory_window_percent > 0 || config.memory_window_mb == 0) {
             uint64_t sizing_ram = getSizingBaselineRAM();
-            config.memory_window_mb = computeWindowMBFromPercent(sizing_ram, config.memory_window_percent, config.use_large_pages);
+            uint32_t percent = config.memory_window_percent > 0 ? config.memory_window_percent : 85;
+            config.memory_window_mb = computeWindowMBFromPercent(sizing_ram, percent, config.use_large_pages);
         }
 
         if (config.preset_file.empty()) config.preset_file = "default.cfg";
@@ -623,15 +597,24 @@ int main(int argc, char* argv[]) {
         config.memory_window_mb = normalized_window_mb;
     }
 
-    std::cout << "\nStarting tests with " << config.cores << " threads, " << config.memory_window_mb << " MB memory." << std::endl;
-    std::cout << "Tip: Press Ctrl+C to stop and save results.\n" << std::endl;
+    {
+        std::ostringstream ss;
+        ss << "Starting tests with " << config.cores << " threads, " << config.memory_window_mb << " MB memory.";
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    ConsoleDisplay::get().printLine("Tip: Press Ctrl+C to stop and save results.");
+    ConsoleDisplay::get().printLine("");
 
-    config.debug_mode = debug; // Propagate --debug flag into config struct
+    config.debug_mode = debug;
 
     if (config.preset.test_configs.empty()) {
-        std::cerr << "\n[!] ERROR: No tests loaded! Please verify " << config.preset_file << " exists and is valid." << std::endl;
+        {
+            std::ostringstream ss;
+            ss << "[!] ERROR: No tests loaded! Please verify " << config.preset_file << " exists and is valid.";
+            ConsoleDisplay::get().printError(ss.str());
+        }
 #ifdef _WIN32
-        std::cout << "Press any key to exit..." << std::endl;
+        ConsoleDisplay::get().printLine("Press any key to exit...");
         _getch();
 #endif
         return 1;
@@ -642,31 +625,56 @@ int main(int argc, char* argv[]) {
         res = TestEngine::runTests(config);
     } catch (const std::exception& e) {
         log.error("FATAL: Uncaught exception during test execution: %s", e.what());
-        std::cerr << "\n[!] FATAL ERROR: " << e.what() << std::endl;
-        res.hard_errors++; // Count this as a failure
+        {
+            std::ostringstream ss;
+            ss << "[!] FATAL ERROR: " << e.what();
+            ConsoleDisplay::get().printError(ss.str());
+        }
+        res.hard_errors++;
     } catch (...) {
         log.error("FATAL: Unknown exception caught during test execution");
-        std::cerr << "\n[!] FATAL ERROR: Unknown exception occurred." << std::endl;
+        ConsoleDisplay::get().printError("[!] FATAL ERROR: Unknown exception occurred.");
         res.hard_errors++;
     }
 
-    std::cout << "\n--- Results ---" << std::endl;
-    std::cout << "Total Errors: " << res.total_errors() << std::endl;
-    std::cout << "  Hard (confirmed):   " << res.hard_errors << std::endl;
-    std::cout << "  Soft (transient):   " << res.soft_errors << std::endl;
-    std::cout << "  Unverified:         " << res.unverified_errors << std::endl;
-    std::cout << "Time: " << res.duration_seconds << "s" << std::endl;
+    ConsoleDisplay::get().printLine("");
+    ConsoleDisplay::get().printLine("--- Results ---");
+    {
+        std::ostringstream ss;
+        ss << "Total Errors: " << res.total_errors();
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Hard (confirmed):   " << res.hard_errors;
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Soft (transient):   " << res.soft_errors;
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Unverified:         " << res.unverified_errors;
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "Time: " << res.duration_seconds << "s";
+        ConsoleDisplay::get().printLine(ss.str());
+    }
 
-    // Ensure logger flushes all pending messages before exit
     Logger::get().deinit();
 
 #ifdef _WIN32
-    std::cout << "\nPress any key to exit..." << std::endl;
+    ConsoleDisplay::get().printLine("");
+    ConsoleDisplay::get().printLine("Press any key to exit...");
     _getch();
 #else
-    // On Linux, if we auto-launched in a terminal, wait for keypress so user can see results
     if (isGraphicalSession()) {
-        std::cout << "\nPress Enter to exit..." << std::endl;
+        ConsoleDisplay::get().printLine("");
+        ConsoleDisplay::get().printLine("Press Enter to exit...");
         getchar();
     }
 #endif

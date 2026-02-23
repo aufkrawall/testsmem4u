@@ -20,7 +20,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent
 ZIG_VERSION = "0.14.0"
-ZIG_URL_WIN_X86_64 = f"https://ziglang.org/download/{ZIG_VERSION}/zig-windows-x86_64-{ZIG_VERSION}.zip"
+ZIG_URL_WIN_X86_64 = (
+    f"https://ziglang.org/download/{ZIG_VERSION}/zig-windows-x86_64-{ZIG_VERSION}.zip"
+)
 ZIG_DIR = PROJECT_ROOT / "tools" / "zig"
 ZIG_EXE = ZIG_DIR / f"zig-windows-x86_64-{ZIG_VERSION}" / "zig.exe"
 
@@ -32,6 +34,7 @@ SRC_FILES = [
     PROJECT_ROOT / "src" / "Platform.cpp",
     PROJECT_ROOT / "src" / "TestEngine.cpp",
     PROJECT_ROOT / "src" / "ConfigManager.cpp",
+    PROJECT_ROOT / "src" / "ConsoleDisplay.cpp",
 ]
 
 
@@ -64,43 +67,43 @@ TARGETS = {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64.exe",
         "extra_flags": ["-ladvapi32"],
-        "obj_ext": ".obj"
+        "obj_ext": ".obj",
     },
     "windows-x86_64-v3": {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64-v3.exe",
         "extra_flags": HOST_ONLY_FLAGS + ["-ladvapi32"],
-        "obj_ext": ".obj"
+        "obj_ext": ".obj",
     },
     "windows-arm64": {
         "zig_target": "aarch64-windows-gnu",
         "output": "testsmem4u-windows-arm64.exe",
         "extra_flags": ["-ladvapi32"],
-        "obj_ext": ".obj"
+        "obj_ext": ".obj",
     },
     "linux-x86": {
         "zig_target": "x86-linux-musl",
         "output": "testsmem4u-linux-x86",
         "extra_flags": ["-pthread", "-msse2"],
-        "obj_ext": ".o"
+        "obj_ext": ".o",
     },
     "linux-x86_64": {
         "zig_target": "x86_64-linux-musl",
         "output": "testsmem4u-linux-x86_64",
         "extra_flags": ["-pthread"],
-        "obj_ext": ".o"
+        "obj_ext": ".o",
     },
     "linux-x86_64-v3": {
         "zig_target": "x86_64-linux-musl",
         "output": "testsmem4u-linux-x86_64-v3",
         "extra_flags": ["-pthread"] + HOST_ONLY_FLAGS,
-        "obj_ext": ".o"
+        "obj_ext": ".o",
     },
     "linux-arm64": {
         "zig_target": "aarch64-linux-musl",
         "output": "testsmem4u-linux-arm64",
         "extra_flags": ["-pthread"],
-        "obj_ext": ".o"
+        "obj_ext": ".o",
     },
 }
 
@@ -131,16 +134,16 @@ def download_zig() -> bool:
         return False
 
 
-
-
 def compile_object(args):
     """Compiles a single source file to an object file."""
     cmd, src_file, obj_file = args
     # Construct command: zig c++ [flags] -c src_file -o obj_file
     full_cmd = cmd + ["-c", str(src_file), "-o", str(obj_file)]
-    
+
     try:
-        result = subprocess.run(full_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+        result = subprocess.run(
+            full_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True
+        )
         if result.returncode != 0:
             return (False, src_file, result.stderr)
         return (True, src_file, None)
@@ -159,22 +162,28 @@ def build_target(name: str) -> bool:
 
     t = TARGETS[name]
     DIST_DIR.mkdir(parents=True, exist_ok=True)
-    
+
     # Create object directory for this target
     obj_dir = BUILD_DIR / "obj" / name
     obj_dir.mkdir(parents=True, exist_ok=True)
-    
+
     output_path = DIST_DIR / t["output"]
 
     flags = list(BASE_CXX_FLAGS)
     target_extra_flags = t.get("extra_flags", [])
     # Remove linker-only flags from compile step, but keep target CPU/thread flags.
     compile_flags = [f for f in flags if not f.startswith("-Wl")]
-    compile_flags += [f for f in target_extra_flags if not f.startswith("-l") and not f.startswith("-Wl")]
-    
-    link_flags = list(flags) # Keep all flags for linking (LTO needs optimization flags)
+    compile_flags += [
+        f
+        for f in target_extra_flags
+        if not f.startswith("-l") and not f.startswith("-Wl")
+    ]
+
+    link_flags = list(
+        flags
+    )  # Keep all flags for linking (LTO needs optimization flags)
     link_flags += target_extra_flags
-    
+
     # Base compile command
     base_compile_cmd = [
         str(ZIG_EXE),
@@ -184,20 +193,20 @@ def build_target(name: str) -> bool:
         *compile_flags,
         f"-I{INCLUDE_DIR}",
     ]
-    
+
     print(f"[*] Building {name} objects...")
-    
+
     # Prepare jobs
     jobs = []
     obj_files = []
     for src in SRC_FILES:
         obj_file = obj_dir / (src.stem + t["obj_ext"])
         obj_files.append(obj_file)
-        
+
         # Check if rebuild needed (simple mtime check)
         if obj_file.exists() and src.stat().st_mtime < obj_file.stat().st_mtime:
             continue
-            
+
         jobs.append((base_compile_cmd, src, obj_file))
 
     # Run parallel compilation
@@ -207,13 +216,13 @@ def build_target(name: str) -> bool:
         success = True
         with concurrent.futures.ThreadPoolExecutor(max_workers=cpu_count) as executor:
             results = list(executor.map(compile_object, jobs))
-            
+
             for ok, src, err in results:
                 if not ok:
                     print(f"[!] Failed to compile {src.name}:")
                     print(err)
                     success = False
-        
+
         if not success:
             return False
     else:
@@ -230,7 +239,7 @@ def build_target(name: str) -> bool:
         *[str(obj) for obj in obj_files],
         f"-o{output_path}",
     ]
-    
+
     result = subprocess.run(link_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
     if result.returncode != 0:
         print("[!] Linking failed:")
@@ -242,7 +251,7 @@ def build_target(name: str) -> bool:
 
     if output_path.exists():
         size = output_path.stat().st_size
-        print(f"[*] OK: {size:,} bytes ({size/1024:.1f} KB)")
+        print(f"[*] OK: {size:,} bytes ({size / 1024:.1f} KB)")
 
     # Copy config files to dist
     for cfg in PROJECT_ROOT.glob("*.cfg"):
