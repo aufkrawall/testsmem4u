@@ -73,14 +73,19 @@ public:
         if (!running_) return;
 
         running_ = false;
-        writer_cv_.notify_one(); 
-        queue_cv_.notify_all(); // Wake up any blocked producers so they can exit
+        
+        {
+            std::lock_guard<std::mutex> queue_lock(queue_mutex_);
+            queue_cv_.notify_all();
+        }
+        writer_cv_.notify_one();
         
         if (writer_thread_.joinable()) {
             writer_thread_.join();
         }
 
         if (file_handle_) {
+            fflush(file_handle_);
             fclose(file_handle_);
             file_handle_ = nullptr;
         }
@@ -289,15 +294,15 @@ public:
         std::vector<std::pair<LogLevel, std::string>> local_batch;
         local_batch.reserve(500); // Process in batches
 
-        while (running_) {
+        while (true) {
              std::unique_lock<std::mutex> lock(queue_mutex_);
-             
-             // Wait for data or shutdown
-             writer_cv_.wait(lock, [this] {
-                 return !log_queue_.empty() || !running_;
-             });
+              
+              // Wait for data or shutdown
+              writer_cv_.wait(lock, [this] {
+                  return !log_queue_.empty() || !running_;
+              });
 
-             if (!running_ && log_queue_.empty()) break;
+              if (!running_ && log_queue_.empty()) break;
 
              // Drain the entire queue into local batch (or up to a reasonable limit)
              // We want to drain fast to unblock producers
@@ -313,19 +318,18 @@ public:
              lock.unlock();
 
              // Process batch IO without holding lock
-             if (!local_batch.empty()) {
-                 if (file_handle_) {
-                     bool force_flush = false;
-                     for (const auto& msg : local_batch) {
-                         fprintf(file_handle_, "%s\n", msg.second.c_str());
-                         // Always flush on ERROR to ensure vital data hits disk immediately
-                         if (msg.first == LogLevel::ERR) force_flush = true;
-                     }
-                     // Always flush after each batch to ensure no data loss on crash/interrupt
-                     fflush(file_handle_);
-                 }
-                 local_batch.clear();
-             }
+            if (!local_batch.empty()) {
+                  if (file_handle_) {
+                      for (const auto& msg : local_batch) {
+                          fprintf(file_handle_, "%s\n", msg.second.c_str());
+                          if (msg.first == LogLevel::ERR) {
+                              fflush(file_handle_);
+                          }
+                      }
+                      fflush(file_handle_);
+                  }
+                  local_batch.clear();
+              }
         }
         
         // Final flush

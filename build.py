@@ -44,22 +44,28 @@ BUILD_DIR = PROJECT_ROOT / "build"
 BASE_CXX_FLAGS = [
     "-std=c++17",
     "-O3",
-    "-flto",
+    "-flto=thin",
     "-Wall",
     "-ffunction-sections",
     "-fdata-sections",
     "-fno-rtti",
     "-fno-asynchronous-unwind-tables",
     "-fno-ident",
+    "-fno-strict-aliasing",
+    "-funroll-loops",
     "-DNDEBUG",
     "-Wl,--gc-sections",
-    "-Wl,-O3",
     "-Wl,-s",
 ]
 
-HOST_ONLY_FLAGS = [
-    "-mcpu=x86_64_v3",
+HOST_V3_FLAGS = [
+    "-mcpu=x86_64_v3",  # Enable AVX2, FMA, BMI, etc. for x86-64-v3 targets
     "-mprefer-vector-width=256",  # Prefer 256-bit AVX2 auto-vectorisation on v3 targets
+]
+
+HOST_V4_FLAGS = [
+    "-mcpu=x86_64_v4",  # Enable AVX-512F, AVX-512BW, AVX-512DQ, etc. for x86-64-v4 targets
+    "-mprefer-vector-width=512",  # Prefer 512-bit AVX-512 auto-vectorisation on v4 targets
 ]
 
 TARGETS = {
@@ -72,7 +78,7 @@ TARGETS = {
     "windows-x86_64-v3": {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64-v3.exe",
-        "extra_flags": HOST_ONLY_FLAGS + ["-ladvapi32"],
+        "extra_flags": HOST_V3_FLAGS + ["-ladvapi32"],
         "obj_ext": ".obj",
     },
     "windows-arm64": {
@@ -96,7 +102,19 @@ TARGETS = {
     "linux-x86_64-v3": {
         "zig_target": "x86_64-linux-musl",
         "output": "testsmem4u-linux-x86_64-v3",
-        "extra_flags": ["-pthread"] + HOST_ONLY_FLAGS,
+        "extra_flags": ["-pthread"] + HOST_V3_FLAGS,
+        "obj_ext": ".o",
+    },
+    "windows-x86_64-v4": {
+        "zig_target": "x86_64-windows-gnu",
+        "output": "testsmem4u-windows-x86_64-v4.exe",
+        "extra_flags": HOST_V4_FLAGS + ["-ladvapi32"],
+        "obj_ext": ".obj",
+    },
+    "linux-x86_64-v4": {
+        "zig_target": "x86_64-linux-musl",
+        "output": "testsmem4u-linux-x86_64-v4",
+        "extra_flags": ["-pthread"] + HOST_V4_FLAGS,
         "obj_ext": ".o",
     },
     "linux-arm64": {
@@ -146,7 +164,8 @@ def compile_object(args):
         )
         if result.returncode != 0:
             return (False, src_file, result.stderr)
-        return (True, src_file, None)
+        # Return warnings from successful compilation too
+        return (True, src_file, result.stderr if result.stderr.strip() else None)
     except Exception as e:
         return (False, src_file, str(e))
 
@@ -222,6 +241,9 @@ def build_target(name: str) -> bool:
                     print(f"[!] Failed to compile {src.name}:")
                     print(err)
                     success = False
+                elif err:
+                    print(f"[W] Warnings in {src.name}:")
+                    print(err)
 
         if not success:
             return False
@@ -248,6 +270,9 @@ def build_target(name: str) -> bool:
 
     if result.stdout.strip():
         print(result.stdout)
+    if result.stderr.strip():
+        print(f"[W] Linker warnings for {name}:")
+        print(result.stderr)
 
     if output_path.exists():
         size = output_path.stat().st_size

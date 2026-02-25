@@ -60,14 +60,6 @@ void nt_store_256(T* dst, const T* src, size_t count);
 template<typename T>
 void nt_store_512(T* dst, const T* src, size_t count);
 
-// Aligned Stores (Standard)
-template<typename T>
-void aligned_store(T* dst, const T* src, size_t count);
-
-// Aligned Loads (Standard)
-template<typename T>
-void aligned_load(T* dst, const T* src, size_t count);
-
 // Non-Temporal Loads (Bypass Cache for Reads) - Requires Memory Alignment!
 template<typename T>
 void stream_load_128(T* dst, const T* src, size_t count);
@@ -106,9 +98,6 @@ void verify_pattern_xor(const T* src, size_t count, size_t start_idx, uint64_t p
 
 template<typename T>
 void verify_uniform(const T* src, size_t count, uint64_t val, std::vector<uint64_t>& error_indices);
-
-template<typename T>
-void verify_moving_inv(const T* src, size_t count, uint64_t val, std::vector<uint64_t>& error_indices);
 
 // Safe forced memory read after cache flush
 // Use this instead of volatile casts (which are UB in C++)

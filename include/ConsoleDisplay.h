@@ -11,6 +11,8 @@
 
 namespace testsmem4u {
 
+extern std::atomic<bool> g_testing_active;
+
 struct StatusInfo {
     uint32_t cycle = 0;
     uint32_t total_cycles = 0;
@@ -42,12 +44,12 @@ public:
     
     void printError(const std::string& line);
     
-    void setTestingActive(bool active) { 
-        testing_active_ = active; 
-        extern std::atomic<bool> g_testing_active;
+    void setTestingActive(bool active) {
         g_testing_active.store(active, std::memory_order_release);
     }
-    bool isTestingActive() const { return testing_active_; }
+    bool isTestingActive() const {
+        return g_testing_active.load(std::memory_order_acquire);
+    }
     
     std::mutex& getMutex() { return mutex_; }
     
@@ -65,7 +67,6 @@ private:
     int last_rendered_len_ = 0;
     bool status_active_ = false;
     bool initialized_ = false;
-    std::atomic<bool> testing_active_{false};
     std::atomic<uint64_t> error_count_{0};
     std::chrono::high_resolution_clock::time_point start_time_;
 
@@ -73,7 +74,6 @@ private:
     std::string formatStatus(const StatusInfo& info);
     std::string formatProgressBar(float percent, int bar_width);
     std::string truncate(const std::string& s, size_t max_len);
-    void clearLineAndPrint(const std::string& text);
     std::string formatTime(uint64_t total_seconds);
     std::string formatBytes(uint64_t bytes);
 };

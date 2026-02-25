@@ -1,0 +1,85 @@
+[2026-02-25 20:43:36.351][INFO][T18148][0.002s] testsmem4u starting...
+[2026-02-25 20:43:36.352][INFO][T18148][0.002s] Loading preset file: default.cfg
+[2026-02-25 20:43:36.352][INFO][T18148][0.002s] Preset name: Default Stability Test
+[2026-02-25 20:43:36.353][INFO][T18148][0.002s] Preset author: testsmem4u
+[2026-02-25 20:43:36.353][INFO][T18148][0.002s] Preset loaded: 17 tests, 8 cycles, window=0 MB
+[2026-02-25 20:43:36.353][INFO][T18148][0.002s] Test sequence: 0,1,2,3,4,5,6,7,8,9,10,14,15,16,11,12,13
+[2026-02-25 20:43:47.579][INFO][T18148][11.229s] Loading preset file: default.cfg
+[2026-02-25 20:43:47.580][INFO][T18148][11.229s] Preset name: Default Stability Test
+[2026-02-25 20:43:47.580][INFO][T18148][11.229s] Preset author: testsmem4u
+[2026-02-25 20:43:47.580][INFO][T18148][11.229s] Preset loaded: 17 tests, 8 cycles, window=0 MB
+[2026-02-25 20:43:47.580][INFO][T18148][11.229s] Test sequence: 0,1,2,3,4,5,6,7,8,9,10,14,15,16,11,12,13
+[2026-02-25 20:43:47.580][INFO][T18148][11.230s] Configuration saved to config.ini
+[2026-02-25 20:43:47.580][INFO][T18148][11.230s] Allocating 64 MB...
+[2026-02-25 20:43:47.580][INFO][T18148][11.230s] Defragmenting physical memory before large page allocation...
+[2026-02-25 20:43:47.646][INFO][T18148][11.295s] Trimmed working sets of 78 processes
+[2026-02-25 20:43:47.646][INFO][T18148][11.296s] Shrunk system file cache
+[2026-02-25 20:43:47.972][INFO][T18148][11.621s] Flushed modified page list to disk
+[2026-02-25 20:43:48.107][INFO][T18148][11.756s] Purged standby list to free physical memory for large pages
+[2026-02-25 20:43:48.611][INFO][T18148][12.261s] Allocated 64 MB using MEM_LARGE_PAGES
+[2026-02-25 20:43:49.613][INFO][T19100][13.262s] === Cycle 1 Started ===
+[2026-02-25 20:43:49.613][INFO][T19100][13.262s] Test 1: SimpleTest Started
+[2026-02-25 20:43:49.824][INFO][T19100][13.474s] Test 1: SimpleTest Completed in 0.21s
+[2026-02-25 20:43:49.824][INFO][T19100][13.474s] Test 2: SimpleTest Started
+[2026-02-25 20:43:50.021][INFO][T19100][13.671s] Test 2: SimpleTest Completed in 0.20s
+[2026-02-25 20:43:50.022][INFO][T19100][13.671s] Test 3: SimpleTest Started
+[2026-02-25 20:43:50.194][INFO][T19100][13.844s] Test 3: SimpleTest Completed in 0.17s
+[2026-02-25 20:43:50.194][INFO][T19100][13.844s] Test 4: MovingInversion Started
+[2026-02-25 20:43:51.445][INFO][T19100][15.094s] Test 4: MovingInversion Completed in 1.25s
+[2026-02-25 20:43:51.445][INFO][T19100][15.095s] Test 5: SimpleTest Started
+[2026-02-25 20:43:51.652][INFO][T19100][15.301s] Test 5: SimpleTest Completed in 0.21s
+[2026-02-25 20:43:51.652][INFO][T19100][15.301s] Test 6: SimpleTest Started
+[2026-02-25 20:43:51.842][INFO][T19100][15.491s] Test 6: SimpleTest Completed in 0.19s
+[2026-02-25 20:43:51.842][INFO][T19100][15.491s] Test 7: WalkingOnes Started
+[2026-02-25 20:43:53.211][INFO][T19100][16.860s] Test 7: WalkingOnes Completed in 1.37s
+[2026-02-25 20:43:53.211][INFO][T19100][16.860s] Test 8: WalkingZeros Started
+[2026-02-25 20:43:54.249][INFO][T19100][17.899s] Test 8: WalkingZeros Completed in 1.04s
+[2026-02-25 20:43:54.249][INFO][T19100][17.899s] Test 9: MirrorMove Started
+[2026-02-25 20:43:56.060][INFO][T19100][19.710s] Test 9: MirrorMove Completed in 1.81s
+[2026-02-25 20:43:56.060][INFO][T19100][19.710s] Test 10: MirrorMove128 Started
+[2026-02-25 20:43:58.240][INFO][T19100][21.889s] Test 10: MirrorMove128 Completed in 2.18s
+[2026-02-25 20:43:58.240][INFO][T19100][21.890s] Test 11: BlockMove Started
+[2026-02-25 20:43:58.423][INFO][T19100][22.072s] Test 11: BlockMove Completed in 0.18s
+[2026-02-25 20:43:58.423][INFO][T19100][22.072s] Test 12: LFSRPattern Started
+[2026-02-25 20:43:58.424][INFO][T19100][22.074s] Test 12: LFSRPattern Completed in 0.00s
+[2026-02-25 20:43:58.424][INFO][T19100][22.074s] Test 13: MovingInversionLFSR Started
+[2026-02-25 20:43:58.451][INFO][T19100][22.100s] Test 13: MovingInversionLFSR Completed in 0.03s
+[2026-02-25 20:43:58.451][INFO][T19100][22.100s] Test 14: MovingInversionWalking Started
+[2026-02-25 20:43:58.534][INFO][T19100][22.184s] Test 14: MovingInversionWalking Completed in 0.08s
+[2026-02-25 20:43:58.534][INFO][T19100][22.184s] Test 15: RefreshStable Started
+[2026-02-25 20:44:28.656][INFO][T19100][52.305s] Test 15: RefreshStable Completed in 30.12s
+[2026-02-25 20:44:28.656][INFO][T19100][52.305s] Test 16: RowHammer Started
+[2026-02-25 20:44:29.757][INFO][T19100][53.406s] Test 16: RowHammer Completed in 1.10s
+[2026-02-25 20:44:29.757][INFO][T19100][53.406s] Test 17: RandomAccess Started
+[2026-02-25 20:44:34.322][INFO][T19100][57.972s] Test 17: RandomAccess Completed in 4.57s
+[2026-02-25 20:44:34.322][INFO][T19100][57.972s] === Cycle 1 Completed ===
+[2026-02-25 20:44:34.322][INFO][T19100][57.972s] === Cycle 2 Started ===
+[2026-02-25 20:44:34.322][INFO][T19100][57.972s] Test 1: SimpleTest Started
+[2026-02-25 20:44:34.406][INFO][T19100][58.056s] Test 1: SimpleTest Completed in 0.08s
+[2026-02-25 20:44:34.406][INFO][T19100][58.056s] Test 2: SimpleTest Started
+[2026-02-25 20:44:34.497][INFO][T19100][58.147s] Test 2: SimpleTest Completed in 0.09s
+[2026-02-25 20:44:34.497][INFO][T19100][58.147s] Test 3: SimpleTest Started
+[2026-02-25 20:44:34.582][INFO][T19100][58.231s] Test 3: SimpleTest Completed in 0.08s
+[2026-02-25 20:44:34.582][INFO][T19100][58.231s] Test 4: MovingInversion Started
+[2026-02-25 20:44:35.212][INFO][T19100][58.862s] Test 4: MovingInversion Completed in 0.63s
+[2026-02-25 20:44:35.212][INFO][T19100][58.862s] Test 5: SimpleTest Started
+[2026-02-25 20:44:35.293][INFO][T19100][58.942s] Test 5: SimpleTest Completed in 0.08s
+[2026-02-25 20:44:35.293][INFO][T19100][58.942s] Test 6: SimpleTest Started
+[2026-02-25 20:44:35.369][INFO][T19100][59.018s] Test 6: SimpleTest Completed in 0.08s
+[2026-02-25 20:44:35.369][INFO][T19100][59.018s] Test 7: WalkingOnes Started
+[2026-02-25 20:44:35.862][INFO][T19100][59.512s] Test 7: WalkingOnes Completed in 0.49s
+[2026-02-25 20:44:35.862][INFO][T19100][59.512s] Test 8: WalkingZeros Started
+[2026-02-25 20:44:36.397][INFO][T19100][60.047s] Test 8: WalkingZeros Completed in 0.54s
+[2026-02-25 20:44:36.397][INFO][T19100][60.047s] Test 9: MirrorMove Started
+[2026-02-25 20:44:37.267][INFO][T19100][60.916s] Test 9: MirrorMove Completed in 0.87s
+[2026-02-25 20:44:37.267][INFO][T19100][60.916s] Test 10: MirrorMove128 Started
+[2026-02-25 20:44:38.724][INFO][T19100][62.374s] Test 10: MirrorMove128 Completed in 1.46s
+[2026-02-25 20:44:38.725][INFO][T19100][62.374s] Test 11: BlockMove Started
+[2026-02-25 20:44:39.104][INFO][T19100][62.754s] Test 11: BlockMove Completed in 0.38s
+[2026-02-25 20:44:39.104][INFO][T19100][62.754s] Test 12: LFSRPattern Started
+[2026-02-25 20:44:39.106][INFO][T19100][62.755s] Test 12: LFSRPattern Completed in 0.00s
+[2026-02-25 20:44:39.106][INFO][T19100][62.755s] Test 13: MovingInversionLFSR Started
+[2026-02-25 20:44:39.161][INFO][T19100][62.811s] Test 13: MovingInversionLFSR Completed in 0.06s
+[2026-02-25 20:44:39.161][INFO][T19100][62.811s] Test 14: MovingInversionWalking Started
+[2026-02-25 20:44:39.379][INFO][T19100][63.028s] Test 14: MovingInversionWalking Completed in 0.22s
+[2026-02-25 20:44:39.379][INFO][T19100][63.028s] Test 15: RefreshStable Started
