@@ -5,6 +5,11 @@
 #include <sstream>
 #include <thread>
 
+#ifndef _WIN32
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
+
 namespace testsmem4u {
 
 std::atomic<bool> g_testing_active{false};
@@ -52,14 +57,12 @@ void ConsoleDisplay::detectConsoleWidth() {
         }
     }
 #else
-    FILE* f = fopen("/dev/tty", "r");
-    if (f) {
-        int w = 80;
-        if (fscanf(f, "%d", &w) == 1 && w > 0) {
-            console_width_ = w;
-        }
-        fclose(f);
-        if (console_width_ >= 40 && console_width_ <= 200) return;
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+        console_width_ = ws.ws_col;
+        if (console_width_ < 40) console_width_ = 40;
+        if (console_width_ > 200) console_width_ = 200;
+        return;
     }
 #endif
     console_width_ = 80;
@@ -127,41 +130,6 @@ std::string ConsoleDisplay::formatTime(uint64_t total_seconds) {
         ss << std::setfill('0') << std::setw(2) << minutes << ":" << std::setw(2) << seconds;
     }
     return ss.str();
-}
-
-std::string ConsoleDisplay::formatBytes(uint64_t bytes) {
-    double gb = bytes / (1024.0 * 1024.0 * 1024.0);
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(2) << gb << " GB";
-    return ss.str();
-}
-
-std::string ConsoleDisplay::formatProgressBar(float percent, int bar_width) {
-    if (bar_width < 4) bar_width = 4;
-    
-    int filled = static_cast<int>((percent / 100.0) * bar_width);
-    if (filled < 0) filled = 0;
-    if (filled > bar_width) filled = bar_width;
-    
-    std::string bar;
-    bar += "\033[36m";  // Cyan color for progress bar
-    bar += "[";
-    for (int i = 0; i < bar_width; ++i) {
-        if (i < filled) {
-            bar += static_cast<char>(219);  // Full block character
-        } else {
-            bar += static_cast<char>(176);  // Light shade character
-        }
-    }
-    bar += "]\033[0m";  // Reset color
-    
-    return bar;
-}
-
-std::string ConsoleDisplay::truncate(const std::string& s, size_t max_len) {
-    if (s.size() <= max_len) return s;
-    if (max_len < 3) return s.substr(0, max_len);
-    return s.substr(0, max_len - 3) + "...";
 }
 
 std::string ConsoleDisplay::formatStatus(const StatusInfo& info) {

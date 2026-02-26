@@ -50,26 +50,6 @@ void flush_cache_line(void* ptr);
 // This ensures subsequent reads come from DRAM, not CPU cache
 void flush_cache_region(void* ptr, size_t bytes);
 
-// Non-Temporal Stores (Bypass Cache for Writes)
-template<typename T>
-void nt_store_128(T* dst, const T* src, size_t count);
-
-template<typename T>
-void nt_store_256(T* dst, const T* src, size_t count);
-
-template<typename T>
-void nt_store_512(T* dst, const T* src, size_t count);
-
-// Non-Temporal Loads (Bypass Cache for Reads) - Requires Memory Alignment!
-template<typename T>
-void stream_load_128(T* dst, const T* src, size_t count);
-
-template<typename T>
-void stream_load_256(T* dst, const T* src, size_t count);
-
-template<typename T>
-void stream_load_512(T* dst, const T* src, size_t count);
-
 // Pattern Generators (Write to Memory)
 template<typename T>
 void generate_pattern_linear(T* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt);

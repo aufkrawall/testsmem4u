@@ -338,9 +338,6 @@ public:
         }
     }
 
-    std::mutex& getConsoleMutex() { return console_mutex_; }
-    std::mutex& getMutex() { return getConsoleMutex(); } 
-
     double getElapsedSeconds() const {
         auto now = std::chrono::high_resolution_clock::now();
         return std::chrono::duration<double>(now - start_time_).count();
@@ -410,9 +407,9 @@ private:
             case LogLevel::DEBUG: return "DEBUG";
             case LogLevel::INFO:  return "INFO";
             case LogLevel::WARN:  return "WARN";
-            case LogLevel::ERR: return "ERROR";
+            case LogLevel::ERR:   return "ERROR";
+            default:              return "UNKNOWN";
         }
-        return "UNKNOWN";
     }
 
     std::string formatLogLine(LogLevel level, const std::string& message) {

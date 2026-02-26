@@ -51,11 +51,6 @@ public:
         return g_testing_active.load(std::memory_order_acquire);
     }
     
-    std::mutex& getMutex() { return mutex_; }
-    
-    void incrementErrorCount() { error_count_.fetch_add(1, std::memory_order_relaxed); }
-    uint64_t getErrorCount() const { return error_count_.load(std::memory_order_relaxed); }
-
 private:
     ConsoleDisplay() = default;
     ~ConsoleDisplay() = default;
@@ -67,19 +62,11 @@ private:
     int last_rendered_len_ = 0;
     bool status_active_ = false;
     bool initialized_ = false;
-    std::atomic<uint64_t> error_count_{0};
     std::chrono::high_resolution_clock::time_point start_time_;
 
     void detectConsoleWidth();
     std::string formatStatus(const StatusInfo& info);
-    std::string formatProgressBar(float percent, int bar_width);
-    std::string truncate(const std::string& s, size_t max_len);
     std::string formatTime(uint64_t total_seconds);
-    std::string formatBytes(uint64_t bytes);
 };
-
-#define CONSOLE_PRINT(msg) testsmem4u::ConsoleDisplay::get().printLine(msg)
-#define CONSOLE_ERROR(msg) testsmem4u::ConsoleDisplay::get().printError(msg)
-#define CONSOLE_STATUS(info) testsmem4u::ConsoleDisplay::get().updateStatus(info)
 
 }

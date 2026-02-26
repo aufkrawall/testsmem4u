@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <sstream>
 #include <random>
+#include <algorithm>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -45,6 +46,12 @@ std::vector<uint32_t> parseTestSequence(const std::string& sequence) {
 
 using namespace simd;
 
+// Generate expected pattern value for verification
+// mode 0: uniform (val = p0)
+// mode 1: XOR pattern (val = p0 ^ (index * p1), wrapping is intentional for address testing)
+// mode 2: linear pattern (val = p0 + (index * p1), wrapping is intentional for address testing)
+// Note: index * p1 multiplication may overflow 64-bit; this is intentional behavior
+// for address line testing where we want to see all bit combinations
 static inline void generatePatternValue(uint64_t index, uint8_t mode, uint64_t p0, uint64_t p1, uint64_t& val) {
     if (mode == 0) val = p0;
     else if (mode == 1) val = p0 ^ (index * p1);
@@ -78,19 +85,21 @@ size_t TestEngine::verifyAndReport(const MemoryRegion& region, const uint64_t* p
         uint64_t idx = error_indices[i];
         uint64_t expect;
         generatePatternValue(start_idx + idx, pattern_mode, param0, param1, expect);
-        
-        // CRITICAL: Use safe_read which flushes cache and forces RAM read
-        // This is essential for accurate soft vs hard error detection
-        uint64_t actual = simd::safe_read_u64(&ptr[idx]);
 
-        if (actual != expect) {
+        // Capture first observed value before the forced re-read so soft errors
+        // keep actionable transient-value reporting.
+        uint64_t first_observed = ptr[idx];
+        uint64_t confirmed = simd::safe_read_u64(&ptr[idx]);
+
+        if (confirmed != expect) {
             // Hard Error: Re-read from RAM confirmed the mismatch
-            LOG_ERROR_DETAIL((test_name + " (Hard)").c_str(), reportAddress(region, &ptr[idx]), expect, actual);
+            LOG_ERROR_DETAIL((test_name + " (Hard)").c_str(), reportAddress(region, &ptr[idx]), expect, confirmed);
             res.hard_errors++;
         } else {
             // Soft/Transient Error: Initial read failed but RAM now has correct value
-            // This indicates a transient bit flip - still a real RAM error
-            LOG_ERROR_DETAIL((test_name + " (Soft/Transient)").c_str(), reportAddress(region, &ptr[idx]), expect, actual);
+            // This indicates a transient bit flip - still a real RAM error.
+            uint64_t transient = (first_observed != expect) ? first_observed : confirmed;
+            LOG_ERROR_DETAIL((test_name + " (Soft/Transient)").c_str(), reportAddress(region, &ptr[idx]), expect, transient);
             res.soft_errors++;
         }
         
@@ -153,30 +162,24 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
 
-    // Initialize random number generator with high-quality seed
     std::random_device rd;
     std::mt19937_64 rng(rd());
 
-    // RowHammer test parameters (Aggressive)
-    // Scale hammer points based on region size
-    // 5000 points was too low for large memory. 
-    // New cap: 100,000 points (covers ~50GB at dense 2/MB rate)
-    // Scale down for smaller regions.
-    // Minimum 10 points to ensure some testing.
-    size_t dense_points = (region.size / (1024 * 1024)) * 2; // ~2 points per MB
+    size_t dense_points = (region.size / (1024 * 1024)) * 2;
     size_t hammer_points = std::min((size_t)100000, dense_points);
     if (hammer_points < 10) hammer_points = 10;
     
-    // Allow override via parameter if needed
     if (config.parameter > 0) hammer_points = config.parameter;
 
-    // 8 KB stride = 1 typical DDR4/DDR5 row (64-bit bus × 8K columns / 8 = 8192 bytes).
-    // Aggressors must sit in rows adjacent to the victim; 64 KB was 8× too large.
-    const size_t stride_elements = 8192 / 8; // 8 KB in uint64_t words
+    // Row size varies by DRAM type: DDR4 typically 8KB, DDR5 typically 32KB
+    // Use 8KB as base stride (conservative for DDR4)
+    // For DDR5, the actual row may be larger but hammering 8KB apart still
+    // creates significant stress on adjacent rows
+    const size_t row_stride_elements = 8192 / 8;
     const size_t hammer_iterations = 200000;
 
-    if (stride_elements * 2 >= count) {
-        LOG_WARN("Region too small for double-sided RowHammer test");
+    if (row_stride_elements * 3 >= count) {
+        LOG_WARN("Region too small for RowHammer test");
         return res;
     }
 
@@ -185,54 +188,51 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         LOG_WARN("Try running with Administrator privileges or enable 'Lock Pages in Memory'.");
     }
 
-    // Run two passes: all-ones victim pattern, then all-zeros.
-    // DRAM cells can be "true" or "inverted"; each type is susceptible to the opposite fill.
     const uint64_t victim_patterns[2] = { ~0ULL, 0ULL };
     for (int pass = 0; pass < 2 && !ctx.shouldStop(); ++pass) {
         const uint64_t victim_fill  = victim_patterns[pass];
-        const uint64_t aggr_toggle0 = ~victim_fill; // first toggle value
-        const uint64_t aggr_toggle1 =  victim_fill; // second toggle value
+        const uint64_t aggr_toggle0 = ~victim_fill;
+        const uint64_t aggr_toggle1 =  victim_fill;
 
-        // Fill memory with the victim pattern
         generate_pattern_uniform(ptr, count, victim_fill, true);
         sfence();
         simd::flush_cache_region(ptr, region.size);
 
-        // Verify initial write
-        std::vector<uint64_t> initial_errors_vec;
-        simd::verify_uniform(ptr, count, victim_fill, initial_errors_vec);
-        if (!initial_errors_vec.empty()) {
-            LOG_ERROR("RowHammer pass %d: initial pattern verification failed - memory may be unstable", pass);
-            res.hard_errors += initial_errors_vec.size();
-            break;
+        size_t init_block = 256 * 1024;
+        for (size_t i = 0; i < count && !ctx.shouldStop(); i += init_block) {
+            size_t n = std::min(init_block, count - i);
+            TestEngine::verifyAndReport(region, ptr + i, n, i, 0, victim_fill, 0, res, ctx, "RowHammer (Init)", stop);
+            if (stop && ctx.shouldStop()) break;
         }
+        if (stop && ctx.shouldStop()) break;
 
-        // Double-sided hammering over random aggressor pairs
-        std::uniform_int_distribution<size_t> hammer_dist(0, count - 2 * stride_elements - 1);
+        std::uniform_int_distribution<size_t> hammer_dist(0, count - 3 * row_stride_elements - 1);
         volatile uint64_t* vptr = reinterpret_cast<volatile uint64_t*>(ptr);
 
         for (size_t i = 0; i < hammer_points && !ctx.shouldStop(); ++i) {
             size_t idxA = hammer_dist(rng);
-            size_t idxC = idxA + 2 * stride_elements;
+            size_t idxB = idxA + row_stride_elements;
+            size_t idxC = idxA + 2 * row_stride_elements;
+            
             if (idxC >= count) continue;
 
-            // Toggle aggressors rapidly: charge/discharge cycle stresses adjacent victim row
             for (size_t k = 0; k < hammer_iterations && !ctx.shouldStop(); ++k) {
                 uint64_t pattern = (k & 1) ? aggr_toggle1 : aggr_toggle0;
                 vptr[idxA] = pattern;
+                vptr[idxB] = pattern;
                 vptr[idxC] = pattern;
                 simd::memory_fence();
                 simd::flush_cache_line((void*)&vptr[idxA]);
+                simd::flush_cache_line((void*)&vptr[idxB]);
                 simd::flush_cache_line((void*)&vptr[idxC]);
             }
 
-            // Restore aggressors to victim fill for clean verification
             vptr[idxA] = victim_fill;
+            vptr[idxB] = victim_fill;
             vptr[idxC] = victim_fill;
             simd::sfence();
         }
 
-        // Flush entire region then verify for bit flips in victim rows
         simd::flush_cache_region(ptr, region.size);
         size_t block = 256 * 1024;
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
@@ -251,9 +251,8 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
     bool use_nt = true;
-    std::vector<uint64_t> errors;
-    errors.reserve(128);
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
+    size_t block = 256 * 1024;
 
     for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
@@ -263,31 +262,14 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
         // Flush cache before verification for true RAM testing
         simd::flush_cache_region(ptr, region.size);
 
-        errors.clear();
-        verify_pattern_xor(ptr, count, 0, config.pattern_param0, config.pattern_param1, errors);
-        size_t found = errors.size();
-        if (found > 0) {
-            for (size_t k = 0; k < found; ++k) {
-                uint64_t idx = errors[k];
-                uint64_t expect = config.pattern_param0 ^ (idx * config.pattern_param1);
-                
-                // Re-read check using safe read
-                uint64_t actual = simd::safe_read_u64(&ptr[idx]);
-                
-                if (actual != expect) {
-                    res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove (Init - Hard)", reportAddress(region, &ptr[idx]), expect, actual);
-                } else {
-                    res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove (Init - Soft)", reportAddress(region, &ptr[idx]), expect, actual);
-                }
-            }
-            
-            if (stop && res.total_errors() > 0) {
-                ctx.requestStop();
-                break;
-            }
+        for (size_t i = 0; i < count; i += block) {
+            if (ctx.shouldStop()) break;
+            size_t n = std::min(block, count - i);
+            TestEngine::verifyAndReport(region, ptr + i, n, i, 1, config.pattern_param0,
+                                        config.pattern_param1, res, ctx, "MirrorMove (Init)", stop);
+            if (stop && ctx.shouldStop()) break;
         }
+        if (stop && ctx.shouldStop()) break;
 
         invert_array(ptr, count, use_nt);
         sfence();
@@ -297,7 +279,6 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
 
         // Inverted value: ~(param0 ^ (idx * param1)) = (~param0) ^ (idx * param1)
         // This is equivalent to XOR mode (pattern_mode=1) with param0 inverted
-        size_t block = 256 * 1024;
         for (size_t i = 0; i < count; i += block) {
             if (ctx.shouldStop()) break;
             size_t n = std::min(block, count - i);
@@ -379,18 +360,19 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
 
         for (size_t i = 0; i + 1 < count; i += 2) {
             if (ctx.shouldStop()) break;
-            
+
             // Low word check
-            if (ptr[i] != config.pattern_param0) {
-                // Re-read check using safe read
-                uint64_t actual = simd::safe_read_u64(&ptr[i]);
-                
-                if (actual != config.pattern_param0) {
+            uint64_t lo_observed = ptr[i];
+            if (lo_observed != config.pattern_param0) {
+                // Re-read from DRAM to classify hard vs soft
+                uint64_t confirmed = simd::safe_read_u64(&ptr[i]);
+
+                if (confirmed != config.pattern_param0) {
                     res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (L - Hard)", reportAddress(region, &ptr[i]), config.pattern_param0, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (L - Hard)", reportAddress(region, &ptr[i]), config.pattern_param0, confirmed);
                 } else {
                     res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (L - Soft)", reportAddress(region, &ptr[i]), config.pattern_param0, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (L - Soft)", reportAddress(region, &ptr[i]), config.pattern_param0, lo_observed);
                 }
 
                 if (stop && res.total_errors() > 0) {
@@ -398,18 +380,19 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
                     break;
                 }
             }
-            
-            // High word check
-            if (ptr[i+1] != config.pattern_param1) {
-                // Re-read check using safe read
-                uint64_t actual = simd::safe_read_u64(&ptr[i+1]);
 
-                if (actual != config.pattern_param1) {
+            // High word check
+            uint64_t hi_observed = ptr[i+1];
+            if (hi_observed != config.pattern_param1) {
+                // Re-read from DRAM to classify hard vs soft
+                uint64_t confirmed = simd::safe_read_u64(&ptr[i+1]);
+
+                if (confirmed != config.pattern_param1) {
                     res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (H - Hard)", reportAddress(region, &ptr[i + 1]), config.pattern_param1, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (H - Hard)", reportAddress(region, &ptr[i + 1]), config.pattern_param1, confirmed);
                 } else {
                     res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (H - Soft)", reportAddress(region, &ptr[i + 1]), config.pattern_param1, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (H - Soft)", reportAddress(region, &ptr[i + 1]), config.pattern_param1, hi_observed);
                 }
 
                 if (stop && res.total_errors() > 0) {
@@ -418,20 +401,21 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
                 }
             }
         }
-        
+
         // Handle odd tail word if region size not divisible by 16 bytes
         if (count % 2 == 1) {
             size_t last = count - 1;
-            if (ptr[last] != config.pattern_param0) {
-                // Re-read check using safe read
-                uint64_t actual = simd::safe_read_u64(&ptr[last]);
+            uint64_t tail_observed = ptr[last];
+            if (tail_observed != config.pattern_param0) {
+                // Re-read from DRAM to classify hard vs soft
+                uint64_t confirmed = simd::safe_read_u64(&ptr[last]);
 
-                if (actual != config.pattern_param0) {
+                if (confirmed != config.pattern_param0) {
                     res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Hard)", reportAddress(region, &ptr[last]), config.pattern_param0, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Hard)", reportAddress(region, &ptr[last]), config.pattern_param0, confirmed);
                 } else {
                     res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Soft)", reportAddress(region, &ptr[last]), config.pattern_param0, actual);
+                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Soft)", reportAddress(region, &ptr[last]), config.pattern_param0, tail_observed);
                 }
 
                 if (stop) ctx.requestStop();
@@ -461,29 +445,11 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
     // Flush again before verification to ensure we read from DRAM
     simd::flush_cache_region(ptr, region.size);
 
-    std::vector<uint64_t> errors;
-    errors.reserve(128);
-    simd::verify_uniform(ptr, count, config.pattern_param0, errors);
-    size_t found = errors.size();
-    if (found > 0) {
-        for (size_t k = 0; k < found; ++k) {
-            uint64_t idx = errors[k];
-            
-            // Re-read check
-            uint64_t actual = simd::safe_read_u64(&ptr[idx]);
-            
-            if (actual != config.pattern_param0) {
-                res.hard_errors++;
-                LOG_ERROR_DETAIL("RefreshStable (Hard)", reportAddress(region, &ptr[idx]), config.pattern_param0, actual);
-            } else {
-                res.soft_errors++;
-                LOG_ERROR_DETAIL("RefreshStable (Soft)", reportAddress(region, &ptr[idx]), config.pattern_param0, actual);
-            }
-        }
-
-        if (stop && res.total_errors() > 0) {
-            ctx.requestStop();
-        }
+    size_t block = 256 * 1024;
+    for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
+        size_t n = std::min(block, count - i);
+        TestEngine::verifyAndReport(region, ptr + i, n, i, 0, config.pattern_param0, 0, res, ctx, "RefreshStable", stop);
+        if (stop && ctx.shouldStop()) break;
     }
 
     res.bytes_tested = region.size;
@@ -491,6 +457,7 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
 }
 
 TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop, bool invert) {
+    (void)config;
     TestResult res = {};
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
@@ -519,11 +486,9 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
                     uint64_t offset = i + error_indices[k];
-                    // Re-read check
-                    simd::flush_cache_line((void*)&ptr[offset]);
-                    simd::memory_fence();
+                    // Re-read from DRAM (safe_read_u64 flushes cache internally)
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
-                    
+
                     const char* name = invert ? "WalkingZeros" : "WalkingOnes";
                     if (actual != pattern) {
                         res.hard_errors++;
@@ -554,10 +519,13 @@ TestResult TestEngine::runWalkingZeros(TestContext& ctx, const MemoryRegion& reg
     return runWalkingBit(ctx, region, config, stop, true);
 }
 
-// 64-bit LFSR with maximal period polynomial: x^64 + x^63 + x^61 + x^60 + 1
-// Period: 2^64 - 1, ensuring no pattern repetition for any practical memory size
+// 64-bit maximal-length Fibonacci LFSR (left-shift)
+// Primitive polynomial: x^64 + x^63 + x^61 + x^60 + 1
+// (reciprocal of the well-known x^64 + x^4 + x^3 + x + 1)
+// Recurrence: s_n = s_{n-1} + s_{n-3} + s_{n-4} + s_{n-64}
+// Period: 2^64 - 1
 static uint64_t lfsr_next(uint64_t val) {
-    uint64_t bit = ((val >> 63) ^ (val >> 62) ^ (val >> 60) ^ (val >> 59)) & 1;
+    uint64_t bit = (val ^ (val >> 2) ^ (val >> 3) ^ (val >> 63)) & 1;
     return (val << 1) | bit;
 }
 
@@ -688,8 +656,6 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
             
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
-                    simd::flush_cache_line((void*)&ptr[i + error_indices[k]]);
-                    simd::memory_fence();
                     uint64_t actual = simd::safe_read_u64(&ptr[i + error_indices[k]]);
                     if (actual != pattern) {
                         res.hard_errors++;
@@ -699,38 +665,36 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
                         LOG_ERROR_DETAIL("MovingInv (Fwd - Soft)", reportAddress(region, &ptr[i + error_indices[k]]), pattern, actual);
                     }
                 }
-                
+
                 if (stop) {
                     ctx.requestStop();
                     break;
                 }
             }
         }
-        
+
         if (ctx.shouldStop()) break;
-        
+
         // Phase 3: Invert memory
         invert_array(ptr, count, true);
         sfence();
         simd::flush_cache_region(ptr, region.size);
-        
+
         uint64_t inverted = ~pattern;
-        
+
         // Phase 4: Verify inverted pattern (backward march for better coverage)
         for (size_t i = count; i > 0 && !ctx.shouldStop(); ) {
             size_t chunk_end = i;
             size_t chunk_start = (i > block) ? (i - block) : 0;
             size_t n = chunk_end - chunk_start;
             i = chunk_start;
-            
+
             error_indices.clear();
             simd::verify_uniform(ptr + chunk_start, n, inverted, error_indices);
             size_t found = error_indices.size();
-            
+
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
-                    simd::flush_cache_line((void*)&ptr[chunk_start + error_indices[k]]);
-                    simd::memory_fence();
                     uint64_t actual = simd::safe_read_u64(&ptr[chunk_start + error_indices[k]]);
                     if (actual != inverted) {
                         res.hard_errors++;
@@ -740,7 +704,6 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
                         LOG_ERROR_DETAIL("MovingInv (Bwd - Soft)", reportAddress(region, &ptr[chunk_start + error_indices[k]]), inverted, actual);
                     }
                 }
-                // All errors have been individually logged above
                 
                 if (stop) {
                     ctx.requestStop();
@@ -785,8 +748,6 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
             
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
-                    simd::flush_cache_line((void*)&ptr[i + error_indices[k]]);
-                    simd::memory_fence();
                     uint64_t actual = simd::safe_read_u64(&ptr[i + error_indices[k]]);
                     if (actual != pattern) {
                         res.hard_errors++;
@@ -796,38 +757,36 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
                         LOG_ERROR_DETAIL("MovInvWalk (Fwd - Soft)", reportAddress(region, &ptr[i + error_indices[k]]), pattern, actual);
                     }
                 }
-                
+
                 if (stop) {
                     ctx.requestStop();
                     break;
                 }
             }
         }
-        
+
         if (ctx.shouldStop()) break;
-        
+
         // Phase 3: Invert memory
         simd::invert_array(ptr, count, true);
         sfence();
         simd::flush_cache_region(ptr, region.size);
-        
+
         uint64_t inverted = ~pattern;
-        
+
         // Phase 4: Verify inverted pattern (backward march)
         for (size_t i = count; i > 0 && !ctx.shouldStop(); ) {
             size_t chunk_end = i;
             size_t chunk_start = (i > block) ? (i - block) : 0;
             size_t n = chunk_end - chunk_start;
             i = chunk_start;
-            
+
             error_indices.clear();
             simd::verify_uniform(ptr + chunk_start, n, inverted, error_indices);
             size_t found = error_indices.size();
-            
+
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
-                    simd::flush_cache_line((void*)&ptr[chunk_start + error_indices[k]]);
-                    simd::memory_fence();
                     uint64_t actual = simd::safe_read_u64(&ptr[chunk_start + error_indices[k]]);
                     if (actual != inverted) {
                         res.hard_errors++;
@@ -991,7 +950,7 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
 
 // Xoshiro256** PRNG (fast and high quality)
 static inline uint64_t rotl(const uint64_t x, int k) {
-	return (x << k) | (x >> (64 - k));
+    return (x << k) | (x >> (64 - k));
 }
 
 struct Xoshiro256SS {
@@ -1121,25 +1080,19 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
                 // Continue to write test even after read error - don't skip!
             }
             
-            // Step 2: Write inverted pattern (regardless of read result)
+// Step 2: Write inverted pattern (regardless of read result)
             // This tests the write path
             uint64_t inverted = ~idx;
             ptr[idx] = inverted;
             simd::sfence();
+            simd::flush_cache_line((void*)&ptr[idx]);
+            simd::memory_fence();
             
             // Step 3: Verify inverted pattern was written correctly
-            // Flush cache to ensure we verify DRAM write integrity, not just cache
             actual = simd::safe_read_u64(&ptr[idx]);
             if (actual != inverted) {
-                uint64_t reread_val = simd::safe_read_u64(&ptr[idx]);
-                
-                if (reread_val != inverted) {
-                    res.hard_errors++;
-                    LOG_ERROR_DETAIL("RandomAccess (WriteCheck - Hard)", reportAddress(region, &ptr[idx]), inverted, reread_val);
-                } else {
-                    res.soft_errors++;
-                    LOG_ERROR_DETAIL("RandomAccess (WriteCheck - Soft)", reportAddress(region, &ptr[idx]), inverted, actual);
-                }
+                res.hard_errors++;
+                LOG_ERROR_DETAIL("RandomAccess (WriteCheck - Hard)", reportAddress(region, &ptr[idx]), inverted, actual);
             }
             
             // Step 4: Restore original pattern for next iteration
@@ -1198,8 +1151,6 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
                     uint64_t offset = half_count + i + error_indices[k];
-                    simd::flush_cache_line((void*)&ptr[offset]);
-                    simd::memory_fence();
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
                     if (actual != pattern) {
                         res.hard_errors++;
@@ -1284,6 +1235,11 @@ RunResult TestEngine::runTests(const Config& config) {
 
     MemoryRegion region;
     uint64_t needed_bytes = (uint64_t)config.memory_window_mb * 1024 * 1024;
+    if (needed_bytes == 0) {
+        LOG_ERROR("Configured memory window is 0 MB. Refusing to run an empty RAM test.");
+        result.hard_errors = 1;
+        return result;
+    }
 
     LOG_INFO("Allocating %u MB...", config.memory_window_mb);
     bool try_large = config.use_large_pages;
@@ -1384,7 +1340,15 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     // Set up global stop signal for shutdown handler
     g_current_context.store(&ctx, std::memory_order_release);
 
-    uint32_t threads = config.cores > 0 ? config.cores : 1;
+    uint32_t hw_threads = std::thread::hardware_concurrency();
+    if (hw_threads == 0) hw_threads = 1;
+
+    uint32_t threads = config.cores > 0 ? config.cores : hw_threads;
+    threads = std::min(threads, hw_threads);
+    uint32_t max_threads_for_region = static_cast<uint32_t>(std::max<size_t>(1, region.size / 4096));
+    threads = std::min(threads, max_threads_for_region);
+    if (threads == 0) threads = 1;
+
     std::vector<std::thread> workers;
 
     auto start = std::chrono::high_resolution_clock::now();

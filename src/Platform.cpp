@@ -45,11 +45,8 @@ static void InitLsaString(PLSA_UNICODE_STRING LsaString, LPWSTR String) {
 #include <sched.h>
 #include <errno.h>
 #include <csignal>
-#include <filesystem>
 #include <fcntl.h>
 #endif
-
-namespace fs = std::filesystem;
 
 namespace testsmem4u {
 
@@ -66,12 +63,12 @@ static int g_original_hugepages = -1;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
 static BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
-    if (g_shutdown_initiated) {
+    if (g_shutdown_initiated.load(std::memory_order_acquire)) {
         TerminateProcess(GetCurrentProcess(), 0);
         return TRUE;
     }
 
-    g_shutdown_initiated = true;
+    g_shutdown_initiated.store(true, std::memory_order_release);
 
     if (g_shutdown_callback) {
         g_shutdown_callback();
@@ -80,13 +77,11 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
     // NOTE: Logger::emergencyFlush() removed - may not be safe during shutdown
     // Rely on normal process exit to flush pending log entries
 
-    if (dwCtrlType == CTRL_CLOSE_EVENT || dwCtrlType == CTRL_LOGOFF_EVENT || dwCtrlType == CTRL_SHUTDOWN_EVENT) {
+    if (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_BREAK_EVENT ||
+        dwCtrlType == CTRL_CLOSE_EVENT || dwCtrlType == CTRL_LOGOFF_EVENT || dwCtrlType == CTRL_SHUTDOWN_EVENT) {
         if (g_shutdown_event && g_shutdown_event != INVALID_HANDLE_VALUE) {
             SetEvent(g_shutdown_event);
         }
-
-        Sleep(500);
-        ExitProcess(0);
         return TRUE;
     }
     return FALSE;
@@ -174,7 +169,7 @@ PlatformInfo Platform::detectPlatform() {
     snprintf(info.arch, sizeof(info.arch), "x86_64");
 #elif defined(_M_IX86) || (defined(__i386__) && !defined(__x86_64__))
     snprintf(info.arch, sizeof(info.arch), "x86");
-#elif _M_ARM64
+#elif defined(_M_ARM64)
     snprintf(info.arch, sizeof(info.arch), "ARM64");
 #else
     snprintf(info.arch, sizeof(info.arch), "Unknown");
@@ -185,13 +180,13 @@ PlatformInfo Platform::detectPlatform() {
 #else
     snprintf(info.os_name, sizeof(info.os_name), "Linux");
     info.cpu_cores = std::thread::hardware_concurrency();
-    info.page_size = sysconf(_SC_PAGESIZE);
+    info.page_size = static_cast<uint32_t>(sysconf(_SC_PAGESIZE));
 
 #if defined(__x86_64__) && !defined(__i386__)
     snprintf(info.arch, sizeof(info.arch), "x86_64");
 #elif defined(__i386__)
     snprintf(info.arch, sizeof(info.arch), "x86");
-#elif __aarch64__
+#elif defined(__aarch64__)
     snprintf(info.arch, sizeof(info.arch), "ARM64");
 #else
     snprintf(info.arch, sizeof(info.arch), "Unknown");
@@ -224,17 +219,43 @@ PlatformInfo Platform::detectPlatform() {
 
 bool Platform::hasMemoryLockPrivilege() {
 #ifdef _WIN32
-    // Try to enable the privilege. If it works (or is already enabled), we have it.
-    // However, enablePrivilege returns true if AdjustTokenPrivileges succeeds (even if privilege not held? No, check EnablePrivilege logic)
-    // Actually EnablePrivilege calls LookupPrivilegeValue and then AdjustTokenPrivileges.
-    // If user doesn't have the privilege, AdjustTokenPrivileges sets LastError to ERROR_NOT_ALL_ASSIGNED.
-    // We should implement a specific check here.
-    return enablePrivilege(SE_LOCK_MEMORY_NAME);
+    HANDLE hToken = NULL;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        return false;
+    }
+
+    LUID lock_luid;
+    if (!LookupPrivilegeValue(NULL, SE_LOCK_MEMORY_NAME, &lock_luid)) {
+        CloseHandle(hToken);
+        return false;
+    }
+
+    DWORD required_size = 0;
+    GetTokenInformation(hToken, TokenPrivileges, nullptr, 0, &required_size);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || required_size == 0) {
+        CloseHandle(hToken);
+        return false;
+    }
+
+    std::vector<uint8_t> buffer(required_size);
+    auto* token_privileges = reinterpret_cast<TOKEN_PRIVILEGES*>(buffer.data());
+    if (!GetTokenInformation(hToken, TokenPrivileges, token_privileges, required_size, &required_size)) {
+        CloseHandle(hToken);
+        return false;
+    }
+    CloseHandle(hToken);
+
+    for (DWORD i = 0; i < token_privileges->PrivilegeCount; ++i) {
+        const LUID& luid = token_privileges->Privileges[i].Luid;
+        if (luid.LowPart == lock_luid.LowPart && luid.HighPart == lock_luid.HighPart) {
+            return true;
+        }
+    }
+    return false;
 #else
-    // On Linux, checking RLIMIT_MEMLOCK is good
     struct rlimit limit;
     if (getrlimit(RLIMIT_MEMLOCK, &limit) == 0) {
-        return (limit.rlim_cur != 0);
+        return (limit.rlim_cur != 0 && limit.rlim_cur != RLIM_INFINITY) || limit.rlim_max != 0;
     }
     return false;
 #endif
@@ -269,6 +290,11 @@ bool Platform::grantMemoryLockPrivilege() {
     }
 
     PTOKEN_USER pTokenUser = (PTOKEN_USER)HeapAlloc(GetProcessHeap(), 0, dwSize);
+    if (!pTokenUser) {
+        CloseHandle(hToken);
+        LsaClose(policyHandle);
+        return false;
+    }
     if (!GetTokenInformation(hToken, TokenUser, pTokenUser, dwSize, &dwSize)) {
         HeapFree(GetProcessHeap(), 0, pTokenUser);
         CloseHandle(hToken);
@@ -482,21 +508,26 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
 // Requires SE_PROF_SINGLE_PROCESS_NAME privilege.
 static void purgeStandbyList() {
     // NtSetSystemInformation is not in public headers, load dynamically
-    typedef LONG (NTAPI *NtSetSystemInformation_t)(INT, PVOID, ULONG);
+    typedef LONG (NTAPI *NtSetSystemInformation_t)(ULONG, PVOID, ULONG);
     HMODULE ntdll = GetModuleHandleA("ntdll.dll");
     if (!ntdll) return;
 
-    auto NtSetSystemInfo = (NtSetSystemInformation_t)GetProcAddress(ntdll, "NtSetSystemInformation");
+    FARPROC raw_proc = GetProcAddress(ntdll, "NtSetSystemInformation");
+    if (!raw_proc) return;
+
+    NtSetSystemInformation_t NtSetSystemInfo = nullptr;
+    static_assert(sizeof(NtSetSystemInfo) == sizeof(raw_proc), "Unexpected function pointer size mismatch");
+    std::memcpy(&NtSetSystemInfo, &raw_proc, sizeof(NtSetSystemInfo));
     if (!NtSetSystemInfo) return;
 
     // Enable required privilege
     Platform::enablePrivilege(SE_PROF_SINGLE_PROCESS_NAME);
 
-    const INT SystemMemoryListInformation = 80;
+    const ULONG SystemMemoryListInformation = 80;
 
     // Flush modified pages to disk first — dirty pages cannot be reused for
     // large pages until written out. This converts modified → standby.
-    INT flush_cmd = 3; // MemoryFlushModifiedList
+    ULONG flush_cmd = 3; // MemoryFlushModifiedList
     LONG status = NtSetSystemInfo(SystemMemoryListInformation, &flush_cmd, sizeof(flush_cmd));
     if (status == 0) {
         LOG_INFO("Flushed modified page list to disk");
@@ -504,7 +535,7 @@ static void purgeStandbyList() {
 
     // Now purge the standby list — frees both original standby pages and
     // the newly-flushed pages, maximizing free 2MB-aligned regions.
-    INT purge_cmd = 4; // MemoryPurgeStandbyList
+    ULONG purge_cmd = 4; // MemoryPurgeStandbyList
     status = NtSetSystemInfo(SystemMemoryListInformation, &purge_cmd, sizeof(purge_cmd));
 
     if (status == 0) {
@@ -664,9 +695,7 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                                                 MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
                                                 PAGE_READWRITE);
                     if (result != chunk_addr) {
-                        DWORD err = GetLastError();
-                        LOG_DEBUG("Chunked LP: chunk %zu/%zu at %p failed (error %lu, chunk %zu MB, attempt %d)",
-                                  i + 1, num_chunks, chunk_addr, err, aligned_chunk / (1024 * 1024), attempt + 1);
+                        (void)GetLastError();
                         all_ok = false;
                         break;
                     }
@@ -756,9 +785,6 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                         SIZE_T min_ws = remaining_bytes + overhead;
                         SIZE_T max_ws = remaining_bytes + overhead + (512 * 1024 * 1024);
                         if (!SetProcessWorkingSetSize(hProcess, min_ws, max_ws)) {
-                            DWORD err = GetLastError();
-                            LOG_DEBUG("Chunked LP hybrid: SetProcessWorkingSetSize(min=%zu MB, max=%zu MB) failed: error %lu",
-                                      min_ws / 1024 / 1024, max_ws / 1024 / 1024, err);
                             hybrid_ok = false;
                             break;
                         }
@@ -771,17 +797,13 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
 
                     void* std_ptr = VirtualAlloc(chunk_addr, aligned_chunk, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
                     if (std_ptr != chunk_addr) {
-                        DWORD err = GetLastError();
-                        LOG_DEBUG("Chunked LP hybrid: standard alloc chunk %zu/%zu at %p failed (error %lu)",
-                                  i + 1, num_chunks, chunk_addr, err);
+                        (void)GetLastError();
                         hybrid_ok = false;
                         break;
                     }
 
                     if (!VirtualLock(chunk_addr, aligned_chunk)) {
-                        DWORD err = GetLastError();
-                        LOG_DEBUG("Chunked LP hybrid: VirtualLock chunk %zu/%zu at %p failed (error %lu)",
-                                  i + 1, num_chunks, chunk_addr, err);
+                        (void)GetLastError();
                         VirtualFree(chunk_addr, 0, MEM_RELEASE);
                         hybrid_ok = false;
                         break;
@@ -1244,7 +1266,7 @@ void Platform::setProcessPriorityHigh() {
 #else
     // Set nice value to -5 for higher priority (requires CAP_SYS_NICE or root)
     // Failure is acceptable - just means we'll run at normal priority
-    nice(-5);
+    (void)nice(-5);
 #endif
 }
 

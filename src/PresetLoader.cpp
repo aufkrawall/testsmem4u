@@ -5,6 +5,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 
 #ifdef _WIN32
 #include <windows.h>

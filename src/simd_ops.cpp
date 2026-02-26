@@ -7,9 +7,6 @@
 #include <emmintrin.h>
 #include <smmintrin.h>
 #include <nmmintrin.h>
-#if defined(_M_IX86) || defined(_M_X64)
-#include <intrin.h>
-#endif
 #elif defined(__aarch64__) || defined(_M_ARM64)
 #include <arm_neon.h>
 #endif
@@ -56,20 +53,28 @@ static SimdCapabilities detect_x86_capabilities() {
     caps.has_clflush = (info[3] & (1 << 19)) != 0;
 
     bool os_has_avx_state = false;
+#if defined(__AVX512F__)
     bool os_has_avx512_state = false;
+#endif
     if (cpu_has_osxsave) {
         const uint64_t xcr0 = read_xcr0();
         os_has_avx_state = (xcr0 & 0x6ULL) == 0x6ULL;        // XMM + YMM state
+#if defined(__AVX512F__)
         os_has_avx512_state = os_has_avx_state && ((xcr0 & 0xE0ULL) == 0xE0ULL); // Opmask + ZMM_Hi256 + Hi16_ZMM
+#endif
     }
 
     bool cpu_has_avx2 = false;
+#if defined(__AVX512F__)
     bool cpu_has_avx512f = false;
+#endif
     if (max_leaf >= 7) {
         __cpuidex(info, 7, 0);
         caps.has_clflushopt = (info[1] & (1 << 23)) != 0;
         cpu_has_avx2 = (info[1] & (1 << 5)) != 0;
+#if defined(__AVX512F__)
         cpu_has_avx512f = (info[1] & (1 << 16)) != 0;
+#endif
     }
 
 #if defined(__AVX512F__)
@@ -240,92 +245,10 @@ void lfence() {
 }
 
 template<>
-void nt_store_128<uint64_t>(uint64_t* dst, const uint64_t* src, size_t count) {
-#if defined(__SSE2__) || defined(__x86_64__)
-    for (size_t i = 0; i < count; i += 2) {
-        __m128i v = _mm_loadu_si128((const __m128i*)(src + i));
-        _mm_stream_si128((__m128i*)(dst + i), v);
-    }
-#elif defined(__aarch64__)
-    for (size_t i = 0; i < count; i += 2) {
-        uint64x2_t v = vld1q_u64(src + i);
-        vst1q_u64(dst + i, v);
-    }
-#else
-    for(size_t i=0; i<count; ++i) dst[i] = src[i];
-#endif
-}
-
-template<>
-void nt_store_256<uint64_t>(uint64_t* dst, const uint64_t* src, size_t count) {
-#if defined(__AVX2__)
-    for (size_t i = 0; i < count; i += 4) {
-        __m256i v = _mm256_loadu_si256((const __m256i*)(src + i));
-        _mm256_stream_si256((__m256i*)(dst + i), v);
-    }
-#elif defined(__SSE2__)
-    nt_store_128(dst, src, count);
-#else
-    for(size_t i=0; i<count; ++i) dst[i] = src[i];
-#endif
-}
-
-template<>
-void nt_store_512<uint64_t>(uint64_t* dst, const uint64_t* src, size_t count) {
-#if defined(__AVX512F__)
-    for (size_t i = 0; i < count; i += 8) {
-        __m512i v = _mm512_loadu_si512((const __m512i*)(src + i));
-        _mm512_stream_si512((void*)(dst + i), v);
-    }
-#else
-    nt_store_256(dst, src, count);
-#endif
-}
-
-template<>
-void stream_load_128<uint64_t>(uint64_t* dst, const uint64_t* src, size_t count) {
-#if defined(__SSE4_1__)
-    for (size_t i = 0; i < count; i += 2) {
-        __m128i v = _mm_stream_load_si128((__m128i*)(src + i));
-        _mm_storeu_si128((__m128i*)(dst + i), v);
-    }
-#else
-    for(size_t i=0; i<count; ++i) dst[i] = src[i];
-#endif
-}
-
-template<>
-void stream_load_256<uint64_t>(uint64_t* dst, const uint64_t* src, size_t count) {
-#if defined(__AVX2__)
-    for (size_t i = 0; i < count; i += 4) {
-        __m256i v = _mm256_stream_load_si256((__m256i*)(src + i));
-        _mm256_storeu_si256((__m256i*)(dst + i), v);
-    }
-#else
-    stream_load_128(dst, src, count);
-#endif
-}
-
-template<>
-void stream_load_512<uint64_t>(uint64_t* dst, const uint64_t* src, size_t count) {
-#if defined(__AVX512F__)
-    for (size_t i = 0; i < count; i += 8) {
-        // AVX512 doesn't have a specific stream_load, but we can use VMOVNTDQA if available (AVX512_F is sufficient usually for standard vector load, but strictly speaking MOVNTDQA is SSE4.1 rooted, expanded in AVX2/512).
-        // Actually for AVX512, _mm512_stream_load_si512 exists in some extensions (AVL512VL), but let's stick to intrinsic _mm512_load_si512 if no explicit stream.
-        // HOWEVER, the specific instruction for NT load is VMOVNTDQA. 
-        // Intel Intrinsics Guide says _mm512_stream_load_si512 corresponds to VMOVNTDQA.
-        __m512i v = _mm512_stream_load_si512((void*)(src + i));
-        _mm512_storeu_si512((void*)(dst + i), v);
-    }
-#else
-    stream_load_256(dst, src, count);
-#endif
-}
-
-template<>
 void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt) {
     SimdCapabilities caps = getCapabilities();
     (void)caps;
+    (void)use_nt;
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -392,8 +315,11 @@ static inline __m256i mul64_avx2(__m256i a, __m256i b) {
 
 template<>
 void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt) {
+    (void)use_nt;
     size_t i = 0;
+#if defined(__AVX512F__) || defined(__AVX2__)
     SimdCapabilities caps = getCapabilities();
+#endif
 
 #if defined(__AVX512F__)
     if (caps.has_avx512) {
@@ -429,7 +355,6 @@ void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0
             static_cast<int64_t>(i + 1), 
             static_cast<int64_t>(i)
         );
-        __m256i v_idx_step = _mm256_set1_epi64x(4);
         
         // Calculate initial term: (idx * param1)
         __m256i v_term = mul64_avx2(v_idx, v_param1);
@@ -513,6 +438,7 @@ template<>
 void generate_pattern_increment<uint64_t>(uint64_t* dst, size_t count, uint64_t start, bool use_nt) {
     SimdCapabilities caps = getCapabilities();
     (void)caps;
+    (void)use_nt;
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -826,11 +752,7 @@ void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
 #endif
 
     for (; i < count; ++i) dst[i] = ~dst[i];
-}
-
-template<>
-void verify_moving_inv<uint64_t>(const uint64_t* src, size_t count, uint64_t val, std::vector<uint64_t>& error_indices) {
-    verify_uniform(src, count, val, error_indices);
+    sfence();
 }
 
 // Safe forced memory read after cache flush

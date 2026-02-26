@@ -8,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <cstring>
 #include <csignal>
 #include <algorithm>
 #include <cctype>
@@ -37,7 +38,6 @@ static void clearInput() {
     while (_kbhit()) _getch();
 }
 #else
-#include <cstring>
 
 static bool isInputAvailable() {
     struct timeval tv;
@@ -274,7 +274,7 @@ static bool isPrivileged() {
 #endif
 }
 
-static void relaunchAsPrivileged(int argc, char* argv[]) {
+static bool relaunchAsPrivileged(int argc, char* argv[]) {
 #ifdef _WIN32
     // Re-launch with ShellExecute and "runas" verb
     std::string args;
@@ -293,7 +293,7 @@ static void relaunchAsPrivileged(int argc, char* argv[]) {
     char exePath[MAX_PATH];
     if (GetModuleFileNameA(NULL, exePath, MAX_PATH) == 0) {
         std::cerr << "Failed to get executable path for elevation." << std::endl;
-        return;
+        return false;
     }
 
     SHELLEXECUTEINFOA sei = {}; 
@@ -311,7 +311,9 @@ static void relaunchAsPrivileged(int argc, char* argv[]) {
         } else {
             std::cerr << "Failed to elevate: Error " << err << std::endl;
         }
+        return false;
     }
+    return true;
 #else
     // Re-launch with sudo
     std::vector<char*> new_argv;
@@ -325,6 +327,7 @@ static void relaunchAsPrivileged(int argc, char* argv[]) {
 
     execvp("sudo", new_argv.data());
     std::cerr << "Failed to run sudo: " << strerror(errno) << std::endl;
+    return false;
 #endif
 }
 
@@ -478,10 +481,12 @@ int main(int argc, char* argv[]) {
         else if (arg[0] != '-') { preset_path = arg; skip_wizard = true; }
     }
 
-if (!no_elevation && !isPrivileged()) {
+    if (!no_elevation && !isPrivileged()) {
         ConsoleDisplay::get().printLine("Requesting elevation... (Use --no-elevation to skip)");
-        relaunchAsPrivileged(argc, argv);
-        return 0;
+        if (relaunchAsPrivileged(argc, argv)) {
+            return 0;
+        }
+        ConsoleDisplay::get().printLine("[!] Elevation unavailable. Continuing without elevation.");
     }
 
     Logger::get().init("testsmem4u.log", debug ? LogLevel::DEBUG : LogLevel::INFO, true);

@@ -15,18 +15,6 @@
 
 namespace testsmem4u {
 
-// Constants for memory testing
-constexpr size_t WORD_SIZE = 8;
-constexpr size_t DEFAULT_PATTERN_WORDS = 256;
-constexpr size_t DEFAULT_VERIFY_WORDS = 256;
-constexpr size_t MEMORY_LOCK_CHUNK_SIZE = 64 * 1024 * 1024;
-constexpr size_t WORKING_SET_BUFFER = 64 * 1024 * 1024;
-constexpr uint64_t DEFAULT_PATTERN = 0xAAAAAAAA55555555ULL;
-constexpr uint64_t DEFAULT_PATTERN_ODD = 0xAAAAAAAAAAAAAAAAULL;
-constexpr uint64_t DEFAULT_PATTERN_EVEN = 0x5555555555555555ULL;
-constexpr uint32_t DEFAULT_PASSES = 2;
-constexpr uint32_t DEFAULT_DELAY_MS = 100;
-
 // Preset file structure
 struct PresetInfo {
     std::string config_name;
