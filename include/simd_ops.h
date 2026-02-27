@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace testsmem4u {
 namespace simd {
@@ -68,16 +69,16 @@ template<typename T>
 void invert_array(T* dst, size_t count, bool use_nt);
 
 // Verification (Read from Memory)
-// Populates error_indices with offsets of failing words.
+// Populates errors with pairs of (offset, observed_value) of failing words.
 // Uses SIMD comparison for speed where possible.
 template<typename T>
-void verify_pattern_linear(const T* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<uint64_t>& error_indices);
+void verify_pattern_linear(const T* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<std::pair<uint64_t, uint64_t>>& errors);
 
 template<typename T>
-void verify_pattern_xor(const T* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<uint64_t>& error_indices);
+void verify_pattern_xor(const T* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<std::pair<uint64_t, uint64_t>>& errors);
 
 template<typename T>
-void verify_uniform(const T* src, size_t count, uint64_t val, std::vector<uint64_t>& error_indices);
+void verify_uniform(const T* src, size_t count, uint64_t val, std::vector<std::pair<uint64_t, uint64_t>>& errors);
 
 // Safe forced memory read after cache flush
 // Use this instead of volatile casts (which are UB in C++)

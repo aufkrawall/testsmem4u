@@ -43,7 +43,6 @@ public:
 
     // Process Management
     static bool setThreadAffinity(uint32_t thread_id, uint32_t num_threads);
-    static void setProcessPriorityHigh();
     static void registerShutdownHandler(void (*callback)());
 
     // Verify memory is still resident in physical RAM (not swapped/reclaimed)

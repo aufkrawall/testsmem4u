@@ -46,6 +46,7 @@ BASE_CXX_FLAGS = [
     "-O3",
     "-flto=thin",
     "-Wall",
+    "-Wextra",
     "-ffunction-sections",
     "-fdata-sections",
     "-fno-rtti",

@@ -67,28 +67,28 @@ static inline uint64_t reportAddress(const MemoryRegion& region, const void* ptr
 size_t TestEngine::verifyAndReport(const MemoryRegion& region, const uint64_t* ptr, size_t count, size_t start_idx,
                                    uint8_t pattern_mode, uint64_t param0, uint64_t param1,
                                    TestResult& res, TestContext& ctx, const std::string& test_name, bool halt_on_error) {
-    std::vector<uint64_t> error_indices;
-    error_indices.reserve(128); // Pre-allocate small amount
+    std::vector<std::pair<uint64_t, uint64_t>> errors;
+    errors.reserve(128); // Pre-allocate small amount
 
     if (pattern_mode == 0) {
-        verify_uniform(ptr, count, param0, error_indices);
+        verify_uniform(ptr, count, param0, errors);
     } else if (pattern_mode == 1) {
-        verify_pattern_xor(ptr, count, start_idx, param0, param1, error_indices);
+        verify_pattern_xor(ptr, count, start_idx, param0, param1, errors);
     } else {
-        verify_pattern_linear(ptr, count, start_idx, param0, param1, error_indices);
+        verify_pattern_linear(ptr, count, start_idx, param0, param1, errors);
     }
 
-    size_t found = error_indices.size();
+    size_t found = errors.size();
     if (found == 0) return 0;
 
     for (size_t i = 0; i < found; ++i) {
-        uint64_t idx = error_indices[i];
+        uint64_t idx = errors[i].first;
+        uint64_t first_observed = errors[i].second;
         uint64_t expect;
         generatePatternValue(start_idx + idx, pattern_mode, param0, param1, expect);
 
         // Capture first observed value before the forced re-read so soft errors
         // keep actionable transient-value reporting.
-        uint64_t first_observed = ptr[idx];
         uint64_t confirmed = simd::safe_read_u64(&ptr[idx]);
 
         if (confirmed != expect) {
@@ -225,6 +225,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
                 simd::flush_cache_line((void*)&vptr[idxA]);
                 simd::flush_cache_line((void*)&vptr[idxB]);
                 simd::flush_cache_line((void*)&vptr[idxC]);
+                simd::memory_fence();
             }
 
             vptr[idxA] = victim_fill;
@@ -473,19 +474,20 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
         sfence();
         simd::flush_cache_region(ptr, region.size);
         
-        std::vector<uint64_t> error_indices;
-        error_indices.reserve(128);
+        std::vector<std::pair<uint64_t, uint64_t>> errors;
+        errors.reserve(128);
         size_t block = 256 * 1024;
         
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);
-            error_indices.clear();
-            simd::verify_uniform(ptr + i, n, pattern, error_indices);
+            errors.clear();
+            simd::verify_uniform(ptr + i, n, pattern, errors);
             
-            size_t found = error_indices.size();
+            size_t found = errors.size();
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
-                    uint64_t offset = i + error_indices[k];
+                    uint64_t offset = i + errors[k].first;
+                    uint64_t first_observed = errors[k].second;
                     // Re-read from DRAM (safe_read_u64 flushes cache internally)
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
 
@@ -495,7 +497,7 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
                         LOG_ERROR_DETAIL((std::string(name) + " (Hard)").c_str(), reportAddress(region, &ptr[offset]), pattern, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL((std::string(name) + " (Soft)").c_str(), reportAddress(region, &ptr[offset]), pattern, actual);
+                        LOG_ERROR_DETAIL((std::string(name) + " (Soft)").c_str(), reportAddress(region, &ptr[offset]), pattern, first_observed);
                     }
                 }
                 
@@ -540,19 +542,30 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
 
     // Generate pattern using 64-bit LFSR with NT stores to bypass cache
 #if defined(__AVX2__)
-    // Batch 4 LFSR values into 256-bit AVX2 NT stores for better bandwidth
+    simd::SimdCapabilities caps = simd::getCapabilities();
     size_t i = 0;
-    for (; i + 4 <= count; i += 4) {
-        if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
-        uint64_t v0 = seed; seed = lfsr_next(seed);
-        uint64_t v1 = seed; seed = lfsr_next(seed);
-        uint64_t v2 = seed; seed = lfsr_next(seed);
-        uint64_t v3 = seed; seed = lfsr_next(seed);
-        __m256i vec = _mm256_set_epi64x((long long)v3, (long long)v2, (long long)v1, (long long)v0);
-        _mm256_stream_si256((__m256i*)&ptr[i], vec);
+    if (caps.has_avx2) {
+        // Batch 4 LFSR values into 256-bit AVX2 NT stores for better bandwidth
+        for (; i + 4 <= count; i += 4) {
+            if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
+            uint64_t v0 = seed; seed = lfsr_next(seed);
+            uint64_t v1 = seed; seed = lfsr_next(seed);
+            uint64_t v2 = seed; seed = lfsr_next(seed);
+            uint64_t v3 = seed; seed = lfsr_next(seed);
+            __m256i vec = _mm256_set_epi64x((long long)v3, (long long)v2, (long long)v1, (long long)v0);
+            if (caps.has_nt_stores) {
+                _mm256_stream_si256((__m256i*)&ptr[i], vec);
+            } else {
+                _mm256_storeu_si256((__m256i*)&ptr[i], vec);
+            }
+        }
     }
     for (; i < count; ++i) {
-        _mm_stream_si64((long long*)&ptr[i], (long long)seed);
+        if (caps.has_nt_stores) {
+            _mm_stream_si64((long long*)&ptr[i], (long long)seed);
+        } else {
+            ptr[i] = seed;
+        }
         seed = lfsr_next(seed);
     }
 #elif defined(__x86_64__) || defined(_M_X64)
@@ -589,16 +602,18 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
         }
 
         size_t found = 0;
-        uint64_t error_indices[512];
+        std::pair<uint64_t, uint64_t> errors[512];
         for (size_t j = 0; j < n; ++j) {
-            if (ptr[i + j] != expected_values[j]) {
-                error_indices[found++] = j;
+            uint64_t val = ptr[i + j];
+            if (val != expected_values[j]) {
+                errors[found++] = {j, val};
             }
         }
 
         if (found > 0) {
             for (size_t k = 0; k < found; ++k) {
-                size_t idx = error_indices[k];
+                size_t idx = errors[k].first;
+                uint64_t first_observed = errors[k].second;
                 // Re-read check for LFSR
                 uint64_t actual = simd::safe_read_u64(&ptr[i + idx]);
                 
@@ -607,7 +622,7 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
                      LOG_ERROR_DETAIL("LFSR (Hard)", reportAddress(region, &ptr[i + idx]), expected_values[idx], actual);
                 } else {
                      res.soft_errors++;
-                     LOG_ERROR_DETAIL("LFSR (Soft)", reportAddress(region, &ptr[i + idx]), expected_values[idx], actual);
+                     LOG_ERROR_DETAIL("LFSR (Soft)", reportAddress(region, &ptr[i + idx]), expected_values[idx], first_observed);
                 }
             }
             if (stop) {
@@ -645,24 +660,26 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
         simd::flush_cache_region(ptr, region.size);
         
         // Phase 2: Verify pattern (forward march)
-        std::vector<uint64_t> error_indices;
-        error_indices.reserve(128);
+        std::vector<std::pair<uint64_t, uint64_t>> errors;
+        errors.reserve(128);
         size_t block = 256 * 1024;
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);
-            error_indices.clear();
-            simd::verify_uniform(ptr + i, n, pattern, error_indices);
-            size_t found = error_indices.size();
+            errors.clear();
+            simd::verify_uniform(ptr + i, n, pattern, errors);
+            size_t found = errors.size();
             
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
-                    uint64_t actual = simd::safe_read_u64(&ptr[i + error_indices[k]]);
+                    uint64_t offset = i + errors[k].first;
+                    uint64_t first_observed = errors[k].second;
+                    uint64_t actual = simd::safe_read_u64(&ptr[offset]);
                     if (actual != pattern) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Fwd - Hard)", reportAddress(region, &ptr[i + error_indices[k]]), pattern, actual);
+                        LOG_ERROR_DETAIL("MovingInv (Fwd - Hard)", reportAddress(region, &ptr[offset]), pattern, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Fwd - Soft)", reportAddress(region, &ptr[i + error_indices[k]]), pattern, actual);
+                        LOG_ERROR_DETAIL("MovingInv (Fwd - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
                     }
                 }
 
@@ -689,19 +706,21 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
             size_t n = chunk_end - chunk_start;
             i = chunk_start;
 
-            error_indices.clear();
-            simd::verify_uniform(ptr + chunk_start, n, inverted, error_indices);
-            size_t found = error_indices.size();
+            errors.clear();
+            simd::verify_uniform(ptr + chunk_start, n, inverted, errors);
+            size_t found = errors.size();
 
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
-                    uint64_t actual = simd::safe_read_u64(&ptr[chunk_start + error_indices[k]]);
+                    uint64_t offset = chunk_start + errors[k].first;
+                    uint64_t first_observed = errors[k].second;
+                    uint64_t actual = simd::safe_read_u64(&ptr[offset]);
                     if (actual != inverted) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Bwd - Hard)", reportAddress(region, &ptr[chunk_start + error_indices[k]]), inverted, actual);
+                        LOG_ERROR_DETAIL("MovingInv (Bwd - Hard)", reportAddress(region, &ptr[offset]), inverted, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Bwd - Soft)", reportAddress(region, &ptr[chunk_start + error_indices[k]]), inverted, actual);
+                        LOG_ERROR_DETAIL("MovingInv (Bwd - Soft)", reportAddress(region, &ptr[offset]), inverted, first_observed);
                     }
                 }
                 
@@ -737,24 +756,26 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
         simd::flush_cache_region(ptr, region.size);
         
         // Phase 2: Verify pattern (forward march)
-        std::vector<uint64_t> error_indices;
-        error_indices.reserve(128);
+        std::vector<std::pair<uint64_t, uint64_t>> errors;
+        errors.reserve(128);
         size_t block = 256 * 1024;
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);
-            error_indices.clear();
-            simd::verify_uniform(ptr + i, n, pattern, error_indices);
-            size_t found = error_indices.size();
+            errors.clear();
+            simd::verify_uniform(ptr + i, n, pattern, errors);
+            size_t found = errors.size();
             
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
-                    uint64_t actual = simd::safe_read_u64(&ptr[i + error_indices[k]]);
+                    uint64_t offset = i + errors[k].first;
+                    uint64_t first_observed = errors[k].second;
+                    uint64_t actual = simd::safe_read_u64(&ptr[offset]);
                     if (actual != pattern) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Fwd - Hard)", reportAddress(region, &ptr[i + error_indices[k]]), pattern, actual);
+                        LOG_ERROR_DETAIL("MovInvWalk (Fwd - Hard)", reportAddress(region, &ptr[offset]), pattern, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Fwd - Soft)", reportAddress(region, &ptr[i + error_indices[k]]), pattern, actual);
+                        LOG_ERROR_DETAIL("MovInvWalk (Fwd - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
                     }
                 }
 
@@ -781,19 +802,21 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
             size_t n = chunk_end - chunk_start;
             i = chunk_start;
 
-            error_indices.clear();
-            simd::verify_uniform(ptr + chunk_start, n, inverted, error_indices);
-            size_t found = error_indices.size();
+            errors.clear();
+            simd::verify_uniform(ptr + chunk_start, n, inverted, errors);
+            size_t found = errors.size();
 
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
-                    uint64_t actual = simd::safe_read_u64(&ptr[chunk_start + error_indices[k]]);
+                    uint64_t offset = chunk_start + errors[k].first;
+                    uint64_t first_observed = errors[k].second;
+                    uint64_t actual = simd::safe_read_u64(&ptr[offset]);
                     if (actual != inverted) {
                         res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Bwd - Hard)", reportAddress(region, &ptr[chunk_start + error_indices[k]]), inverted, actual);
+                        LOG_ERROR_DETAIL("MovInvWalk (Bwd - Hard)", reportAddress(region, &ptr[offset]), inverted, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Bwd - Soft)", reportAddress(region, &ptr[chunk_start + error_indices[k]]), inverted, actual);
+                        LOG_ERROR_DETAIL("MovInvWalk (Bwd - Soft)", reportAddress(region, &ptr[offset]), inverted, first_observed);
                     }
                 }
                 
@@ -845,18 +868,29 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
         uint64_t seed = initial_seed;
 #if defined(__AVX2__)
         {
+            simd::SimdCapabilities caps = simd::getCapabilities();
             size_t i = 0;
-            for (; i + 4 <= count; i += 4) {
-                if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
-                uint64_t v0 = seed; seed = lfsr_next(seed);
-                uint64_t v1 = seed; seed = lfsr_next(seed);
-                uint64_t v2 = seed; seed = lfsr_next(seed);
-                uint64_t v3 = seed; seed = lfsr_next(seed);
-                __m256i vec = _mm256_set_epi64x((long long)v3, (long long)v2, (long long)v1, (long long)v0);
-                _mm256_stream_si256((__m256i*)&ptr[i], vec);
+            if (caps.has_avx2) {
+                for (; i + 4 <= count; i += 4) {
+                    if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
+                    uint64_t v0 = seed; seed = lfsr_next(seed);
+                    uint64_t v1 = seed; seed = lfsr_next(seed);
+                    uint64_t v2 = seed; seed = lfsr_next(seed);
+                    uint64_t v3 = seed; seed = lfsr_next(seed);
+                    __m256i vec = _mm256_set_epi64x((long long)v3, (long long)v2, (long long)v1, (long long)v0);
+                    if (caps.has_nt_stores) {
+                        _mm256_stream_si256((__m256i*)&ptr[i], vec);
+                    } else {
+                        _mm256_storeu_si256((__m256i*)&ptr[i], vec);
+                    }
+                }
             }
             for (; i < count; ++i) {
-                _mm_stream_si64((long long*)&ptr[i], (long long)seed);
+                if (caps.has_nt_stores) {
+                    _mm_stream_si64((long long*)&ptr[i], (long long)seed);
+                } else {
+                    ptr[i] = seed;
+                }
                 seed = lfsr_next(seed);
             }
         }
@@ -888,14 +922,15 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
             }
             
             for (size_t j = 0; j < n; ++j) {
-                if (ptr[i+j] != expected[j]) {
+                uint64_t first_observed = ptr[i+j];
+                if (first_observed != expected[j]) {
                     uint64_t actual = simd::safe_read_u64(&ptr[i+j]);
                     if (actual != expected[j]) {
                         res.hard_errors++;
                         LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Hard)", reportAddress(region, &ptr[i + j]), expected[j], actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Soft)", reportAddress(region, &ptr[i + j]), expected[j], actual);
+                        LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Soft)", reportAddress(region, &ptr[i + j]), expected[j], first_observed);
                     }
                     if (stop && res.total_errors() > 0) {
                         ctx.requestStop();
@@ -925,14 +960,15 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
             }
             
             for (size_t j = 0; j < n; ++j) {
-                if (ptr[i+j] != expected[j]) {
+                uint64_t first_observed = ptr[i+j];
+                if (first_observed != expected[j]) {
                     uint64_t actual = simd::safe_read_u64(&ptr[i+j]);
                     if (actual != expected[j]) {
                         res.hard_errors++;
                         LOG_ERROR_DETAIL("MovInvLFSR (Inv - Hard)", reportAddress(region, &ptr[i + j]), expected[j], actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvLFSR (Inv - Soft)", reportAddress(region, &ptr[i + j]), expected[j], actual);
+                        LOG_ERROR_DETAIL("MovInvLFSR (Inv - Soft)", reportAddress(region, &ptr[i + j]), expected[j], first_observed);
                     }
                     if (stop && res.total_errors() > 0) {
                         ctx.requestStop();
@@ -1097,7 +1133,9 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
             
             // Step 4: Restore original pattern for next iteration
             ptr[idx] = idx;
+            simd::sfence();
             simd::flush_cache_line((void*)&ptr[idx]);
+            simd::memory_fence();
             
             if (stop && res.total_errors() > 0) {
                 ctx.requestStop();
@@ -1125,8 +1163,8 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
     uint64_t pattern = config.pattern_param0 ? config.pattern_param0 : 0x5555AAAA5555AAAAULL;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
 
-    std::vector<uint64_t> error_indices;
-    error_indices.reserve(128);
+    std::vector<std::pair<uint64_t, uint64_t>> errors;
+    errors.reserve(128);
     size_t block = 256 * 1024;
 
     for (uint32_t r = 0; r < repeats; ++r) {
@@ -1144,20 +1182,21 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
         // Verify Dst
         for (size_t i = 0; i < half_count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, half_count - i);
-            error_indices.clear();
-            simd::verify_uniform(dst + i, n, pattern, error_indices);
-            size_t found = error_indices.size();
+            errors.clear();
+            simd::verify_uniform(dst + i, n, pattern, errors);
+            size_t found = errors.size();
 
             if (found > 0) {
                 for (size_t k = 0; k < found; ++k) {
-                    uint64_t offset = half_count + i + error_indices[k];
+                    uint64_t offset = half_count + i + errors[k].first;
+                    uint64_t first_observed = errors[k].second;
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
                     if (actual != pattern) {
                         res.hard_errors++;
                         LOG_ERROR_DETAIL("BlockMove (Dst - Hard)", reportAddress(region, &ptr[offset]), pattern, actual);
                     } else {
                         res.soft_errors++;
-                        LOG_ERROR_DETAIL("BlockMove (Dst - Soft)", reportAddress(region, &ptr[offset]), pattern, actual);
+                        LOG_ERROR_DETAIL("BlockMove (Dst - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
                     }
                 }
                 if (stop) {
@@ -1171,20 +1210,21 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
         if (!ctx.shouldStop()) {
             for (size_t i = 0; i < half_count && !ctx.shouldStop(); i += block) {
                 size_t n = std::min(block, half_count - i);
-                error_indices.clear();
-                simd::verify_uniform(src + i, n, pattern, error_indices);
-                size_t found = error_indices.size();
+                errors.clear();
+                simd::verify_uniform(src + i, n, pattern, errors);
+                size_t found = errors.size();
 
                 if (found > 0) {
                     for (size_t k = 0; k < found; ++k) {
-                        uint64_t offset = i + error_indices[k];
+                        uint64_t offset = i + errors[k].first;
+                        uint64_t first_observed = errors[k].second;
                         uint64_t actual = simd::safe_read_u64(&ptr[offset]);
                         if (actual != pattern) {
                             res.hard_errors++;
                             LOG_ERROR_DETAIL("BlockMove (Src - Hard)", reportAddress(region, &ptr[offset]), pattern, actual);
                         } else {
                             res.soft_errors++;
-                            LOG_ERROR_DETAIL("BlockMove (Src - Soft)", reportAddress(region, &ptr[offset]), pattern, actual);
+                            LOG_ERROR_DETAIL("BlockMove (Src - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
                         }
                     }
                     if (stop) {

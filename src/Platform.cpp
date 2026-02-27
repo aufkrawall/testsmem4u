@@ -466,6 +466,9 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
                   (double)min_required_bytes / (double)size * 100.0,
                   locked / 1024 / 1024,
                   min_required_bytes / 1024 / 1024);
+        if (locked > 0) {
+            VirtualUnlock(region.base, locked);
+        }
         VirtualFree(region.base, 0, MEM_RELEASE);
         region.base = nullptr;
         region.size = 0;
@@ -830,6 +833,7 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                 }
 
                 for (size_t j = 0; j < chunks_committed; j++) {
+                    VirtualUnlock(aligned_base + j * aligned_chunk, aligned_chunk);
                     VirtualFree(aligned_base + j * aligned_chunk, 0, MEM_RELEASE);
                 }
             }
@@ -1142,17 +1146,19 @@ void Platform::freeMemory(MemoryRegion& region) {
     if (!region.base) return;
 
 #ifdef _WIN32
-    if (region.locked_bytes > 0) {
-        VirtualUnlock(region.base + region.locked_offset, region.locked_bytes);
-    }
-
     if (region.lp_chunk_size > 0) {
         // Chunked large-page allocation: free each chunk separately
         size_t num_chunks = region.size / region.lp_chunk_size;
         for (size_t i = 0; i < num_chunks; i++) {
+            if (region.is_locked) {
+                VirtualUnlock(region.base + i * region.lp_chunk_size, region.lp_chunk_size);
+            }
             VirtualFree(region.base + i * region.lp_chunk_size, 0, MEM_RELEASE);
         }
     } else {
+        if (region.locked_bytes > 0) {
+            VirtualUnlock(region.base + region.locked_offset, region.locked_bytes);
+        }
         VirtualFree(region.base, 0, MEM_RELEASE);
     }
 #else
@@ -1257,16 +1263,6 @@ bool Platform::setThreadAffinity(uint32_t thread_id, uint32_t num_threads) {
 
     pthread_t current_thread = pthread_self();
     return pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset) == 0;
-#endif
-}
-
-void Platform::setProcessPriorityHigh() {
-#ifdef _WIN32
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-#else
-    // Set nice value to -5 for higher priority (requires CAP_SYS_NICE or root)
-    // Failure is acceptable - just means we'll run at normal priority
-    (void)nice(-5);
 #endif
 }
 

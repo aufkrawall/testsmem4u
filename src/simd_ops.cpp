@@ -1,6 +1,5 @@
 #include "simd_ops.h"
 #include <cstring>
-#include <iostream>
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <immintrin.h>
@@ -252,7 +251,7 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
     size_t i = 0;
 
 #if defined(__AVX512F__)
-    if (use_nt && caps.has_nt_stores && caps.has_avx512) {
+    if (caps.has_avx512) {
         __m512i v_val = _mm512_set_epi64(
             param0 + 7 * param1, param0 + 6 * param1, param0 + 5 * param1, param0 + 4 * param1,
             param0 + 3 * param1, param0 + 2 * param1, param0 + 1 * param1, param0 + 0 * param1
@@ -260,14 +259,18 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
         __m512i v_idx_step = _mm512_set1_epi64(8 * param1);
 
         for (; i + 8 <= count; i += 8) {
-            _mm512_stream_si512((void*)(dst + i), v_val);
+            if (use_nt && caps.has_nt_stores) {
+                _mm512_stream_si512((void*)(dst + i), v_val);
+            } else {
+                _mm512_storeu_si512((void*)(dst + i), v_val);
+            }
             v_val = _mm512_add_epi64(v_val, v_idx_step);
         }
     }
 #endif
 
 #if defined(__AVX2__)
-    if (use_nt && caps.has_nt_stores && i + 4 <= count) {
+    if (caps.has_avx2 && i + 4 <= count) {
         // Initialize from current i (may be non-zero after AVX512 processed bulk)
         __m256i v_val = _mm256_set_epi64x(
             param0 + (i + 3) * param1,
@@ -278,7 +281,11 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
         __m256i v_idx_step = _mm256_set1_epi64x(4 * param1);
 
         for (; i + 4 <= count; i += 4) {
-            _mm256_stream_si256((__m256i*)(dst + i), v_val);
+            if (use_nt && caps.has_nt_stores) {
+                _mm256_stream_si256((__m256i*)(dst + i), v_val);
+            } else {
+                _mm256_storeu_si256((__m256i*)(dst + i), v_val);
+            }
             v_val = _mm256_add_epi64(v_val, v_idx_step);
         }
     }
@@ -391,6 +398,7 @@ template<>
 void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t val, bool use_nt) {
     SimdCapabilities caps = getCapabilities();
     (void)caps;
+    (void)use_nt;
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -407,7 +415,7 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
 #endif
 
 #if defined(__AVX2__)
-    {
+    if (caps.has_avx2) {
         __m256i v = _mm256_set1_epi64x(val);
         for (; i + 4 <= count; i += 4) {
             if (use_nt && caps.has_nt_stores) {
@@ -418,7 +426,7 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
         }
     }
 #elif defined(__SSE2__)
-    {
+    if (caps.has_sse4_1) {
         __m128i v = _mm_set1_epi64x(val);
         for (; i + 2 <= count; i += 2) {
             if (use_nt && caps.has_nt_stores) {
@@ -488,11 +496,14 @@ void generate_pattern_increment<uint64_t>(uint64_t* dst, size_t count, uint64_t 
 }
 
 template<>
-void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<uint64_t>& error_indices) {
+void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<std::pair<uint64_t, uint64_t>>& errors) {
     size_t i = 0;
 
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) || defined(__AVX2__)
     SimdCapabilities caps = getCapabilities();
+#endif
+
+#if defined(__AVX512F__)
     if (caps.has_avx512) {
         __m512i v_step8 = _mm512_set1_epi64(param1 * 8);
         __m512i v_expect = _mm512_set_epi64(
@@ -515,7 +526,7 @@ void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t s
             if (mask) {
                 for (int k = 0; k < 8; ++k) {
                     if ((mask >> k) & 1) {
-                         error_indices.push_back(i + k);
+                         errors.push_back({i + k, src[i + k]});
                     }
                 }
             }
@@ -525,45 +536,47 @@ void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t s
 #endif
 
 #if defined(__AVX2__)
-    __m256i v_step4 = _mm256_set1_epi64x(param1 * 4);
-    __m256i v_expect = _mm256_set_epi64x(
-        param0 + (start_idx + i + 3) * param1,
-        param0 + (start_idx + i + 2) * param1,
-        param0 + (start_idx + i + 1) * param1,
-        param0 + (start_idx + i + 0) * param1
-    );
+    if (caps.has_avx2) {
+        __m256i v_step4 = _mm256_set1_epi64x(param1 * 4);
+        __m256i v_expect = _mm256_set_epi64x(
+            param0 + (start_idx + i + 3) * param1,
+            param0 + (start_idx + i + 2) * param1,
+            param0 + (start_idx + i + 1) * param1,
+            param0 + (start_idx + i + 0) * param1
+        );
 
-    for (; i + 4 <= count; i += 4) {
-        __m256i actual;
-        // Use stream load if aligned to 32 bytes
-        if (((uintptr_t)(src + i) & 31) == 0) {
-            actual = _mm256_stream_load_si256((__m256i*)(src + i));
-        } else {
-            actual = _mm256_loadu_si256((const __m256i*)(src + i));
-        }
+        for (; i + 4 <= count; i += 4) {
+            __m256i actual;
+            // Use stream load if aligned to 32 bytes
+            if (((uintptr_t)(src + i) & 31) == 0) {
+                actual = _mm256_stream_load_si256((__m256i*)(src + i));
+            } else {
+                actual = _mm256_loadu_si256((const __m256i*)(src + i));
+            }
 
-        __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
-        int mask = _mm256_movemask_epi8(eq);
-        if ((uint32_t)mask != 0xFFFFFFFF) {
-            for (size_t k = 0; k < 4; ++k) {
-                if (src[i+k] != (param0 + (start_idx + i + k) * param1)) {
-                   error_indices.push_back(i + k);
+            __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
+            int mask = _mm256_movemask_epi8(eq);
+            if ((uint32_t)mask != 0xFFFFFFFF) {
+                for (size_t k = 0; k < 4; ++k) {
+                    if (src[i+k] != (param0 + (start_idx + i + k) * param1)) {
+                       errors.push_back({i + k, src[i + k]});
+                    }
                 }
             }
+            v_expect = _mm256_add_epi64(v_expect, v_step4);
         }
-        v_expect = _mm256_add_epi64(v_expect, v_step4);
     }
 #endif
 
     for (; i < count; ++i) {
         if (src[i] != (param0 + (start_idx + i) * param1)) {
-            error_indices.push_back(i);
+            errors.push_back({i, src[i]});
         }
     }
 }
 
 template<>
-void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<uint64_t>& error_indices) {
+void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<std::pair<uint64_t, uint64_t>>& errors) {
     size_t i = 0;
 
     // NOTE: AVX2 doesn't have native 64-bit integer multiply.
@@ -592,7 +605,7 @@ void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t star
                 for (size_t k = 0; k < 8; ++k) {
                     if (!(mask & (1 << k))) {
                         if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                            error_indices.push_back(i + k);
+                            errors.push_back({i + k, src[i + k]});
                         }
                     }
                 }
@@ -629,7 +642,7 @@ void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t star
             if ((uint32_t)mask != 0xFFFFFFFF) {
                 for (size_t k = 0; k < 4; ++k) {
                     if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                        error_indices.push_back(i + k);
+                        errors.push_back({i + k, src[i + k]});
                     }
                 }
             }
@@ -641,16 +654,19 @@ void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t star
     // Scalar fallback - guaranteed correct
     for (; i < count; ++i) {
         if (src[i] != (param0 ^ ((start_idx + i) * param1))) {
-            error_indices.push_back(i);
+            errors.push_back({i, src[i]});
         }
     }
 }
 
 template<>
-void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, std::vector<uint64_t>& error_indices) {
+void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, std::vector<std::pair<uint64_t, uint64_t>>& errors) {
     size_t i = 0;
-#if defined(__AVX512F__)
+#if defined(__AVX512F__) || defined(__AVX2__)
     SimdCapabilities caps = getCapabilities();
+#endif
+
+#if defined(__AVX512F__)
     if (caps.has_avx512) {
         __m512i v_expect = _mm512_set1_epi64(val);
         for (; i + 8 <= count; i += 8) {
@@ -665,7 +681,7 @@ void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, s
              if (mask) {
                  for (int k = 0; k < 8; ++k) {
                      if ((mask >> k) & 1) {
-                         error_indices.push_back(i + k);
+                         errors.push_back({i + k, src[i + k]});
                      }
                  }
              }
@@ -674,22 +690,24 @@ void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, s
 #endif
 
 #if defined(__AVX2__)
-    __m256i v_expect = _mm256_set1_epi64x(val);
-    for (; i + 4 <= count; i += 4) {
-        __m256i actual;
-        // Use stream load if aligned to 32 bytes
-        if (((uintptr_t)(src + i) & 31) == 0) {
-            actual = _mm256_stream_load_si256((__m256i*)(src + i));
-        } else {
-            actual = _mm256_loadu_si256((const __m256i*)(src + i));
-        }
+    if (caps.has_avx2) {
+        __m256i v_expect = _mm256_set1_epi64x(val);
+        for (; i + 4 <= count; i += 4) {
+            __m256i actual;
+            // Use stream load if aligned to 32 bytes
+            if (((uintptr_t)(src + i) & 31) == 0) {
+                actual = _mm256_stream_load_si256((__m256i*)(src + i));
+            } else {
+                actual = _mm256_loadu_si256((const __m256i*)(src + i));
+            }
 
-        __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
-        int mask = _mm256_movemask_epi8(eq);
-        if ((uint32_t)mask != 0xFFFFFFFF) {
-            for (size_t k = 0; k < 4; ++k) {
-                if (src[i+k] != val) {
-                    error_indices.push_back(i + k);
+            __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
+            int mask = _mm256_movemask_epi8(eq);
+            if ((uint32_t)mask != 0xFFFFFFFF) {
+                for (size_t k = 0; k < 4; ++k) {
+                    if (src[i+k] != val) {
+                        errors.push_back({i + k, src[i + k]});
+                    }
                 }
             }
         }
@@ -697,7 +715,7 @@ void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, s
 #endif
     for (; i < count; ++i) {
         if (src[i] != val) {
-            error_indices.push_back(i);
+            errors.push_back({i, src[i]});
         }
     }
 }
@@ -706,6 +724,7 @@ template<>
 void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
     SimdCapabilities caps = getCapabilities();
     (void)caps;
+    (void)use_nt;
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -724,7 +743,7 @@ void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
 #endif
 
 #if defined(__AVX2__)
-    {
+    if (caps.has_avx2) {
         __m256i ones = _mm256_set1_epi64x(~0ULL);
         for (; i + 4 <= count; i += 4) {
             __m256i v = _mm256_loadu_si256((const __m256i*)(dst + i));
@@ -737,7 +756,7 @@ void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
         }
     }
 #elif defined(__SSE2__)
-    {
+    if (caps.has_sse4_1) {
         __m128i ones = _mm_set1_epi64x(~0ULL);
         for (; i + 2 <= count; i += 2) {
             __m128i v = _mm_loadu_si128((const __m128i*)(dst + i));
