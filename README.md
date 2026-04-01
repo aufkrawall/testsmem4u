@@ -59,7 +59,7 @@ Inspect the resolved configuration without starting a test run:
 
 ## CLI Summary
 
-The executable now supports the following high-value operator options:
+The executable supports the following operator options:
 
 - --help and --version for discovery.
 - --list-presets to enumerate available .cfg suites in the current working directory.
