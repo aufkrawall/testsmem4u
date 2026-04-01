@@ -2,19 +2,7 @@
 
 Cross-platform RAM testing tool focused on preset-driven memory stress, locked-memory operation, and operator-friendly CLI execution on Windows and Linux.
 
-## Status
-
-The project is usable, but it is not fully production-ready yet.
-
-This revision improves the operator surface substantially:
-
-- The CLI now has a documented help/version surface.
-- Direct-run mode supports validated overrides for memory, cores, cycles, preset, config source, and memory-allocation behavior.
-- Non-interactive runs no longer fall through into wizard-only prompts.
-- Presets can be listed from the CLI and inspected with a dry run.
-- The README and the dedicated CLI report now describe the actual runtime contract.
-
-The remaining production-readiness work is documented in cli-report.md.
+<img width="1350" height="766" alt="testsmem4u" src="https://github.com/user-attachments/assets/f5dce191-f8e0-4b40-ae29-b999016ba575" />
 
 ## Features
 
@@ -86,7 +74,7 @@ The executable now supports the following high-value operator options:
 - --yes or --non-interactive to suppress prompts and exit pauses.
 - --no-elevation to prevent Administrator/root relaunch.
 
-See cli-report.md for the full option reference, mode rules, exit codes, and examples.
+See [cli-report.md](cli-report.md) for the full option reference, mode rules, exit codes, and examples.
 
 ## Runtime Behavior
 
