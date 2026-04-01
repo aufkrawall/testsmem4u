@@ -51,7 +51,7 @@ In direct mode:
 
 ### Validation behavior
 
-The CLI now rejects:
+The CLI rejects:
 
 - Unknown arguments.
 - Empty preset or config paths.
@@ -98,7 +98,7 @@ The CLI now rejects:
 
 ### Wizard behavior
 
-The wizard still supports:
+The wizard supports:
 
 - Memory entry by percentage or MB.
 - Thread count selection.
