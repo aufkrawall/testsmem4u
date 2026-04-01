@@ -3,7 +3,6 @@
 #include <string>
 #include <mutex>
 #include <atomic>
-#include <chrono>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -62,7 +61,6 @@ private:
     int last_rendered_len_ = 0;
     bool status_active_ = false;
     bool initialized_ = false;
-    std::chrono::high_resolution_clock::time_point start_time_;
 
     void detectConsoleWidth();
     std::string formatStatus(const StatusInfo& info);

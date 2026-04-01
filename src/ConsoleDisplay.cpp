@@ -19,7 +19,6 @@ void ConsoleDisplay::init() {
     if (initialized_) return;
     
     initialized_ = true;
-    start_time_ = std::chrono::high_resolution_clock::now();
     
 #ifdef _WIN32
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);

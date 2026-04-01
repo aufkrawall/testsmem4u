@@ -18,120 +18,17 @@
 
 namespace testsmem4u {
 
-// Local helpers removed, using Utils:: instead
-
-
-static bool isPathTraversalAttempt(const std::string& path) {
-    // Check for null bytes or other suspicious characters
-    if (path.find('\0') != std::string::npos || path.find('\x1b') != std::string::npos) {
-        return true;
-    }
-
-    // Normalize path separators for consistent checking
-    std::string normalized = path;
-    for (char& c : normalized) {
-        if (c == '\\') c = '/';
-    }
-
-    // Check for parent directory references
-    if (normalized.find("../") != std::string::npos || normalized.find("/..") != std::string::npos) {
-        return true;
-    }
-    
-    // Check for current directory tricks
-    if (normalized.find("./") != std::string::npos || normalized.find("/.") != std::string::npos) {
-        // But allow single .cfg files like "./config.cfg"
-        if (normalized.length() > 2 && (normalized.substr(0, 2) == "./" || normalized.substr(0, 2) == ".\\")) {
-            std::string rest = normalized.substr(2);
-            if (rest.find('/') != std::string::npos || rest.find("\\") != std::string::npos) {
-                return true; // Has additional path separators after ./
-            }
-        }
-    }
-
-    // Check for absolute paths
-    if (!path.empty() && (path[0] == '/' || path[0] == '\\')) {
-        return true;
-    }
-
-    // Check for Windows drive letter paths
-    if (path.size() >= 2 && path[1] == ':') {
-        return true;
-    }
-
-    // Check for UNC paths (Windows network paths)
-    if (path.size() >= 2 && path[0] == '\\' && path[1] == '\\') {
-        return true;
-    }
-
-    // Check for URL-encoded traversal attempts
-    if (path.find("%2e%2e%2f") != std::string::npos || path.find("%252e%252e%252f") != std::string::npos) {
-        return true;
-    }
-    if (path.find("..%2f") != std::string::npos || path.find("%2e%2e") != std::string::npos) {
-        return true;
-    }
-
-    return false;
-}
-
-static bool isValidPath(const std::string& path_str) {
-    if (path_str.empty()) return false;
-
-    if (isPathTraversalAttempt(path_str)) {
-        return false;
-    }
-
-    std::string full_path;
-#ifdef _WIN32
-    char buffer[MAX_PATH];
-    if (GetFullPathNameA(path_str.c_str(), MAX_PATH, buffer, nullptr) == 0) {
-        return false;
-    }
-    full_path = buffer;
-
-    char current_dir[MAX_PATH];
-    if (GetCurrentDirectoryA(MAX_PATH, current_dir) == 0) {
-        return false;
-    }
-
-    std::string full_current = current_dir;
-    if (full_current.back() != '\\') full_current += '\\';
-
-    if (full_path.size() < full_current.size()) return false;
-    if (full_path.substr(0, full_current.size()) != full_current) return false;
-#else
-    char buffer[PATH_MAX];
-    if (realpath(path_str.c_str(), buffer) == nullptr) {
-        if (errno == ENOENT) {
-            // File does not exist yet — path traversal was already ruled out above.
-            // Let the caller's file-open produce the correct "not found" error.
-            return true;
-        }
-        return false; // Permission error or other OS-level rejection
-    }
-    full_path = buffer;
-
-    char current_dir[PATH_MAX];
-    if (getcwd(current_dir, sizeof(current_dir)) == nullptr) {
-        return false;
-    }
-
-    std::string full_current = current_dir;
-    if (full_current.back() != '/') full_current += '/';
-
-    if (full_path.size() < full_current.size()) return false;
-    if (full_path.substr(0, full_current.size()) != full_current) return false;
-#endif
-
-    return true;
+static bool hasUnsafePathCharacters(const std::string& path) {
+    return path.empty() ||
+           path.find('\0') != std::string::npos ||
+           path.find('\x1b') != std::string::npos;
 }
 
 PresetInfo loadPreset(const std::string& filepath) {
     PresetInfo preset;
 
-    if (!isValidPath(filepath)) {
-        LOG_ERROR("Invalid preset path (path traversal attempt or invalid path): %s", filepath.c_str());
+    if (hasUnsafePathCharacters(filepath)) {
+        LOG_ERROR("Invalid preset path (contains unsafe characters): %s", filepath.c_str());
         return preset;
     }
 

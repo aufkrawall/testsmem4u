@@ -132,8 +132,6 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
             generate_pattern_linear(ptr, count, config.pattern_param0, config.pattern_param1, use_nt);
         }
 
-        sfence();
-
         // CRITICAL: Flush entire region from cache to ensure verification reads from RAM
         // This is essential for detecting real RAM errors vs cache hits
         simd::flush_cache_region(ptr, region.size);
@@ -195,7 +193,6 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         const uint64_t aggr_toggle1 =  victim_fill;
 
         generate_pattern_uniform(ptr, count, victim_fill, true);
-        sfence();
         simd::flush_cache_region(ptr, region.size);
 
         size_t init_block = 256 * 1024;
@@ -258,8 +255,7 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
     for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
         generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt);
-        sfence();
-        
+
         // Flush cache before verification for true RAM testing
         simd::flush_cache_region(ptr, region.size);
 
@@ -434,8 +430,7 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
     size_t count = region.size / 8;
 
     generate_pattern_uniform(ptr, count, config.pattern_param0, true);
-    sfence();
-    
+
     // CRITICAL: Flush cache BEFORE the delay to ensure data is in DRAM during refresh test
     // If data stays in CPU cache, it's not a valid retention test
     simd::flush_cache_region(ptr, region.size);
@@ -463,21 +458,20 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
 
+    std::vector<std::pair<uint64_t, uint64_t>> errors;
+    errors.reserve(128);
+    size_t block = 256 * 1024;
+
     // Test each bit position
     for (int bit = 0; bit < 64 && !ctx.shouldStop(); ++bit) {
         // If invert=false (WalkingOnes): pattern = 1 << bit
         // If invert=true (WalkingZeros): pattern = ~(1 << bit)
         uint64_t pattern = 1ULL << bit;
         if (invert) pattern = ~pattern;
-        
+
         simd::generate_pattern_uniform(ptr, count, pattern, true);
-        sfence();
         simd::flush_cache_region(ptr, region.size);
-        
-        std::vector<std::pair<uint64_t, uint64_t>> errors;
-        errors.reserve(128);
-        size_t block = 256 * 1024;
-        
+
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);
             errors.clear();
@@ -656,9 +650,8 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
         // Phase 1: Fill with pattern
         generate_pattern_uniform(ptr, count, pattern, true);
-        sfence();
         simd::flush_cache_region(ptr, region.size);
-        
+
         // Phase 2: Verify pattern (forward march)
         std::vector<std::pair<uint64_t, uint64_t>> errors;
         errors.reserve(128);
@@ -694,7 +687,6 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
 
         // Phase 3: Invert memory
         invert_array(ptr, count, true);
-        sfence();
         simd::flush_cache_region(ptr, region.size);
 
         uint64_t inverted = ~pattern;
@@ -745,20 +737,20 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
     size_t count = region.size / 8;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
 
+    std::vector<std::pair<uint64_t, uint64_t>> errors;
+    errors.reserve(128);
+    size_t block = 256 * 1024;
+
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
     for (int bit = 0; bit < 64 && !ctx.shouldStop(); ++bit) {
         uint64_t pattern = 1ULL << bit;
-        
+
         // Inline Moving Inversion Logic for this pattern
         // Phase 1: Fill with pattern
         simd::generate_pattern_uniform(ptr, count, pattern, true);
-        sfence();
         simd::flush_cache_region(ptr, region.size);
-        
+
         // Phase 2: Verify pattern (forward march)
-        std::vector<std::pair<uint64_t, uint64_t>> errors;
-        errors.reserve(128);
-        size_t block = 256 * 1024;
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);
             errors.clear();
@@ -790,7 +782,6 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
 
         // Phase 3: Invert memory
         simd::invert_array(ptr, count, true);
-        sfence();
         simd::flush_cache_region(ptr, region.size);
 
         uint64_t inverted = ~pattern;
@@ -1172,11 +1163,10 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
 
         // Fill Src
         simd::generate_pattern_uniform(src, half_count, pattern, true);
-        sfence();
 
-        // Move Src -> Dst using std::memcpy (optimized)
-        std::memmove(dst, src, half_count * 8);
-        sfence();
+        // Move Src -> Dst (non-overlapping regions)
+        std::memcpy(dst, src, half_count * 8);
+        simd::sfence();
         simd::flush_cache_region(ptr, region.size);
 
         // Verify Dst

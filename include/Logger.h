@@ -44,7 +44,6 @@ public:
         log_filename_ = filename;
         log_level_ = level;
         
-        session_id_ = generateSessionId();
         start_time_ = std::chrono::high_resolution_clock::now();
         error_count_ = 0;
         error_rate_limit_ = 100;
@@ -197,7 +196,7 @@ public:
         handleConsoleOutput(std::string(error_msg));
     }
     
-    // Separated console output handling for clarity and testability
+private:
     void handleConsoleOutput(const std::string& message) {
         if (g_testing_active.load(std::memory_order_relaxed)) {
             return;
@@ -338,6 +337,7 @@ public:
         }
     }
 
+public:
     double getElapsedSeconds() const {
         auto now = std::chrono::high_resolution_clock::now();
         return std::chrono::duration<double>(now - start_time_).count();
@@ -347,7 +347,7 @@ public:
 
 private:
     Logger() : running_(false), file_handle_(nullptr), log_filename_(), log_level_(LogLevel::DEBUG),
-               session_id_(0), error_count_(0), error_rate_limit_(500), suppressed_count_(0) {}
+               error_count_(0), error_rate_limit_(500), suppressed_count_(0) {}
     
     ~Logger() { deinit(); }
 
@@ -369,18 +369,12 @@ private:
     std::string log_filename_;
     std::atomic<LogLevel> log_level_;
 
-    uint32_t session_id_;
     std::chrono::high_resolution_clock::time_point start_time_;
     
     uint32_t error_count_;
     uint32_t error_rate_limit_;
     uint32_t suppressed_count_;
     std::chrono::high_resolution_clock::time_point last_summary_time_;
-
-    uint32_t generateSessionId() {
-        auto now = std::chrono::high_resolution_clock::now();
-        return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count());
-    }
 
     std::string getTimestamp() {
         auto now = std::chrono::system_clock::now();

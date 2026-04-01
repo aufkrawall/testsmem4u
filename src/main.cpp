@@ -8,17 +8,22 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <fstream>
 #include <cstring>
 #include <csignal>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
+#include <limits>
+#include <sstream>
 #include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <shellapi.h>
 #include <conio.h>
+#include <io.h>
 #else
 #include <unistd.h>
 #include <sys/types.h>
@@ -28,6 +33,11 @@
 #endif
 
 namespace testsmem4u {
+
+static constexpr const char* kProgramName = "testsmem4u";
+static constexpr const char* kProgramVersion = "0.2.0";
+static constexpr const char* kDefaultConfigPath = "config.ini";
+static constexpr const char* kDefaultPresetPath = "default.cfg";
 
 #ifdef _WIN32
 static bool isInputAvailable() {
@@ -331,6 +341,700 @@ static bool relaunchAsPrivileged(int argc, char* argv[]) {
 #endif
 }
 
+struct CliOptions {
+    bool show_help = false;
+    bool show_version = false;
+    bool debug = false;
+    bool no_elevation = false;
+    bool non_interactive = false;
+    bool no_pause = false;
+    bool list_presets = false;
+    bool show_config = false;
+    bool dry_run = false;
+    bool no_config = false;
+
+    bool config_path_set = false;
+    bool preset_specified = false;
+    bool memory_overridden = false;
+    bool cores_overridden = false;
+    bool cycles_overridden = false;
+    bool halt_overridden = false;
+    bool locked_memory_overridden = false;
+    bool large_pages_overridden = false;
+
+    std::string config_path = kDefaultConfigPath;
+    std::string preset_path;
+    uint32_t memory_window_mb = 0;
+    uint32_t memory_window_percent = 0;
+    uint32_t cores = 0;
+    uint32_t cycles = 0;
+    bool halt_on_error = false;
+    bool use_locked_memory = true;
+    bool use_large_pages = true;
+
+    bool hasRuntimeOverrides() const {
+        return memory_overridden || cores_overridden || cycles_overridden ||
+               halt_overridden || locked_memory_overridden || large_pages_overridden;
+    }
+
+    bool requestsDirectRun() const {
+        return preset_specified || hasRuntimeOverrides() || show_config || dry_run;
+    }
+};
+
+struct ConfigResolution {
+    Config config;
+    PlatformInfo platform = {};
+    uint64_t sizing_ram = 0;
+    uint32_t requested_window_mb = 0;
+    bool config_loaded = false;
+    std::string config_path = kDefaultConfigPath;
+    std::string config_source = "defaults";
+};
+
+static bool isStdinInteractive() {
+#ifdef _WIN32
+    return _isatty(_fileno(stdin)) != 0;
+#else
+    return isatty(STDIN_FILENO) != 0;
+#endif
+}
+
+static bool isStdoutInteractive() {
+#ifdef _WIN32
+    return _isatty(_fileno(stdout)) != 0;
+#else
+    return isatty(STDOUT_FILENO) != 0;
+#endif
+}
+
+static std::string toLowerCopy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+static bool parseUint32Strict(const std::string& value, uint32_t& result) {
+    std::string trimmed = Utils::trim(value);
+    if (trimmed.empty()) return false;
+
+    errno = 0;
+    char* endptr = nullptr;
+    unsigned long long parsed = std::strtoull(trimmed.c_str(), &endptr, 10);
+    if (errno != 0 || endptr == trimmed.c_str() || *endptr != '\0' ||
+        parsed > std::numeric_limits<uint32_t>::max()) {
+        return false;
+    }
+
+    result = static_cast<uint32_t>(parsed);
+    return true;
+}
+
+static bool readOptionValue(const std::string& arg, const char* option_name,
+                            int argc, char* argv[], int& index,
+                            std::string& value, bool& matched,
+                            std::string& error) {
+    matched = false;
+    std::string prefix = std::string(option_name) + "=";
+
+    if (arg == option_name) {
+        matched = true;
+        if (index + 1 >= argc) {
+            error = std::string("Missing value for ") + option_name + ".";
+            return false;
+        }
+        value = argv[++index];
+        return true;
+    }
+
+    if (arg.rfind(prefix, 0) == 0) {
+        matched = true;
+        value = arg.substr(prefix.size());
+        if (value.empty()) {
+            error = std::string("Missing value for ") + option_name + ".";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool parseMemoryOverride(const std::string& raw, uint32_t& memory_mb,
+                                uint32_t& memory_percent, std::string& error) {
+    std::string value = toLowerCopy(Utils::trim(raw));
+    if (value.empty()) {
+        error = "Memory value cannot be empty.";
+        return false;
+    }
+
+    memory_mb = 0;
+    memory_percent = 0;
+
+    if (value.back() == '%') {
+        uint32_t percent = 0;
+        if (!parseUint32Strict(value.substr(0, value.size() - 1), percent) || percent == 0 || percent > 100) {
+            error = "Memory percentage must be between 1% and 100%.";
+            return false;
+        }
+        memory_percent = percent;
+        return true;
+    }
+
+    if (value.size() >= 2 && value.substr(value.size() - 2) == "mb") {
+        value = Utils::trim(value.substr(0, value.size() - 2));
+    } else if (!value.empty() && value.back() == 'm') {
+        value = Utils::trim(value.substr(0, value.size() - 1));
+    }
+
+    uint32_t mb = 0;
+    if (!parseUint32Strict(value, mb) || mb == 0) {
+        error = "Memory override must be a positive MB value or a percentage like 85%.";
+        return false;
+    }
+
+    memory_mb = mb;
+    return true;
+}
+
+static bool parseCoresOverride(const std::string& raw, uint32_t& cores, std::string& error) {
+    std::string value = toLowerCopy(Utils::trim(raw));
+    if (value == "all") {
+        cores = 0;
+        return true;
+    }
+
+    uint32_t parsed = 0;
+    if (!parseUint32Strict(value, parsed) || parsed == 0) {
+        error = "Core count must be a positive integer or 'all'.";
+        return false;
+    }
+
+    cores = parsed;
+    return true;
+}
+
+static bool parseCyclesOverride(const std::string& raw, uint32_t& cycles, std::string& error) {
+    std::string value = toLowerCopy(Utils::trim(raw));
+    if (value == "inf" || value == "infinite") {
+        cycles = 0;
+        return true;
+    }
+
+    if (!parseUint32Strict(value, cycles)) {
+        error = "Cycle count must be a non-negative integer or 'infinite'.";
+        return false;
+    }
+
+    return true;
+}
+
+static std::string joinPath(const std::string& base, const std::string& leaf) {
+    if (base.empty() || base == ".") return leaf;
+
+#ifdef _WIN32
+    const char sep = '\\';
+#else
+    const char sep = '/';
+#endif
+
+    if (!base.empty() && (base.back() == '/' || base.back() == '\\')) {
+        return base + leaf;
+    }
+    return base + sep + leaf;
+}
+
+static void printUsage() {
+    std::cout << kProgramName << " " << kProgramVersion << "\n\n";
+    std::cout << "Usage:\n";
+    std::cout << "  " << kProgramName << " [options] [preset.cfg]\n\n";
+    std::cout << "Default behavior:\n";
+    std::cout << "  With no run-specific options, the program loads " << kDefaultConfigPath
+              << " if available, shows a 3-second startup delay, and enters\n";
+    std::cout << "  the configuration wizard if a key is pressed.\n\n";
+    std::cout << "Options:\n";
+    std::cout << "  -h, --help               Show this help and exit\n";
+    std::cout << "  -v, --version            Show the version and exit\n";
+    std::cout << "  -d, --debug              Enable debug logging\n";
+    std::cout << "  -y, --yes                Run non-interactively and skip exit pause\n";
+    std::cout << "      --non-interactive    Same as --yes\n";
+    std::cout << "      --no-pause           Do not wait for a key press on exit\n";
+    std::cout << "      --no-elevation       Do not relaunch as Administrator/root\n";
+    std::cout << "      --list-presets       List preset files in the current directory and exit\n";
+    std::cout << "      --config FILE        Load or save configuration using FILE\n";
+    std::cout << "      --no-config          Ignore config files and do not save wizard output\n";
+    std::cout << "      --preset FILE        Use FILE as the preset and skip the wizard\n";
+    std::cout << "      --memory VALUE       Override memory window, e.g. 85%, 2048, 2048MB\n";
+    std::cout << "      --cores VALUE        Override thread count, e.g. 8 or all\n";
+    std::cout << "      --cycles VALUE       Override cycles, e.g. 3, 0, or infinite\n";
+    std::cout << "      --halt-on-error      Stop after the first detected error\n";
+    std::cout << "      --no-halt-on-error   Continue running after errors\n";
+    std::cout << "      --locked-memory      Request locked memory\n";
+    std::cout << "      --no-locked-memory   Allow swappable memory\n";
+    std::cout << "      --large-pages        Prefer large pages / hugepages\n";
+    std::cout << "      --no-large-pages     Disable large pages / hugepages\n";
+    std::cout << "      --show-config        Print the resolved configuration before execution\n";
+    std::cout << "      --dry-run            Validate inputs, print config, and exit\n\n";
+    std::cout << "Examples:\n";
+    std::cout << "  " << kProgramName << " --yes --preset default.cfg\n";
+    std::cout << "  " << kProgramName << " --memory 80% --cycles 5 --show-config\n";
+    std::cout << "  " << kProgramName << " --config nightly.ini --yes\n";
+}
+
+static void printVersion() {
+    std::cout << kProgramName << " " << kProgramVersion << "\n";
+}
+
+static int printPresetList(const std::string& directory) {
+    std::vector<std::string> presets = listPresets(directory);
+    if (presets.empty()) {
+        std::cout << "No preset files found in " << directory << ".\n";
+        return 0;
+    }
+
+    std::cout << "Available presets in " << directory << ":\n";
+    for (const auto& preset_name : presets) {
+        PresetInfo preset = loadPreset(joinPath(directory, preset_name));
+        std::cout << "  " << preset_name;
+        if (!preset.config_name.empty()) {
+            std::cout << " - " << preset.config_name;
+        }
+        if (!preset.config_author.empty()) {
+            std::cout << " (author: " << preset.config_author << ")";
+        }
+        if (preset.tests > 0) {
+            std::cout << ", tests=" << preset.tests;
+        }
+        if (preset.cycles > 0) {
+            std::cout << ", cycles=" << preset.cycles;
+        }
+        std::cout << "\n";
+    }
+
+    return 0;
+}
+
+static bool parseCliOptions(int argc, char* argv[], CliOptions& options, std::string& error) {
+    bool saw_preset_source = false;
+    bool saw_config_source = false;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        std::string value;
+        bool matched = false;
+
+        if (arg == "--") {
+            if (i + 2 < argc) {
+                error = "Only one positional preset path is supported.";
+                return false;
+            }
+            if (i + 1 < argc) {
+                if (saw_preset_source) {
+                    error = "Preset path specified more than once.";
+                    return false;
+                }
+                options.preset_path = argv[++i];
+                options.preset_specified = true;
+                saw_preset_source = true;
+            }
+            break;
+        }
+
+        if (arg == "--help" || arg == "-h") {
+            options.show_help = true;
+            continue;
+        }
+        if (arg == "--version" || arg == "-v") {
+            options.show_version = true;
+            continue;
+        }
+        if (arg == "--debug" || arg == "-d") {
+            options.debug = true;
+            continue;
+        }
+        if (arg == "--yes" || arg == "-y" || arg == "--non-interactive") {
+            options.non_interactive = true;
+            options.no_pause = true;
+            continue;
+        }
+        if (arg == "--no-pause") {
+            options.no_pause = true;
+            continue;
+        }
+        if (arg == "--no-elevation") {
+            options.no_elevation = true;
+            continue;
+        }
+        if (arg == "--list-presets") {
+            options.list_presets = true;
+            continue;
+        }
+        if (arg == "--show-config") {
+            options.show_config = true;
+            continue;
+        }
+        if (arg == "--dry-run") {
+            options.dry_run = true;
+            options.show_config = true;
+            options.non_interactive = true;
+            options.no_pause = true;
+            continue;
+        }
+        if (arg == "--no-config") {
+            options.no_config = true;
+            continue;
+        }
+        if (arg == "--halt-on-error") {
+            options.halt_on_error = true;
+            options.halt_overridden = true;
+            continue;
+        }
+        if (arg == "--no-halt-on-error") {
+            options.halt_on_error = false;
+            options.halt_overridden = true;
+            continue;
+        }
+        if (arg == "--locked-memory") {
+            options.use_locked_memory = true;
+            options.locked_memory_overridden = true;
+            continue;
+        }
+        if (arg == "--no-locked-memory") {
+            options.use_locked_memory = false;
+            options.locked_memory_overridden = true;
+            continue;
+        }
+        if (arg == "--large-pages") {
+            options.use_large_pages = true;
+            options.large_pages_overridden = true;
+            continue;
+        }
+        if (arg == "--no-large-pages") {
+            options.use_large_pages = false;
+            options.large_pages_overridden = true;
+            continue;
+        }
+
+        if (!readOptionValue(arg, "--config", argc, argv, i, value, matched, error)) {
+            return false;
+        }
+        if (matched) {
+            if (saw_config_source) {
+                error = "Config file specified more than once.";
+                return false;
+            }
+            options.config_path = Utils::trim(value);
+            if (options.config_path.empty()) {
+                error = "Config file path cannot be empty.";
+                return false;
+            }
+            options.config_path_set = true;
+            saw_config_source = true;
+            continue;
+        }
+
+        if (!readOptionValue(arg, "--preset", argc, argv, i, value, matched, error)) {
+            return false;
+        }
+        if (matched) {
+            if (saw_preset_source) {
+                error = "Preset path specified more than once.";
+                return false;
+            }
+            options.preset_path = Utils::trim(value);
+            if (options.preset_path.empty()) {
+                error = "Preset path cannot be empty.";
+                return false;
+            }
+            options.preset_specified = true;
+            saw_preset_source = true;
+            continue;
+        }
+
+        if (!readOptionValue(arg, "--memory", argc, argv, i, value, matched, error)) {
+            return false;
+        }
+        if (matched) {
+            if (!parseMemoryOverride(value, options.memory_window_mb, options.memory_window_percent, error)) {
+                return false;
+            }
+            options.memory_overridden = true;
+            continue;
+        }
+
+        if (!readOptionValue(arg, "--cores", argc, argv, i, value, matched, error)) {
+            return false;
+        }
+        if (matched) {
+            if (!parseCoresOverride(value, options.cores, error)) {
+                return false;
+            }
+            options.cores_overridden = true;
+            continue;
+        }
+
+        if (!readOptionValue(arg, "--cycles", argc, argv, i, value, matched, error)) {
+            return false;
+        }
+        if (matched) {
+            if (!parseCyclesOverride(value, options.cycles, error)) {
+                return false;
+            }
+            options.cycles_overridden = true;
+            continue;
+        }
+
+        if (!arg.empty() && arg[0] != '-') {
+            if (saw_preset_source) {
+                error = "Preset path specified more than once.";
+                return false;
+            }
+            options.preset_path = arg;
+            options.preset_specified = true;
+            saw_preset_source = true;
+            continue;
+        }
+
+        error = "Unknown argument: " + arg;
+        return false;
+    }
+
+    if (options.no_config && options.config_path_set) {
+        error = "--config and --no-config cannot be used together.";
+        return false;
+    }
+
+    return true;
+}
+
+static Config makeDefaultConfig(const PlatformInfo& plat) {
+    Config config;
+    config.memory_window_mb = 0;
+    config.memory_window_percent = 85;
+    config.cores = plat.cpu_cores > 0 ? plat.cpu_cores : 1;
+    config.cycles = 3;
+    config.halt_on_error = true;
+    config.use_locked_memory = true;
+    config.use_large_pages = true;
+    config.debug_mode = false;
+    config.preset_file = kDefaultPresetPath;
+    return config;
+}
+
+static bool prepareConfigForRun(Config& config, const PlatformInfo& plat,
+                                uint64_t& sizing_ram, uint32_t& requested_window_mb,
+                                std::string& error) {
+    uint32_t available_cores = plat.cpu_cores > 0 ? plat.cpu_cores : 1;
+    if (config.cores == 0) {
+        config.cores = available_cores;
+    } else if (available_cores > 0 && config.cores > available_cores) {
+        config.cores = available_cores;
+    }
+
+    if (config.memory_window_mb > 0) {
+        config.memory_window_percent = 0;
+    } else if (config.memory_window_percent == 0) {
+        config.memory_window_percent = 85;
+    } else if (config.memory_window_percent > 100) {
+        config.memory_window_percent = 100;
+    }
+
+    if (config.preset_file.empty()) config.preset_file = kDefaultPresetPath;
+    config.preset = loadPreset(config.preset_file);
+    if (config.preset.test_configs.empty()) {
+        error = "Failed to load preset '" + config.preset_file + "'.";
+        return false;
+    }
+
+    sizing_ram = getSizingBaselineRAM();
+    if (sizing_ram == 0) {
+        error = "Unable to detect available system memory for sizing.";
+        return false;
+    }
+
+    if (config.memory_window_mb == 0) {
+        config.memory_window_mb = computeWindowMBFromPercent(
+            sizing_ram, config.memory_window_percent, config.use_large_pages);
+    }
+
+    requested_window_mb = config.memory_window_mb;
+    uint32_t normalized_window_mb = normalizeWindowMBForLargePages(
+        config.memory_window_mb, config.use_large_pages);
+    if (normalized_window_mb != 0) {
+        config.memory_window_mb = normalized_window_mb;
+    }
+
+    if (config.memory_window_mb == 0) {
+        error = "Memory window resolved to 0 MB. Increase the requested memory or disable large pages.";
+        return false;
+    }
+
+    uint64_t max_safe_bytes = Platform::getMaxTestableMemory(sizing_ram, 100);
+    if (max_safe_bytes > 0) {
+        uint64_t requested_bytes = static_cast<uint64_t>(config.memory_window_mb) * 1024ULL * 1024ULL;
+        if (requested_bytes > max_safe_bytes) {
+            std::ostringstream ss;
+            ss << "Requested memory window (" << config.memory_window_mb
+               << " MB) exceeds the safe maximum ("
+               << (max_safe_bytes / 1024ULL / 1024ULL)
+               << " MB) for this system.";
+            error = ss.str();
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool resolveConfiguration(const CliOptions& cli, bool automation_mode,
+                                 ConfigResolution& resolution, std::string& error) {
+    resolution.platform = Platform::detectPlatform();
+    if (resolution.platform.cpu_cores == 0) {
+        resolution.platform.cpu_cores = 1;
+    }
+
+    resolution.config_path = cli.config_path_set ? cli.config_path : kDefaultConfigPath;
+    resolution.config_source = cli.no_config ? "disabled (--no-config)" : "defaults";
+    resolution.config = makeDefaultConfig(resolution.platform);
+
+    if (!cli.no_config) {
+        if (loadConfig(resolution.config_path, resolution.config)) {
+            resolution.config_loaded = true;
+            resolution.config_source = resolution.config_path;
+        } else if (cli.config_path_set && automation_mode) {
+            error = "Config file not found: " + resolution.config_path;
+            return false;
+        } else if (cli.config_path_set) {
+            ConsoleDisplay::get().printError(
+                std::string("[!] Config file not found. Using defaults: ") + resolution.config_path);
+        }
+    }
+
+    if (cli.preset_specified) {
+        resolution.config.preset_file = cli.preset_path;
+    }
+    if (cli.memory_overridden) {
+        resolution.config.memory_window_mb = cli.memory_window_mb;
+        resolution.config.memory_window_percent = cli.memory_window_percent;
+    }
+    if (cli.cores_overridden) {
+        resolution.config.cores = cli.cores;
+    }
+    if (cli.cycles_overridden) {
+        resolution.config.cycles = cli.cycles;
+    }
+    if (cli.halt_overridden) {
+        resolution.config.halt_on_error = cli.halt_on_error;
+    }
+    if (cli.locked_memory_overridden) {
+        resolution.config.use_locked_memory = cli.use_locked_memory;
+    }
+    if (cli.large_pages_overridden) {
+        resolution.config.use_large_pages = cli.use_large_pages;
+    }
+
+    return prepareConfigForRun(
+        resolution.config,
+        resolution.platform,
+        resolution.sizing_ram,
+        resolution.requested_window_mb,
+        error);
+}
+
+static void reportMemoryWindowAdjustment(uint32_t requested_mb, uint32_t actual_mb) {
+    if (requested_mb == actual_mb) return;
+
+    std::ostringstream ss;
+    ss << "Adjusted memory window from " << requested_mb
+       << " MB to " << actual_mb << " MB to match large-page granularity.";
+    ConsoleDisplay::get().printLine(ss.str());
+}
+
+static void printConfigSummary(const ConfigResolution& resolution, const CliOptions& cli,
+                               bool automation_mode) {
+    const Config& config = resolution.config;
+
+    ConsoleDisplay::get().printLine("");
+    ConsoleDisplay::get().printLine("[Resolved Configuration]");
+
+    {
+        std::ostringstream ss;
+        ss << "  Config source:   " << resolution.config_source;
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Preset file:     " << config.preset_file;
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    if (!config.preset.config_name.empty()) {
+        std::ostringstream ss;
+        ss << "  Preset name:     " << config.preset.config_name;
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    if (!config.preset.config_author.empty()) {
+        std::ostringstream ss;
+        ss << "  Preset author:   " << config.preset.config_author;
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        if (config.memory_window_percent > 0) {
+            ss << "  Memory window:   " << config.memory_window_percent << "% -> "
+               << config.memory_window_mb << " MB";
+        } else {
+            ss << "  Memory window:   " << config.memory_window_mb << " MB";
+        }
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    if (resolution.requested_window_mb != config.memory_window_mb) {
+        std::ostringstream ss;
+        ss << "  Alignment:       " << resolution.requested_window_mb
+           << " MB requested, " << config.memory_window_mb << " MB effective";
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Threads:         " << config.cores;
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Cycles:          ";
+        if (config.cycles == 0) {
+            ss << "infinite";
+        } else {
+            ss << config.cycles;
+        }
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Halt on error:   " << (config.halt_on_error ? "Yes" : "No");
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Locked memory:   " << (config.use_locked_memory ? "Yes" : "No");
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Large pages:     " << (config.use_large_pages ? "Yes" : "No");
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Debug logging:   " << (cli.debug ? "Yes" : "No");
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Interactive:     " << (automation_mode ? "No" : "Yes");
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+}
+
 Config runConfigWizard() {
     Config config;
     PlatformInfo plat = Platform::detectPlatform();
@@ -413,29 +1117,53 @@ Config runConfigWizard() {
     input = Utils::trim(input);
     config.halt_on_error = (input.empty() || (input != "n" && input != "N"));
 
-    std::cout << "Select Preset:\n";
-    std::cout << "1. default.cfg (Recommended)\n";
-    std::cout << "2. anta777extreme.cfg\n";
-    std::cout << "3. memtest86+.cfg\n";
-    std::cout << "4. Custom config file\n";
-    std::cout << "Enter selection [1]: ";
-    
-    std::getline(std::cin, input);
-    input = Utils::trim(input);
-    
-    if (input == "2") {
-        config.preset_file = "anta777extreme.cfg";
-    } else if (input == "3") {
-        config.preset_file = "memtest86+.cfg";
-    } else if (input == "4") {
-        std::cout << "Enter preset file path: ";
+    std::vector<std::string> presets = listPresets(".");
+    size_t default_choice = 0;
+    for (size_t i = 0; i < presets.size(); ++i) {
+        if (presets[i] == kDefaultPresetPath) {
+            default_choice = i;
+            break;
+        }
+    }
+
+    if (presets.empty()) {
+        std::cout << "No preset files were found in the current directory.\n";
+        std::cout << "Enter preset file path [" << kDefaultPresetPath << "]: ";
         std::getline(std::cin, input);
         config.preset_file = Utils::trim(input);
     } else {
-        config.preset_file = "default.cfg";
+        std::cout << "Select Preset:\n";
+        for (size_t i = 0; i < presets.size(); ++i) {
+            std::cout << (i + 1) << ". " << presets[i];
+            if (presets[i] == kDefaultPresetPath) {
+                std::cout << " (Recommended)";
+            }
+            std::cout << "\n";
+        }
+        size_t custom_choice = presets.size() + 1;
+        std::cout << custom_choice << ". Custom config file\n";
+        std::cout << "Enter selection [" << (default_choice + 1) << "]: ";
+
+        std::getline(std::cin, input);
+        input = Utils::trim(input);
+
+        uint32_t selection = 0;
+        if (!parseUintOrDefault(input, selection, static_cast<uint32_t>(default_choice + 1))) {
+            selection = static_cast<uint32_t>(default_choice + 1);
+        }
+
+        if (selection >= 1 && selection <= presets.size()) {
+            config.preset_file = presets[selection - 1];
+        } else if (selection == custom_choice) {
+            std::cout << "Enter preset file path: ";
+            std::getline(std::cin, input);
+            config.preset_file = Utils::trim(input);
+        } else {
+            config.preset_file = presets[default_choice];
+        }
     }
 
-    if (config.preset_file.empty()) config.preset_file = "default.cfg";
+    if (config.preset_file.empty()) config.preset_file = kDefaultPresetPath;
     config.preset = loadPreset(config.preset_file);
 
     if (config.memory_window_mb == 0) {
@@ -465,23 +1193,48 @@ int main(int argc, char* argv[]) {
     ConsoleDisplay::get().init();
     Platform::registerShutdownHandler(onShutdown);
 
-    Config config = {};
-    bool debug = false;
-    bool skip_wizard = false;
-    bool no_elevation = false;
-    std::string preset_path = "";
-    bool config_loaded = false;
-
-    for(int i=1; i<argc; ++i) {
-        std::string arg = argv[i];
-        if (arg == "--debug" || arg == "-d") debug = true;
-        else if (arg == "--no-elevation") no_elevation = true;
-        else if (arg == "--preset" && i+1 < argc) { preset_path = argv[++i]; skip_wizard = true; }
-        else if (arg == "--yes" || arg == "-y") skip_wizard = true;
-        else if (arg[0] != '-') { preset_path = arg; skip_wizard = true; }
+    CliOptions cli;
+    std::string cli_error;
+    if (!parseCliOptions(argc, argv, cli, cli_error)) {
+        std::cerr << "Error: " << cli_error << "\n\n";
+        printUsage();
+        return 2;
     }
 
-    if (!no_elevation && !isPrivileged()) {
+    if (cli.show_help) {
+        printUsage();
+        return 0;
+    }
+    if (cli.show_version) {
+        printVersion();
+        return 0;
+    }
+    if (cli.list_presets) {
+        return printPresetList(".");
+    }
+
+    bool input_interactive = isStdinInteractive();
+    bool output_interactive = isStdoutInteractive();
+    bool automation_mode = cli.non_interactive || !input_interactive || cli.requestsDirectRun();
+    bool should_pause_on_exit = !cli.no_pause && input_interactive && output_interactive && !automation_mode;
+
+    ConfigResolution resolution;
+    std::string resolution_error;
+    if (!resolveConfiguration(cli, automation_mode, resolution, resolution_error)) {
+        ConsoleDisplay::get().printError(std::string("[!] ") + resolution_error);
+        return 2;
+    }
+
+    if (cli.show_config) {
+        printConfigSummary(resolution, cli, automation_mode);
+    }
+    if (cli.dry_run) {
+        ConsoleDisplay::get().printLine("");
+        ConsoleDisplay::get().printLine("Dry run complete. No tests executed.");
+        return 0;
+    }
+
+    if (!cli.no_elevation && !isPrivileged()) {
         ConsoleDisplay::get().printLine("Requesting elevation... (Use --no-elevation to skip)");
         if (relaunchAsPrivileged(argc, argv)) {
             return 0;
@@ -489,118 +1242,85 @@ int main(int argc, char* argv[]) {
         ConsoleDisplay::get().printLine("[!] Elevation unavailable. Continuing without elevation.");
     }
 
-    Logger::get().init("testsmem4u.log", debug ? LogLevel::DEBUG : LogLevel::INFO, true);
+    Config config = resolution.config;
+    Logger::get().init("testsmem4u.log", cli.debug ? LogLevel::DEBUG : LogLevel::INFO, true);
     auto& log = Logger::get();
     log.setErrorRateLimit(100);
+    log.info("%s %s starting...", kProgramName, kProgramVersion);
 
-    if (!Platform::hasMemoryLockPrivilege()) {
+    if (automation_mode) {
+        ConsoleDisplay::get().printLine("Non-interactive mode enabled; skipping prompts.");
+    }
+
+#ifdef _WIN32
+    if ((config.use_locked_memory || config.use_large_pages) && !Platform::hasMemoryLockPrivilege()) {
         ConsoleDisplay::get().printLine("");
         ConsoleDisplay::get().printLine("[!] 'Lock Pages in Memory' privilege (SeLockMemoryPrivilege) is MISSING.");
-        ConsoleDisplay::get().printLine("    This is required for reliable RAM testing to prevent swapping.");
+        ConsoleDisplay::get().printLine("    Locked memory and large-page allocations may fail or fall back.");
         ConsoleDisplay::get().printLine("    Do you want to grant this privilege to the current user now?");
         ConsoleDisplay::get().printLine("    (Requires 'Yes' and then a Sign-out/Reboot to take effect)");
-        std::cout << "    [Y/n]: ";
         
-        std::string answer;
-        if (!skip_wizard) {
-             std::getline(std::cin, answer);
+        if (automation_mode) {
+            ConsoleDisplay::get().printLine("    Direct/non-interactive mode: skipping automatic privilege grant.");
         } else {
-             ConsoleDisplay::get().printLine("N (Non-interactive mode)");
-             answer = "n";
-        }
+            std::cout << "    [Y/n]: ";
 
-        if (answer.empty() || answer == "y" || answer == "Y") {
-            if (Platform::grantMemoryLockPrivilege()) {
-                ConsoleDisplay::get().printLine("");
-                ConsoleDisplay::get().printLine("[+] Privilege granted successfully!");
-                ConsoleDisplay::get().printLine("    PLEASE SIGN OUT AND SIGN BACK IN for the changes to take effect.");
-                ConsoleDisplay::get().printLine("    The program will now exit.");
-                return 0;
-            } else {
+            std::string answer;
+            std::getline(std::cin, answer);
+            if (answer.empty() || answer == "y" || answer == "Y") {
+                if (Platform::grantMemoryLockPrivilege()) {
+                    ConsoleDisplay::get().printLine("");
+                    ConsoleDisplay::get().printLine("[+] Privilege granted successfully!");
+                    ConsoleDisplay::get().printLine("    PLEASE SIGN OUT AND SIGN BACK IN for the changes to take effect.");
+                    ConsoleDisplay::get().printLine("    The program will now exit.");
+                    Logger::get().deinit();
+                    return 0;
+                }
                 ConsoleDisplay::get().printError("[-] Failed to grant privilege. You may need to run as Administrator manually.");
             }
         }
     }
-
-    log.info("testsmem4u starting...");
-    PlatformInfo plat = Platform::detectPlatform();
-
-    // Try to load config; if fails or doesn't exist, we will setup defaults but allow override
-    bool loaded_from_file = false;
-    
-    // Always attempt to load config file first
-    if (loadConfig("config.ini", config)) {
-        loaded_from_file = true;
-        config_loaded = true;
+#else
+    if ((config.use_locked_memory || config.use_large_pages) && !Platform::hasMemoryLockPrivilege()) {
+        ConsoleDisplay::get().printLine("");
+        ConsoleDisplay::get().printLine("[!] Memory locking or hugepage privileges appear limited.");
+        ConsoleDisplay::get().printLine("    Locked memory and hugepage allocations may fall back depending on system policy.");
+        ConsoleDisplay::get().printLine("    Raise RLIMIT_MEMLOCK, configure hugepages, or run with sufficient privileges for the most reliable results.");
     }
+#endif
 
-    if (!skip_wizard) {
-        if (!loaded_from_file) {
-            // Setup defaults if no config found
-            config.memory_window_percent = 85;
-            config.memory_window_mb = 0;
-            config.cores = plat.cpu_cores;
-            config.cycles = 3;
-            config.use_locked_memory = true;
-            config.use_large_pages = true;
-            config.halt_on_error = true;
-            config.preset_file = "default.cfg";
-        }
+    uint32_t requested_window_mb = resolution.requested_window_mb;
+    if (!automation_mode) {
+        const char* msg = resolution.config_loaded
+            ? "Starting with saved settings..."
+            : "Starting with default settings...";
 
-        // Ensure calculations are correct based on current config (loaded or default)
-        // Recompute percent-based memory windows on each run from total system RAM.
-        if (config.memory_window_percent > 0 || config.memory_window_mb == 0) {
-            uint64_t sizing_ram = getSizingBaselineRAM();
-            uint32_t percent = config.memory_window_percent > 0 ? config.memory_window_percent : 85;
-            config.memory_window_mb = computeWindowMBFromPercent(sizing_ram, percent, config.use_large_pages);
-        }
+        if (waitForInput(3, msg)) {
+            std::string wizard_error;
+            config = runConfigWizard();
+            if (!prepareConfigForRun(
+                    config,
+                    resolution.platform,
+                    resolution.sizing_ram,
+                    requested_window_mb,
+                    wizard_error)) {
+                ConsoleDisplay::get().printError(std::string("[!] ") + wizard_error);
+                Logger::get().deinit();
+                return 2;
+            }
 
-        if (config.preset_file.empty()) config.preset_file = "default.cfg";
-        config.preset = loadPreset(config.preset_file);
-
-        // Show appropriate message
-        const char* msg = loaded_from_file ? "Starting with saved settings..." : "Starting with default settings...";
-
-        if (skip_wizard) {
-            std::cout << msg << std::endl;
-        } else {
-            // Wait for user input
-            if (waitForInput(3, msg)) {
-                skip_wizard = false;
-                config_loaded = false; // Force re-run wizard
-            } else {
-                skip_wizard = true;
-                config_loaded = true; // Use the current config
+            if (!cli.no_config) {
+                const std::string save_path = cli.config_path_set ? cli.config_path : kDefaultConfigPath;
+                if (!saveConfig(save_path, config)) {
+                    ConsoleDisplay::get().printError(
+                        std::string("[!] Failed to save configuration to ") + save_path);
+                }
             }
         }
     }
 
-    if (skip_wizard) {
-        if (!config_loaded) {
-            if (!preset_path.empty()) config.preset_file = preset_path;
-            else if (config.preset_file.empty()) config.preset_file = "default.cfg";
-
-            config.preset = loadPreset(config.preset_file);
-            
-            config.cores = plat.cpu_cores;
-            uint64_t sizing_ram = getSizingBaselineRAM();
-            config.memory_window_mb = computeWindowMBFromPercent(sizing_ram, 85, config.use_large_pages);
-            config.use_locked_memory = true;
-            config.use_large_pages = true;
-            config.halt_on_error = false;
-            config.cycles = 0;
-        }
-    } else {
-        config = runConfigWizard();
-        saveConfig("config.ini", config);
-    }
-
-    uint32_t normalized_window_mb = normalizeWindowMBForLargePages(config.memory_window_mb, config.use_large_pages);
-    if (normalized_window_mb != config.memory_window_mb) {
-        LOG_INFO("Adjusted memory window from %u MB to %u MB to match large-page granularity",
-                 config.memory_window_mb, normalized_window_mb);
-        config.memory_window_mb = normalized_window_mb;
-    }
+    reportMemoryWindowAdjustment(requested_window_mb, config.memory_window_mb);
+    config.debug_mode = cli.debug;
 
     {
         std::ostringstream ss;
@@ -610,8 +1330,6 @@ int main(int argc, char* argv[]) {
     ConsoleDisplay::get().printLine("Tip: Press Ctrl+C to stop and save results.");
     ConsoleDisplay::get().printLine("");
 
-    config.debug_mode = debug;
-
     if (config.preset.test_configs.empty()) {
         {
             std::ostringstream ss;
@@ -619,10 +1337,13 @@ int main(int argc, char* argv[]) {
             ConsoleDisplay::get().printError(ss.str());
         }
 #ifdef _WIN32
-        ConsoleDisplay::get().printLine("Press any key to exit...");
-        _getch();
+        if (should_pause_on_exit) {
+            ConsoleDisplay::get().printLine("Press any key to exit...");
+            _getch();
+        }
 #endif
-        return 1;
+        Logger::get().deinit();
+        return 2;
     }
 
     RunResult res = {};
@@ -673,11 +1394,13 @@ int main(int argc, char* argv[]) {
     Logger::get().deinit();
 
 #ifdef _WIN32
-    ConsoleDisplay::get().printLine("");
-    ConsoleDisplay::get().printLine("Press any key to exit...");
-    _getch();
+    if (should_pause_on_exit) {
+        ConsoleDisplay::get().printLine("");
+        ConsoleDisplay::get().printLine("Press any key to exit...");
+        _getch();
+    }
 #else
-    if (isGraphicalSession()) {
+    if (should_pause_on_exit && isGraphicalSession()) {
         ConsoleDisplay::get().printLine("");
         ConsoleDisplay::get().printLine("Press Enter to exit...");
         getchar();
