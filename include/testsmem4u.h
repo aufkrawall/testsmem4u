@@ -36,6 +36,8 @@ struct PresetInfo {
     uint32_t operation_block_bytes = 64;
     uint32_t debug_level = 1;
     int32_t language = -1;
+    bool valid = true;
+    std::string validation_error;
 };
 
 // Main configuration
@@ -60,6 +62,8 @@ struct RunResult {
     uint64_t bytes_tested = 0;
     uint64_t cycles_completed = 0;
     double duration_seconds = 0.0;
+    bool infrastructure_failure = false;
+    std::string infrastructure_error;
     
     uint64_t total_errors() const { return hard_errors + soft_errors + unverified_errors; }
     uint64_t verified_errors() const { return hard_errors + soft_errors; }
@@ -67,6 +71,7 @@ struct RunResult {
 
 // Parse test sequence helper
 std::vector<uint32_t> parseTestSequence(const std::string& sequence);
+bool isKnownTestFunctionName(const std::string& name);
 
 // Preset file operations
 PresetInfo loadPreset(const std::string& filepath);

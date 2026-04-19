@@ -43,14 +43,16 @@ struct TestConfig {
 // RAII wrapper for MemoryRegion - ensures proper cleanup on all code paths
 class MemoryGuard {
 public:
-    MemoryGuard() : base_(nullptr), size_(0), is_large_pages_(false), is_locked_(false), locked_offset_(0), locked_bytes_(0), lp_chunk_size_(0) {}
+    MemoryGuard() : base_(nullptr), size_(0), is_large_pages_(false), large_page_bytes_(0), is_locked_(false), locked_offset_(0), locked_bytes_(0), lp_chunk_size_(0) {}
 
-    explicit MemoryGuard(uint8_t* base, size_t size, bool large_pages, bool locked, size_t locked_offset = 0, size_t locked_bytes = 0, size_t lp_chunk_size = 0)
-        : base_(base), size_(size), is_large_pages_(large_pages), is_locked_(locked), locked_offset_(locked_offset), locked_bytes_(locked_bytes), lp_chunk_size_(lp_chunk_size) {}
+    explicit MemoryGuard(uint8_t* base, size_t size, bool large_pages, size_t large_page_bytes, bool locked,
+                         size_t locked_offset = 0, size_t locked_bytes = 0, size_t lp_chunk_size = 0)
+        : base_(base), size_(size), is_large_pages_(large_pages), large_page_bytes_(large_page_bytes),
+          is_locked_(locked), locked_offset_(locked_offset), locked_bytes_(locked_bytes), lp_chunk_size_(lp_chunk_size) {}
 
     ~MemoryGuard() {
         if (base_) {
-            freeInternal(base_, size_, is_large_pages_, is_locked_, locked_offset_, locked_bytes_, lp_chunk_size_);
+            freeInternal(base_, size_, is_large_pages_, large_page_bytes_, is_locked_, locked_offset_, locked_bytes_, lp_chunk_size_);
         }
     }
 
@@ -61,10 +63,12 @@ public:
     // Movable
     MemoryGuard(MemoryGuard&& other) noexcept
         : base_(other.base_), size_(other.size_),
-          is_large_pages_(other.is_large_pages_), is_locked_(other.is_locked_), locked_offset_(other.locked_offset_), locked_bytes_(other.locked_bytes_), lp_chunk_size_(other.lp_chunk_size_) {
+          is_large_pages_(other.is_large_pages_), large_page_bytes_(other.large_page_bytes_),
+          is_locked_(other.is_locked_), locked_offset_(other.locked_offset_), locked_bytes_(other.locked_bytes_), lp_chunk_size_(other.lp_chunk_size_) {
         other.base_ = nullptr;
         other.size_ = 0;
         other.is_large_pages_ = false;
+        other.large_page_bytes_ = 0;
         other.is_locked_ = false;
         other.locked_offset_ = 0;
         other.locked_bytes_ = 0;
@@ -73,10 +77,11 @@ public:
 
     MemoryGuard& operator=(MemoryGuard&& other) noexcept {
         if (this != &other) {
-            if (base_) freeInternal(base_, size_, is_large_pages_, is_locked_, locked_offset_, locked_bytes_, lp_chunk_size_);
+            if (base_) freeInternal(base_, size_, is_large_pages_, large_page_bytes_, is_locked_, locked_offset_, locked_bytes_, lp_chunk_size_);
             base_ = other.base_;
             size_ = other.size_;
             is_large_pages_ = other.is_large_pages_;
+            large_page_bytes_ = other.large_page_bytes_;
             is_locked_ = other.is_locked_;
             locked_offset_ = other.locked_offset_;
             locked_bytes_ = other.locked_bytes_;
@@ -84,6 +89,7 @@ public:
             other.base_ = nullptr;
             other.size_ = 0;
             other.is_large_pages_ = false;
+            other.large_page_bytes_ = 0;
             other.is_locked_ = false;
             other.locked_offset_ = 0;
             other.locked_bytes_ = 0;
@@ -98,15 +104,17 @@ public:
     uint8_t* base() const { return base_; }
     size_t size() const { return size_; }
     bool is_large_pages() const { return is_large_pages_; }
+    size_t large_page_bytes() const { return large_page_bytes_; }
     bool is_locked() const { return is_locked_; }
     bool valid() const { return base_ != nullptr; }
 
     void release() {
         if (base_) {
-            freeInternal(base_, size_, is_large_pages_, is_locked_, locked_offset_, locked_bytes_, lp_chunk_size_);
+            freeInternal(base_, size_, is_large_pages_, large_page_bytes_, is_locked_, locked_offset_, locked_bytes_, lp_chunk_size_);
             base_ = nullptr;
             size_ = 0;
             is_large_pages_ = false;
+            large_page_bytes_ = 0;
             is_locked_ = false;
             locked_offset_ = 0;
             locked_bytes_ = 0;
@@ -118,12 +126,14 @@ private:
     uint8_t* base_;
     size_t size_;
     bool is_large_pages_;
+    size_t large_page_bytes_;
     bool is_locked_;
     size_t locked_offset_;
     size_t locked_bytes_;
     size_t lp_chunk_size_;
 
-    static void freeInternal(uint8_t* base, size_t size, bool large_pages, bool locked, size_t locked_offset, size_t locked_bytes, size_t lp_chunk_size);
+    static void freeInternal(uint8_t* base, size_t size, bool large_pages, size_t large_page_bytes, bool locked,
+                             size_t locked_offset, size_t locked_bytes, size_t lp_chunk_size);
 };
 
 } // namespace testsmem4u

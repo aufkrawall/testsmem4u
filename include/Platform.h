@@ -21,6 +21,7 @@ struct MemoryRegion {
     size_t size = 0;
     size_t base_offset_bytes = 0; // Offset from root test allocation for global error reporting
     bool is_large_pages = false;
+    size_t large_page_bytes = 0;
     bool is_locked = false;
     size_t locked_offset = 0; // Offset into base where VirtualUnlock should start
     size_t locked_bytes = 0;
@@ -69,6 +70,7 @@ private:
 private:
     static bool tryAllocateMlock(MemoryRegion& region, size_t size);
     static bool tryAllocateHugepages(MemoryRegion& region, size_t size);
+    static bool tryAllocateStandard(MemoryRegion& region, size_t size);
 #endif
 };
 

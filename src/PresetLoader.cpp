@@ -26,9 +26,16 @@ static bool hasUnsafePathCharacters(const std::string& path) {
 
 PresetInfo loadPreset(const std::string& filepath) {
     PresetInfo preset;
+    auto invalidate = [&](const std::string& message) {
+        if (preset.valid) {
+            preset.valid = false;
+            preset.validation_error = message;
+        }
+        LOG_ERROR("Invalid preset '%s': %s", filepath.c_str(), message.c_str());
+    };
 
     if (hasUnsafePathCharacters(filepath)) {
-        LOG_ERROR("Invalid preset path (contains unsafe characters): %s", filepath.c_str());
+        invalidate("preset path contains unsafe characters");
         return preset;
     }
 
@@ -41,9 +48,11 @@ PresetInfo loadPreset(const std::string& filepath) {
     }
 
     std::string line;
+    uint32_t line_number = 0;
     uint32_t current_test = UINT32_MAX;
 
     while (std::getline(file, line)) {
+        line_number++;
         line = Utils::trim(line);
 
         if (line.empty() || line[0] == ';' || line[0] == '#') continue;
@@ -55,13 +64,14 @@ PresetInfo loadPreset(const std::string& filepath) {
 
                 if (section.size() > 4 && section.substr(0, 4) == "Test") {
                     std::string test_num_str = section.substr(4);
-                    char* endptr = nullptr;
-                    current_test = static_cast<uint32_t>(std::strtoul(test_num_str.c_str(), &endptr, 10));
-                    if (endptr && *endptr == '\0' && current_test < 256) {
+                    uint32_t parsed_test = 0;
+                    if (Utils::parseUintStrict(test_num_str, parsed_test) && parsed_test < 256) {
+                        current_test = parsed_test;
                         preset.test_configs[current_test] = TestConfig();
                         preset.test_configs[current_test].test_number = static_cast<uint8_t>(current_test);
                     } else {
                         current_test = UINT32_MAX;
+                        invalidate("invalid test section header at line " + std::to_string(line_number));
                     }
                 } else {
                     current_test = UINT32_MAX;
@@ -73,6 +83,26 @@ PresetInfo loadPreset(const std::string& filepath) {
         std::string key, value;
         if (!Utils::parseKeyValue(line, key, value)) continue;
 
+        auto parseUintField = [&](uint32_t& target) {
+            uint32_t parsed = 0;
+            if (!Utils::parseUintStrict(value, parsed)) {
+                invalidate("invalid numeric value for '" + key + "' at line " + std::to_string(line_number));
+                return false;
+            }
+            target = parsed;
+            return true;
+        };
+
+        auto parseHexField = [&](uint64_t& target) {
+            uint64_t parsed = 0;
+            if (!Utils::parseHexStrict(value, parsed)) {
+                invalidate("invalid hexadecimal value for '" + key + "' at line " + std::to_string(line_number));
+                return false;
+            }
+            target = parsed;
+            return true;
+        };
+
         if (key == "Config Name") {
             preset.config_name = value;
             LOG_INFO("Preset name: %s", value.c_str());
@@ -80,62 +110,101 @@ PresetInfo loadPreset(const std::string& filepath) {
             preset.config_author = value;
             LOG_INFO("Preset author: %s", value.c_str());
         } else if (key == "Cores") {
-            preset.cores = Utils::parseUint(value);
+            parseUintField(preset.cores);
         } else if (key == "Tests") {
-            preset.tests = Utils::parseUint(value);
+            parseUintField(preset.tests);
         } else if (key == "Time (%)") {
             if (current_test == UINT32_MAX) {
-                preset.time_percent = Utils::parseUint(value);
+                parseUintField(preset.time_percent);
             }
         } else if (key == "Cycles") {
-            preset.cycles = Utils::parseUint(value);
+            parseUintField(preset.cycles);
         } else if (key == "Testing Window Size (Mb)" || key == "Memory Window Size") {
-            preset.memory_window_mb = Utils::parseUint(value);
+            parseUintField(preset.memory_window_mb);
         } else if (key == "Test Sequence") {
             preset.test_sequence = value;
         } else if (key == "Language") {
-            preset.language = static_cast<int32_t>(Utils::parseUint(value));
+            uint32_t parsed = 0;
+            if (Utils::parseUintStrict(value, parsed)) {
+                preset.language = static_cast<int32_t>(parsed);
+            } else if (Utils::trim(value) == "-1") {
+                preset.language = -1;
+            } else {
+                invalidate("invalid numeric value for '" + key + "' at line " + std::to_string(line_number));
+            }
         } else if (key == "Channels") {
-            preset.channels = Utils::parseUint(value);
+            parseUintField(preset.channels);
         } else if (key == "Interleave Type") {
-            preset.interleave_type = Utils::parseUint(value);
+            parseUintField(preset.interleave_type);
         } else if (key == "Reserved Memory for Windows (Mb)") {
-            preset.reserved_memory_mb = Utils::parseUint(value);
+            parseUintField(preset.reserved_memory_mb);
         } else if (key == "Lock Memory Granularity (Mb)") {
-            preset.lock_memory_granularity_mb = Utils::parseUint(value);
+            parseUintField(preset.lock_memory_granularity_mb);
         } else if (key == "Single DIMM width, bits") {
-            preset.single_dimm_width_bits = Utils::parseUint(value);
+            parseUintField(preset.single_dimm_width_bits);
         } else if (key == "Operation Block, byts") {
-            preset.operation_block_bytes = Utils::parseUint(value);
+            parseUintField(preset.operation_block_bytes);
         } else if (key == "Debug Level") {
-            preset.debug_level = Utils::parseUint(value);
+            parseUintField(preset.debug_level);
         }
 
         if (current_test != UINT32_MAX && preset.test_configs.count(current_test)) {
             TestConfig& tc = preset.test_configs[current_test];
 
             if (key == "Enable") {
-                tc.enabled = (Utils::parseUint(value) != 0);
+                uint32_t parsed = 0;
+                if (parseUintField(parsed)) tc.enabled = (parsed != 0);
             } else if (key == "Time (%)") {
-                tc.time_percent = Utils::parseUint(value);
+                parseUintField(tc.time_percent);
             } else if (key == "Function") {
                 tc.function = value;
+                if (!tc.function.empty() && !isKnownTestFunctionName(tc.function)) {
+                    invalidate("unknown Function='" + tc.function + "' in [Test" + std::to_string(current_test) + "]");
+                }
                 LOG_DEBUG("Test %u function: %s", current_test, value.c_str());
             } else if (key == "Pattern Mode") {
-                tc.pattern_mode = static_cast<uint8_t>(Utils::parseUint(value));
+                uint32_t parsed = 0;
+                if (parseUintField(parsed)) tc.pattern_mode = static_cast<uint8_t>(parsed);
             } else if (key == "Pattern Param0") {
-                tc.pattern_param0 = Utils::parseHex(value);
+                parseHexField(tc.pattern_param0);
             } else if (key == "Pattern Param1") {
-                tc.pattern_param1 = Utils::parseHex(value);
+                parseHexField(tc.pattern_param1);
             } else if (key == "Parameter") {
-                tc.parameter = Utils::parseUint(value);
+                parseUintField(tc.parameter);
             } else if (key == "Test Block Size (Mb)" || key == "Block Size") {
-                tc.block_size_mb = Utils::parseUint(value);
+                parseUintField(tc.block_size_mb);
             }
         }
     }
 
     file.close();
+
+    std::vector<uint32_t> sequence = parseTestSequence(preset.test_sequence);
+    if (sequence.empty()) {
+        invalidate("preset has an empty or invalid Test Sequence");
+    }
+
+    bool has_enabled_test = false;
+    for (uint32_t test_id : sequence) {
+        auto it = preset.test_configs.find(test_id);
+        if (it == preset.test_configs.end()) {
+            invalidate("Test Sequence references undefined [Test" + std::to_string(test_id) + "]");
+            break;
+        }
+        if (it->second.function.empty()) {
+            invalidate("[Test" + std::to_string(test_id) + "] is missing Function=");
+            break;
+        }
+        if (!isKnownTestFunctionName(it->second.function)) {
+            invalidate("[Test" + std::to_string(test_id) + "] uses unsupported Function='" + it->second.function + "'");
+            break;
+        }
+        if (it->second.enabled) has_enabled_test = true;
+    }
+
+    if (!preset.test_configs.empty() && !has_enabled_test) {
+        invalidate("preset enables no runnable tests in its Test Sequence");
+    }
 
     LOG_INFO("Preset loaded: %u tests, %u cycles, window=%u MB",
              preset.tests, preset.cycles, preset.memory_window_mb);

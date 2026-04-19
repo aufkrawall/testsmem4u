@@ -5,6 +5,27 @@
 #include <sstream>
 #include <algorithm>
 
+namespace {
+
+bool parseBoolValue(const std::string& raw, bool& value) {
+    std::string text = testsmem4u::Utils::trim(raw);
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+
+    if (text == "1" || text == "true" || text == "yes") {
+        value = true;
+        return true;
+    }
+    if (text == "0" || text == "false" || text == "no") {
+        value = false;
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
 namespace testsmem4u {
 
 // Local helpers removed, using Utils:: instead
@@ -50,19 +71,40 @@ bool loadConfig(const std::string& filename, Config& config) {
         if (!Utils::parseKeyValue(line, key, value)) continue;
 
         if (key == "MemoryWindowPercent") {
-            config.memory_window_percent = Utils::parseUint(value);
+            if (!Utils::parseUintStrict(value, config.memory_window_percent)) {
+                LOG_ERROR("Invalid config value for MemoryWindowPercent in %s", filename.c_str());
+                return false;
+            }
         } else if (key == "MemoryWindowMB") {
-            config.memory_window_mb = Utils::parseUint(value);
+            if (!Utils::parseUintStrict(value, config.memory_window_mb)) {
+                LOG_ERROR("Invalid config value for MemoryWindowMB in %s", filename.c_str());
+                return false;
+            }
         } else if (key == "Cores") {
-            config.cores = Utils::parseUint(value);
+            if (!Utils::parseUintStrict(value, config.cores)) {
+                LOG_ERROR("Invalid config value for Cores in %s", filename.c_str());
+                return false;
+            }
         } else if (key == "Cycles") {
-            config.cycles = Utils::parseUint(value);
+            if (!Utils::parseUintStrict(value, config.cycles)) {
+                LOG_ERROR("Invalid config value for Cycles in %s", filename.c_str());
+                return false;
+            }
         } else if (key == "UseLockedMemory") {
-            config.use_locked_memory = (value == "1" || value == "true");
+            if (!parseBoolValue(value, config.use_locked_memory)) {
+                LOG_ERROR("Invalid config value for UseLockedMemory in %s", filename.c_str());
+                return false;
+            }
         } else if (key == "UseLargePages") {
-            config.use_large_pages = (value == "1" || value == "true");
+            if (!parseBoolValue(value, config.use_large_pages)) {
+                LOG_ERROR("Invalid config value for UseLargePages in %s", filename.c_str());
+                return false;
+            }
         } else if (key == "HaltOnError") {
-            config.halt_on_error = (value == "1" || value == "true");
+            if (!parseBoolValue(value, config.halt_on_error)) {
+                LOG_ERROR("Invalid config value for HaltOnError in %s", filename.c_str());
+                return false;
+            }
         } else if (key == "PresetFile") {
             config.preset_file = value;
         }

@@ -841,6 +841,10 @@ static bool prepareConfigForRun(Config& config, const PlatformInfo& plat,
 
     if (config.preset_file.empty()) config.preset_file = kDefaultPresetPath;
     config.preset = loadPreset(config.preset_file);
+    if (!config.preset.valid) {
+        error = "Invalid preset '" + config.preset_file + "': " + config.preset.validation_error;
+        return false;
+    }
     if (config.preset.test_configs.empty()) {
         error = "Failed to load preset '" + config.preset_file + "'.";
         return false;
@@ -976,6 +980,11 @@ static void printConfigSummary(const ConfigResolution& resolution, const CliOpti
         std::ostringstream ss;
         ss << "  Preset author:   " << config.preset.config_author;
         ConsoleDisplay::get().printLine(ss.str());
+    }
+    if ((config.preset.cores > 0 && config.preset.cores != config.cores) ||
+        (config.preset.cycles > 0 && config.preset.cycles != config.cycles) ||
+        (config.preset.memory_window_mb > 0 && config.preset.memory_window_mb != config.memory_window_mb)) {
+        ConsoleDisplay::get().printLine("  Preset note:     Preset Cores/Cycles/Testing Window fields are informational only in this release.");
     }
     {
         std::ostringstream ss;
@@ -1165,6 +1174,12 @@ Config runConfigWizard() {
 
     if (config.preset_file.empty()) config.preset_file = kDefaultPresetPath;
     config.preset = loadPreset(config.preset_file);
+    if (!config.preset.valid) {
+        ConsoleDisplay::get().printError(std::string("[!] Invalid preset: ") + config.preset.validation_error);
+        config.preset = PresetInfo();
+        config.preset_file = kDefaultPresetPath;
+        config.preset = loadPreset(config.preset_file);
+    }
 
     if (config.memory_window_mb == 0) {
         config.memory_window_mb = computeWindowMBFromPercent(sizing_ram, config.memory_window_percent, config.use_large_pages);
@@ -1356,11 +1371,13 @@ int main(int argc, char* argv[]) {
             ss << "[!] FATAL ERROR: " << e.what();
             ConsoleDisplay::get().printError(ss.str());
         }
-        res.hard_errors++;
+        res.infrastructure_failure = true;
+        res.infrastructure_error = e.what();
     } catch (...) {
         log.error("FATAL: Unknown exception caught during test execution");
         ConsoleDisplay::get().printError("[!] FATAL ERROR: Unknown exception occurred.");
-        res.hard_errors++;
+        res.infrastructure_failure = true;
+        res.infrastructure_error = "Unknown exception occurred during test execution.";
     }
 
     ConsoleDisplay::get().printLine("");
@@ -1390,6 +1407,9 @@ int main(int argc, char* argv[]) {
         ss << "Time: " << res.duration_seconds << "s";
         ConsoleDisplay::get().printLine(ss.str());
     }
+    if (res.infrastructure_failure) {
+        ConsoleDisplay::get().printError("Infrastructure failure: " + res.infrastructure_error);
+    }
 
     Logger::get().deinit();
 
@@ -1407,6 +1427,7 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
+    if (res.infrastructure_failure) return 2;
     return res.total_errors() == 0 ? 0 : 1;
 }
 

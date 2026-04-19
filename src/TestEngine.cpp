@@ -3,6 +3,7 @@
 #include "Logger.h"
 #include "ConsoleDisplay.h"
 #include "simd_ops.h"
+#include "Utils.h"
 #include <chrono>
 #include <iostream>
 #include <thread>
@@ -12,6 +13,7 @@
 #include <sstream>
 #include <random>
 #include <algorithm>
+#include <condition_variable>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -23,8 +25,54 @@
 
 namespace testsmem4u {
 
+namespace {
+
+bool isKnownFunctionNameInternal(const std::string& name) {
+    return name == "SimpleTest" ||
+           name == "MirrorMove" ||
+           name == "MirrorMove128" ||
+           name == "RefreshStable" ||
+           name == "WalkingOnes" ||
+           name == "WalkingZeros" ||
+           name == "LFSRPattern" ||
+           name == "MovingInversion" ||
+           name == "MovingInversionLFSR" ||
+           name == "MovingInversionWalking" ||
+           name == "BlockMove" ||
+           name == "RowHammer" ||
+           name == "RandomAccess";
+}
+
+class ThreadBarrier {
+public:
+    explicit ThreadBarrier(uint32_t participants)
+        : participants_(participants == 0 ? 1 : participants) {}
+
+    void arriveAndWait() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const uint32_t generation = generation_;
+        if (++arrived_ == participants_) {
+            arrived_ = 0;
+            generation_++;
+            cv_.notify_all();
+            return;
+        }
+        cv_.wait(lock, [&]() { return generation_ != generation; });
+    }
+
+private:
+    const uint32_t participants_;
+    uint32_t arrived_ = 0;
+    uint32_t generation_ = 0;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+};
+
+}
+
 // Static pointer to current TestContext for shutdown handler
 static std::atomic<TestContext*> g_current_context{nullptr};
+static std::atomic<bool> g_rowhammer_large_page_warning_emitted{false};
 
 std::vector<uint32_t> parseTestSequence(const std::string& sequence) {
     std::vector<uint32_t> result;
@@ -33,15 +81,17 @@ std::vector<uint32_t> parseTestSequence(const std::string& sequence) {
     while (std::getline(ss, item, ',')) {
         size_t start = item.find_first_not_of(" \t");
         if (start != std::string::npos) {
-            char* endptr = nullptr;
-            unsigned long val = std::strtoul(item.c_str() + start, &endptr, 10);
-            if (endptr != item.c_str() + start) {
-                result.push_back(static_cast<uint32_t>(val));
+            uint32_t parsed = 0;
+            if (Utils::parseUintStrict(item.substr(start), parsed)) {
+                result.push_back(parsed);
             }
         }
     }
-    if (result.empty()) result.push_back(0);
     return result;
+}
+
+bool isKnownTestFunctionName(const std::string& name) {
+    return isKnownFunctionNameInternal(name);
 }
 
 using namespace simd;
@@ -181,9 +231,16 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         return res;
     }
 
-    if (!region.is_large_pages) {
-        LOG_WARN("RowHammer test effectiveness is significantly reduced without Large Pages (2MB).");
-        LOG_WARN("Try running with Administrator privileges or enable 'Lock Pages in Memory'.");
+    size_t large_page_bytes_in_region = 0;
+    if (region.large_page_bytes > region.base_offset_bytes) {
+        large_page_bytes_in_region = std::min(region.size, region.large_page_bytes - region.base_offset_bytes);
+    }
+    if (large_page_bytes_in_region < region.size) {
+        bool expected = false;
+        if (g_rowhammer_large_page_warning_emitted.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            LOG_WARN("RowHammer test effectiveness is significantly reduced without full Large Page coverage (2MB pages).");
+            LOG_WARN("Try reducing the test size, closing memory-heavy apps, or restarting the system.");
+        }
     }
 
     const uint64_t victim_patterns[2] = { ~0ULL, 0ULL };
@@ -840,8 +897,8 @@ TestResult TestEngine::runTest(TestContext& ctx, const std::string& name, const 
     if (name == "RowHammer") return runRowHammerTest(ctx, region, config, stop);
     if (name == "RandomAccess") return runRandomAccess(ctx, region, config, stop);
     
-    // Warn on invalid test name (GPT report item: invalid names silently ignored)
-    LOG_WARN("Unknown test function name: '%s' - skipping", name.c_str());
+    ctx.setInfrastructureFailure("Unknown test function in active preset: '" + name + "'");
+    LOG_ERROR("Unknown test function name: '%s'", name.c_str());
     return {};
 }
 
@@ -1262,12 +1319,14 @@ TestResult TestEngine::runRegionWork(TestContext& ctx, const MemoryRegion& regio
 
 RunResult TestEngine::runTests(const Config& config) {
     RunResult result = {};
+    g_rowhammer_large_page_warning_emitted.store(false, std::memory_order_release);
 
     MemoryRegion region;
     uint64_t needed_bytes = (uint64_t)config.memory_window_mb * 1024 * 1024;
     if (needed_bytes == 0) {
         LOG_ERROR("Configured memory window is 0 MB. Refusing to run an empty RAM test.");
-        result.hard_errors = 1;
+        result.infrastructure_failure = true;
+        result.infrastructure_error = "Configured memory window is 0 MB.";
         return result;
     }
 
@@ -1301,7 +1360,8 @@ RunResult TestEngine::runTests(const Config& config) {
 
     if (!guard.valid()) {
         LOG_ERROR("Found no suitable memory allocation method. Aborting.");
-        result.hard_errors = 1;
+        result.infrastructure_failure = true;
+        result.infrastructure_error = "No suitable memory allocation method succeeded.";
         return result;
     }
 
@@ -1309,17 +1369,20 @@ RunResult TestEngine::runTests(const Config& config) {
     region.size = guard.size();
     region.base_offset_bytes = 0;
     region.is_large_pages = guard.is_large_pages();
+    region.large_page_bytes = guard.large_page_bytes();
     region.is_locked = guard.is_locked();
 
     if (region.size < needed_bytes) {
         LOG_ERROR("Allocation contract violated: requested %u MB but got only %zu MB. Aborting.",
                   config.memory_window_mb, region.size / (1024 * 1024));
-        result.hard_errors = 1;
+        result.infrastructure_failure = true;
+        result.infrastructure_error = "Allocation contract violated: allocator returned fewer bytes than requested.";
         return result;
     }
     if (try_lock && !region.is_locked) {
         LOG_ERROR("Allocation contract violated: requested locked memory but allocation is not locked. Aborting.");
-        result.hard_errors = 1;
+        result.infrastructure_failure = true;
+        result.infrastructure_error = "Allocation contract violated: requested locked memory but allocation was not locked.";
         return result;
     }
 
@@ -1342,13 +1405,32 @@ RunResult TestEngine::runTests(const Config& config) {
     }
     {
         std::ostringstream ss;
-        ss << "  LargePages: " << (region.is_large_pages ? "Yes" : "No");
+        if (region.large_page_bytes == 0) {
+            ss << "  LargePages: No";
+        } else if (region.large_page_bytes >= region.size) {
+            ss << "  LargePages: Yes (full region)";
+        } else {
+            ss << "  LargePages: Partial (" << (region.large_page_bytes / 1024 / 1024) << " MB of "
+               << (region.size / 1024 / 1024) << " MB)";
+        }
         ConsoleDisplay::get().printLine(ss.str());
     }
     {
         std::ostringstream ss;
-        ss << "  Method:     " << (region.is_large_pages ? "Large Pages" : (region.is_locked ? "VirtualLock/Mlock" : "Standard Malloc (Swappable)"));
+        if (region.large_page_bytes >= region.size) {
+            ss << "  Method:     Large Pages";
+        } else if (region.large_page_bytes > 0 && region.is_locked) {
+            ss << "  Method:     Hybrid (Large Pages + Locked Standard Pages)";
+        } else if (region.is_locked) {
+            ss << "  Method:     VirtualLock/Mlock";
+        } else {
+            ss << "  Method:     Standard Malloc (Swappable)";
+        }
         ConsoleDisplay::get().printLine(ss.str());
+    }
+    if (region.is_locked && region.large_page_bytes < region.size) {
+        ConsoleDisplay::get().printLine("  Info:       Testing remains valid with fully locked memory, but full large-page coverage would improve throughput and RowHammer fidelity.");
+        ConsoleDisplay::get().printLine("              If you want a full large-page run, try closing memory-heavy apps or restarting Windows before starting the test.");
     }
     ConsoleDisplay::get().printLine("");
 
@@ -1380,6 +1462,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     if (threads == 0) threads = 1;
 
     std::vector<std::thread> workers;
+    ThreadBarrier barrier(threads);
 
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -1436,71 +1519,89 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                 if (t == 0) {
                     // Verify memory is still resident before each cycle
                     if (!Platform::checkMemoryResident(region.base, region.size)) {
-                        LOG_ERROR("FATAL: Memory region is no longer fully resident! "
-                                  "RAM may have been reclaimed by the OS. Halting tests.");
+                        LOG_ERROR("FATAL: Memory region is no longer fully resident! RAM may have been reclaimed by the OS. Halting tests.");
                         ConsoleDisplay::get().printError("*** ERROR: Memory lost! OS reclaimed allocated RAM. ***");
                         ConsoleDisplay::get().printError("*** Test results may be unreliable. Stopping. ***");
-                        ctx.requestStop();
-                        break;
+                        ctx.setInfrastructureFailure("Memory residency was lost during the test run.");
+                    } else {
+                        ctx.current_cycle.store(cycle + 1, std::memory_order_release);
+                        LOG_INFO("=== Cycle %u Started ===", cycle + 1);
                     }
-                    ctx.current_cycle.store(cycle + 1, std::memory_order_release);
-                    LOG_INFO("=== Cycle %u Started ===", cycle + 1);
                 }
+                barrier.arriveAndWait();
+                if (ctx.shouldStop()) break;
 
                 uint32_t seq_idx = 0;
                 for (uint32_t test_id : seq) {
+                    barrier.arriveAndWait();
 
                     if (ctx.shouldStop()) break;
-                    if (configs.count(test_id)) {
-                        const TestConfig& tc = configs.at(test_id);
-                        if (!tc.enabled) {
-                            if (t == 0) {
-                                ctx.setActiveTestName("Disabled");
-                                ctx.current_test_idx.store(++seq_idx, std::memory_order_release);
-                                LOG_INFO("Test %u: %s Skipped (disabled)", seq_idx, tc.function.c_str());
-                            }
-                            continue;
-                        }
-
+                    auto it = configs.find(test_id);
+                    if (it == configs.end()) {
                         if (t == 0) {
-                            ctx.setActiveTestName(tc.function);
+                            ctx.setInfrastructureFailure("Test Sequence references undefined test ID " + std::to_string(test_id) + ".");
+                        }
+                        barrier.arriveAndWait();
+                        break;
+                    }
+
+                    const TestConfig& tc = it->second;
+                    if (!tc.enabled) {
+                        if (t == 0) {
+                            ctx.setActiveTestName("Disabled");
                             ctx.current_test_idx.store(++seq_idx, std::memory_order_release);
-                            LOG_INFO("Test %u: %s Started", seq_idx, tc.function.c_str());
-                        } else {
-                            // Non-main threads just increment local counter if needed, or rely on main thread
+                            LOG_INFO("Test %u: %s Skipped (disabled)", seq_idx, tc.function.c_str());
                         }
-                        
-                        auto test_start_time = std::chrono::high_resolution_clock::now();
+                        barrier.arriveAndWait();
+                        continue;
+                    }
 
-                        uint32_t loops = (config.preset.time_percent * tc.time_percent) / 100;
-                        if (loops == 0) loops = 1;
+                    auto test_start_time = std::chrono::high_resolution_clock::now();
+                    if (t == 0) {
+                        ctx.setActiveTestName(tc.function);
+                        ctx.current_test_idx.store(++seq_idx, std::memory_order_release);
+                        LOG_INFO("Test %u: %s Started", seq_idx, tc.function.c_str());
+                    }
+                    barrier.arriveAndWait();
 
-                        for (uint32_t L = 0; L < loops; ++L) {
-                            if (ctx.shouldStop()) break;
-                            TestResult tr = runRegionWork(ctx, my_region, tc, config.halt_on_error);
+                    uint32_t loops = (config.preset.time_percent * tc.time_percent) / 100;
+                    if (loops == 0) loops = 1;
 
-                            ctx.total_hard_errors.fetch_add(tr.hard_errors, std::memory_order_relaxed);
-                            ctx.total_soft_errors.fetch_add(tr.soft_errors, std::memory_order_relaxed);
-                            ctx.total_unverified_errors.fetch_add(tr.unverified_errors, std::memory_order_relaxed);
-                            ctx.total_bytes.fetch_add(tr.bytes_tested, std::memory_order_relaxed);
+                    for (uint32_t L = 0; L < loops; ++L) {
+                        if (ctx.shouldStop()) break;
+                        TestResult tr = runRegionWork(ctx, my_region, tc, config.halt_on_error);
 
-                            if (tr.total_errors() > 0 && config.halt_on_error) {
-                                ctx.requestStop();
-                                break;
-                            }
+                        if (ctx.hasInfrastructureFailure()) {
+                            break;
                         }
-                        
-                        if (t == 0) {
-                             auto test_end_time = std::chrono::high_resolution_clock::now();
-                             double elapsed = std::chrono::duration<double>(test_end_time - test_start_time).count();
-                             LOG_INFO("Test %u: %s Completed in %.2fs", seq_idx, tc.function.c_str(), elapsed);
+
+                        ctx.total_hard_errors.fetch_add(tr.hard_errors, std::memory_order_relaxed);
+                        ctx.total_soft_errors.fetch_add(tr.soft_errors, std::memory_order_relaxed);
+                        ctx.total_unverified_errors.fetch_add(tr.unverified_errors, std::memory_order_relaxed);
+                        ctx.total_bytes.fetch_add(tr.bytes_tested, std::memory_order_relaxed);
+
+                        if (tr.total_errors() > 0 && config.halt_on_error) {
+                            ctx.requestStop();
+                            break;
                         }
                     }
+
+                    barrier.arriveAndWait();
+                    if (t == 0) {
+                         auto test_end_time = std::chrono::high_resolution_clock::now();
+                         double elapsed = std::chrono::duration<double>(test_end_time - test_start_time).count();
+                         LOG_INFO("Test %u: %s Completed in %.2fs", seq_idx, tc.function.c_str(), elapsed);
+                    }
                 }
+                barrier.arriveAndWait();
                 
                 if (t == 0) {
-                     LOG_INFO("=== Cycle %u Completed ===", cycle + 1);
+                     if (!ctx.shouldStop()) {
+                          ctx.completed_cycles.store(cycle + 1, std::memory_order_release);
+                      }
+                     LOG_INFO("=== Cycle %u %s ===", cycle + 1, ctx.shouldStop() ? "Stopped" : "Completed");
                 }
+                barrier.arriveAndWait();
                 cycle++;
             }
         });
@@ -1520,8 +1621,10 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     result.soft_errors = ctx.total_soft_errors.load(std::memory_order_relaxed);
     result.unverified_errors = ctx.total_unverified_errors.load(std::memory_order_relaxed);
     result.bytes_tested = ctx.total_bytes.load(std::memory_order_relaxed);
-    result.cycles_completed = ctx.current_cycle.load(std::memory_order_relaxed);
+    result.cycles_completed = ctx.completed_cycles.load(std::memory_order_relaxed);
     result.duration_seconds = std::chrono::duration<double>(end - start).count();
+    result.infrastructure_failure = ctx.hasInfrastructureFailure();
+    result.infrastructure_error = ctx.getInfrastructureFailureMessage();
 
     // Clear global context pointer before returning
     g_current_context.store(nullptr, std::memory_order_release);

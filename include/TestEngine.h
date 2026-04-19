@@ -6,6 +6,7 @@
 #include <vector>
 #include <map>
 #include <atomic>
+#include <mutex>
 
 namespace testsmem4u {
 
@@ -16,10 +17,14 @@ struct TestContext {
     std::atomic<uint64_t> total_unverified_errors{0};
     std::atomic<uint64_t> total_bytes{0};
     std::atomic<uint32_t> current_cycle{0};
+    std::atomic<uint32_t> completed_cycles{0};
     std::atomic<uint32_t> current_test_idx{0};
+    std::atomic<bool> infrastructure_failure{false};
 
     std::mutex status_mutex;
+    std::mutex failure_mutex;
     char active_test_name[64] = "Idle";
+    std::string infrastructure_error;
 
     void setActiveTestName(const std::string& name) {
         std::lock_guard<std::mutex> lock(status_mutex);
@@ -38,6 +43,24 @@ struct TestContext {
 
     bool shouldStop() {
         return stop_flag.load(std::memory_order_acquire);
+    }
+
+    void setInfrastructureFailure(const std::string& message) {
+        bool expected = false;
+        if (infrastructure_failure.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            std::lock_guard<std::mutex> lock(failure_mutex);
+            infrastructure_error = message;
+        }
+        requestStop();
+    }
+
+    bool hasInfrastructureFailure() const {
+        return infrastructure_failure.load(std::memory_order_acquire);
+    }
+
+    std::string getInfrastructureFailureMessage() {
+        std::lock_guard<std::mutex> lock(failure_mutex);
+        return infrastructure_error;
     }
 };
 

@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <cerrno>
+#include <limits>
 
 namespace testsmem4u {
 
@@ -37,6 +39,26 @@ public:
         return std::strtoull(s.c_str(), &endptr, 16);
     }
 
+    static bool parseHexStrict(const std::string& str, uint64_t& value) {
+        std::string s = trim(str);
+        if (s.empty()) return false;
+
+        if (s.size() > 2 && (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))) {
+            s = s.substr(2);
+        }
+        if (s.empty()) return false;
+
+        errno = 0;
+        char* endptr = nullptr;
+        unsigned long long parsed = std::strtoull(s.c_str(), &endptr, 16);
+        if (errno != 0 || endptr == s.c_str() || *endptr != '\0') {
+            return false;
+        }
+
+        value = static_cast<uint64_t>(parsed);
+        return true;
+    }
+
     static uint32_t parseUint(const std::string& str) {
         std::string s = trim(str);
         if (s.empty()) return 0;
@@ -44,6 +66,22 @@ public:
         char* endptr = nullptr;
         unsigned long val = std::strtoul(s.c_str(), &endptr, 10);
         return static_cast<uint32_t>(val);
+    }
+
+    static bool parseUintStrict(const std::string& str, uint32_t& value) {
+        std::string s = trim(str);
+        if (s.empty()) return false;
+
+        errno = 0;
+        char* endptr = nullptr;
+        unsigned long parsed = std::strtoul(s.c_str(), &endptr, 10);
+        if (errno != 0 || endptr == s.c_str() || *endptr != '\0' ||
+            parsed > std::numeric_limits<uint32_t>::max()) {
+            return false;
+        }
+
+        value = static_cast<uint32_t>(parsed);
+        return true;
     }
 };
 

@@ -8,6 +8,7 @@
 #include <vector>
 #include <cstdio>
 #include <atomic>
+#include <cstdlib>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -424,6 +425,7 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
         VirtualFree(region.base, 0, MEM_RELEASE);
         region.base = nullptr;
         region.size = 0;
+        region.large_page_bytes = 0;
         region.locked_offset = 0;
         region.locked_bytes = 0;
     }
@@ -456,6 +458,7 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
 
     region.locked_offset = 0;
     region.locked_bytes = locked;
+    region.large_page_bytes = 0;
     region.is_locked = (locked >= min_required_bytes);
     
     double lock_percent = (double)locked / (double)size * 100.0;
@@ -472,6 +475,7 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
         VirtualFree(region.base, 0, MEM_RELEASE);
         region.base = nullptr;
         region.size = 0;
+        region.large_page_bytes = 0;
         region.locked_offset = 0;
         region.locked_bytes = 0;
         return false;
@@ -489,6 +493,7 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
         VirtualFree(region.base, 0, MEM_RELEASE);
         region.base = nullptr;
         region.size = 0;
+        region.large_page_bytes = 0;
         region.locked_offset = 0;
         region.locked_bytes = 0;
     }
@@ -498,6 +503,7 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
         LOG_INFO("Allocated %zu MB (Standard)", size / 1024 / 1024);
         region.is_locked = false;
         region.is_large_pages = false;
+        region.large_page_bytes = 0;
         region.locked_offset = 0;
         region.locked_bytes = 0;
         return true;
@@ -618,6 +624,7 @@ bool Platform::tryAllocateLargePages(MemoryRegion& region, size_t size) {
         region.base = static_cast<uint8_t*>(ptr);
         region.size = lp_size;
         region.is_large_pages = true;
+        region.large_page_bytes = lp_size;
         region.is_locked = true;
         region.locked_offset = 0;
         region.locked_bytes = 0;
@@ -709,6 +716,7 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                     region.base = aligned_base;
                     region.size = aligned_total;
                     region.is_large_pages = true;
+                    region.large_page_bytes = aligned_total;
                     region.is_locked = true;
                     region.locked_offset = 0;
                     region.locked_bytes = 0;
@@ -723,16 +731,11 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                     VirtualFree(aligned_base + j * aligned_chunk, 0, MEM_RELEASE);
                 }
             } else {
-                // Final (2MB) candidate: opportunistically try LP per chunk and fallback
-                // only failing chunks to VirtualLock, maximizing LP share while keeping
-                // full requested bytes locked.
+                // Final (2MB) candidate: use a large-page prefix and lock the
+                // remaining tail with VirtualLock so reporting and cleanup can
+                // distinguish full and hybrid large-page coverage.
                 HANDLE hProcess = GetCurrentProcess();
                 bool ws_set = false;
-                bool stop_lp_probing = false;
-                size_t probe_lp_attempts = 0;
-                size_t probe_lp_successes = 0;
-                constexpr size_t PROBE_WINDOW_CHUNKS = 256;
-                constexpr size_t MIN_LP_HIT_PERCENT = 2;
                 size_t lp_chunks = 0;
                 size_t std_locked_chunks = 0;
                 size_t chunks_committed = 0;
@@ -741,48 +744,16 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                 for (size_t i = 0; i < num_chunks; i++) {
                     uint8_t* chunk_addr = aligned_base + i * aligned_chunk;
 
-                    if (!stop_lp_probing) {
+                    if (!ws_set) {
                         void* lp_ptr = VirtualAlloc(chunk_addr, aligned_chunk,
                                                     MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
                                                     PAGE_READWRITE);
                         if (lp_ptr == chunk_addr) {
                             lp_chunks++;
                             chunks_committed++;
-                            if (ws_set) {
-                                probe_lp_attempts++;
-                                probe_lp_successes++;
-                                if (probe_lp_attempts >= PROBE_WINDOW_CHUNKS) {
-                                    size_t hit_rate = (probe_lp_successes * 100) / probe_lp_attempts;
-                                    if (hit_rate < MIN_LP_HIT_PERCENT) {
-                                        stop_lp_probing = true;
-                                        size_t remaining_mb = ((num_chunks - i - 1) * aligned_chunk) / (1024 * 1024);
-                                        LOG_INFO("Chunked LP: LP hit-rate %zu%% in hybrid window; switching remaining %zu MB to VirtualLock tail",
-                                                 hit_rate, remaining_mb);
-                                    }
-                                    probe_lp_attempts = 0;
-                                    probe_lp_successes = 0;
-                                }
-                            }
                             continue;
                         }
 
-                        if (ws_set) {
-                            probe_lp_attempts++;
-                            if (probe_lp_attempts >= PROBE_WINDOW_CHUNKS) {
-                                size_t hit_rate = (probe_lp_successes * 100) / probe_lp_attempts;
-                                if (hit_rate < MIN_LP_HIT_PERCENT) {
-                                    stop_lp_probing = true;
-                                    size_t remaining_mb = ((num_chunks - i) * aligned_chunk) / (1024 * 1024);
-                                    LOG_INFO("Chunked LP: LP hit-rate %zu%% in hybrid window; switching remaining %zu MB to VirtualLock tail",
-                                             hit_rate, remaining_mb);
-                                }
-                                probe_lp_attempts = 0;
-                                probe_lp_successes = 0;
-                            }
-                        }
-                    }
-
-                    if (!ws_set) {
                         SIZE_T remaining_bytes = (num_chunks - i) * aligned_chunk;
                         SIZE_T overhead = 128 * 1024 * 1024;
                         SIZE_T min_ws = remaining_bytes + overhead;
@@ -792,10 +763,8 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                             break;
                         }
                         ws_set = true;
-                        probe_lp_attempts = 0;
-                        probe_lp_successes = 0;
-                        LOG_INFO("Chunked LP: entering hybrid mode at chunk %zu/%zu (%zu MB LP already allocated)",
-                                 i + 1, num_chunks, (lp_chunks * aligned_chunk) / (1024 * 1024));
+                        LOG_INFO("Chunked LP: full large-page coverage unavailable; locking the remaining %zu MB with VirtualLock",
+                                 remaining_bytes / (1024 * 1024));
                     }
 
                     void* std_ptr = VirtualAlloc(chunk_addr, aligned_chunk, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -820,6 +789,7 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                     region.base = aligned_base;
                     region.size = aligned_total;
                     region.is_large_pages = (lp_chunks > 0);
+                    region.large_page_bytes = lp_chunks * aligned_chunk;
                     region.is_locked = true;
                     region.locked_offset = 0;
                     region.locked_bytes = 0; // mixed/sparse locks released by VirtualFree per chunk
@@ -833,7 +803,9 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                 }
 
                 for (size_t j = 0; j < chunks_committed; j++) {
-                    VirtualUnlock(aligned_base + j * aligned_chunk, aligned_chunk);
+                    if (j >= lp_chunks) {
+                        VirtualUnlock(aligned_base + j * aligned_chunk, aligned_chunk);
+                    }
                     VirtualFree(aligned_base + j * aligned_chunk, 0, MEM_RELEASE);
                 }
             }
@@ -861,12 +833,35 @@ bool Platform::tryAllocateMlock(MemoryRegion& region, size_t size) {
 
     if (mlock(region.base, size) == 0) {
         region.is_locked = true;
+        region.large_page_bytes = 0;
         LOG_INFO("Allocated and locked %zu MB using mlock", size / 1024 / 1024);
     } else {
         region.is_locked = false;
+        region.large_page_bytes = 0;
         LOG_WARN("mlock failed: %s", strerror(errno));
     }
 
+    return true;
+}
+
+bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
+    if (region.base) {
+        munmap(region.base, region.size);
+        region.base = nullptr;
+    }
+
+    region.base = static_cast<uint8_t*>(mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (region.base == MAP_FAILED) {
+        region.base = nullptr;
+        return false;
+    }
+
+    region.is_locked = false;
+    region.is_large_pages = false;
+    region.large_page_bytes = 0;
+    region.locked_offset = 0;
+    region.locked_bytes = 0;
+    LOG_INFO("Allocated %zu MB using standard pages (swappable)", size / 1024 / 1024);
     return true;
 }
 
@@ -911,6 +906,7 @@ static bool reserveHugepages(size_t size_needed) {
     // Save original count so we can restore on exit
     if (g_original_hugepages < 0) {
         g_original_hugepages = current_pages;
+        std::atexit(restoreHugepages);
     }
 
     // Calculate how many more pages we need
@@ -1005,6 +1001,7 @@ bool Platform::tryAllocateHugepages(MemoryRegion& region, size_t size) {
     region.base = static_cast<uint8_t*>(ptr);
     region.size = aligned_size;
     region.is_large_pages = true;
+    region.large_page_bytes = aligned_size;
     region.locked_bytes = aligned_size;
     
     LOG_INFO("Allocated %zu MB using hugepages (2MB pages)", aligned_size / 1024 / 1024);
@@ -1018,6 +1015,7 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
     region.base = nullptr;
     region.base_offset_bytes = 0;
     region.is_large_pages = false;
+    region.large_page_bytes = 0;
     region.is_locked = false;
     region.locked_offset = 0;
     region.locked_bytes = 0;
@@ -1070,8 +1068,8 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
         restoreSystemFileCache();
 
         // Large pages failed — fall through to VirtualLock which reliably locks memory
-        LOG_WARN("Large page allocation failed at %zu MB after all defrag attempts. "
-                 "Falling back to VirtualLock to guarantee memory locking.",
+        LOG_INFO("Large page allocation failed at %zu MB after all defrag attempts. "
+                 "Falling back to fully locked standard pages.",
                  region.size / (1024 * 1024));
     }
 
@@ -1100,7 +1098,7 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
         if (tryAllocateHugepages(region, region.size)) {
             return true;
         }
-        LOG_WARN("Hugepage allocation failed at %zu MB, falling back to standard pages with mlock",
+        LOG_INFO("Hugepage allocation failed at %zu MB, falling back to locked standard pages",
                  region.size / (1024 * 1024));
     }
     
@@ -1108,33 +1106,39 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
     if (try_lock) {
          if (tryAllocateMlock(region, region.size)) {
               if (region.is_locked) return true;
-              
+               
               if (!allow_swappable) {
                   LOG_ERROR("mlock failed (Limit: %zu bytes). Aborting to avoid swapping.", region.size);
                   freeMemory(region);
-                  return false;
-              }
+                   return false;
+               }
+           }
+          if (region.base != nullptr) {
+              return allow_swappable;
           }
-          return region.base != nullptr;
+          return false;
     }
 
-    return tryAllocateMlock(region, region.size);
+    return tryAllocateStandard(region, region.size);
 #endif
 }
 
 MemoryGuard Platform::allocateMemoryRAII(size_t size, bool try_large_pages, bool try_lock, bool allow_swappable) {
     MemoryRegion region{};
     if (allocateMemory(region, size, try_large_pages, try_lock, allow_swappable)) {
-        return MemoryGuard(region.base, region.size, region.is_large_pages, region.is_locked, region.locked_offset, region.locked_bytes, region.lp_chunk_size);
+        return MemoryGuard(region.base, region.size, region.is_large_pages, region.large_page_bytes, region.is_locked,
+                           region.locked_offset, region.locked_bytes, region.lp_chunk_size);
     }
     return MemoryGuard();
 }
 
-void MemoryGuard::freeInternal(uint8_t* base, size_t size, bool large_pages, bool locked, size_t locked_offset, size_t locked_bytes, size_t lp_chunk_size) {
+void MemoryGuard::freeInternal(uint8_t* base, size_t size, bool large_pages, size_t large_page_bytes, bool locked,
+                               size_t locked_offset, size_t locked_bytes, size_t lp_chunk_size) {
      MemoryRegion region;
      region.base = base;
      region.size = size;
      region.is_large_pages = large_pages;
+     region.large_page_bytes = large_page_bytes;
      region.is_locked = locked;
      region.locked_offset = locked_offset;
      region.locked_bytes = locked_bytes;
@@ -1149,8 +1153,9 @@ void Platform::freeMemory(MemoryRegion& region) {
     if (region.lp_chunk_size > 0) {
         // Chunked large-page allocation: free each chunk separately
         size_t num_chunks = region.size / region.lp_chunk_size;
+        size_t full_large_page_chunks = region.lp_chunk_size > 0 ? (region.large_page_bytes / region.lp_chunk_size) : 0;
         for (size_t i = 0; i < num_chunks; i++) {
-            if (region.is_locked) {
+            if (region.is_locked && i >= full_large_page_chunks) {
                 VirtualUnlock(region.base + i * region.lp_chunk_size, region.lp_chunk_size);
             }
             VirtualFree(region.base + i * region.lp_chunk_size, 0, MEM_RELEASE);
@@ -1167,10 +1172,8 @@ void Platform::freeMemory(MemoryRegion& region) {
     }
     munmap(region.base, region.size);
 
-    // Restore hugepage reservation to original count
-    if (region.is_large_pages) {
-        restoreHugepages();
-    }
+    // Restore hugepage reservation to original count after any hugepage attempt.
+    restoreHugepages();
 #endif
 
     region.base = nullptr;
@@ -1178,6 +1181,7 @@ void Platform::freeMemory(MemoryRegion& region) {
     region.base_offset_bytes = 0;
     region.is_locked = false;
     region.is_large_pages = false;
+    region.large_page_bytes = 0;
     region.locked_offset = 0;
     region.locked_bytes = 0;
     region.lp_chunk_size = 0;
