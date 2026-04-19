@@ -126,6 +126,11 @@ TARGETS = {
     },
 }
 
+COMPANION_TARGETS = {
+    "windows-x86_64": ["windows-x86_64-v3", "windows-x86_64-v4"],
+    "linux-x86_64": ["linux-x86_64-v3", "linux-x86_64-v4"],
+}
+
 
 def download_zig() -> bool:
     if ZIG_EXE.exists():
@@ -310,6 +315,15 @@ def main() -> int:
         names = list(TARGETS.keys())
     else:
         names = [t.strip() for t in requested.split(",") if t.strip()]
+
+    expanded_names = []
+    seen = set()
+    for name in names:
+        for candidate in [name, *COMPANION_TARGETS.get(name, [])]:
+            if candidate not in seen:
+                expanded_names.append(candidate)
+                seen.add(candidate)
+    names = expanded_names
 
     print(f"[*] Building {len(names)} targets in parallel...")
     ok = True

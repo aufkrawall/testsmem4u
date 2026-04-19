@@ -68,6 +68,76 @@ private:
     std::condition_variable cv_;
 };
 
+struct WorkerAssignment {
+    CpuTarget target;
+    size_t offset = 0;
+    size_t size = 0;
+};
+
+static std::vector<WorkerAssignment> buildWorkerAssignments(const MemoryRegion& region, uint32_t requested_threads) {
+    std::vector<CpuTarget> targets = Platform::getPreferredCpuTargets(requested_threads);
+    if (targets.empty()) {
+        targets.resize(requested_threads == 0 ? 1 : requested_threads);
+    }
+
+    if (requested_threads > 0 && targets.size() > requested_threads) {
+        targets.resize(requested_threads);
+    }
+
+    if (targets.empty()) {
+        targets.push_back(CpuTarget{});
+    }
+
+    const size_t page_size = 4096;
+    const size_t aligned_region_size = (region.size / page_size) * page_size;
+    size_t total_pages = aligned_region_size / page_size;
+    if (total_pages == 0) total_pages = 1;
+
+    std::vector<WorkerAssignment> assignments(targets.size());
+    uint64_t total_weight = 0;
+    for (const auto& target : targets) {
+        total_weight += std::max<uint32_t>(1, target.weight);
+    }
+    if (total_weight == 0) total_weight = targets.size();
+
+    size_t assigned_pages = 0;
+    size_t running_offset = 0;
+    for (size_t i = 0; i < targets.size(); ++i) {
+        assignments[i].target = targets[i];
+        assignments[i].offset = running_offset;
+
+        size_t pages = 0;
+        if (i + 1 == targets.size()) {
+            pages = total_pages - assigned_pages;
+        } else {
+            uint64_t weighted_pages = (static_cast<uint64_t>(total_pages) * std::max<uint32_t>(1, targets[i].weight)) / total_weight;
+            pages = static_cast<size_t>(weighted_pages);
+            size_t remaining_workers = targets.size() - i;
+            size_t remaining_pages = total_pages - assigned_pages;
+            if (pages == 0) pages = 1;
+            if (pages > remaining_pages - (remaining_workers - 1)) {
+                pages = remaining_pages - (remaining_workers - 1);
+            }
+        }
+
+        assignments[i].size = pages * page_size;
+        assigned_pages += pages;
+        running_offset += assignments[i].size;
+    }
+
+    if (!assignments.empty()) {
+        size_t covered = 0;
+        for (const auto& assignment : assignments) {
+            covered += assignment.size;
+        }
+        if (covered < region.size) {
+            assignments.back().size += region.size - covered;
+        }
+    }
+
+    return assignments;
+}
+
 }
 
 // Static pointer to current TestContext for shutdown handler
@@ -1452,7 +1522,8 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     // Set up global stop signal for shutdown handler
     g_current_context.store(&ctx, std::memory_order_release);
 
-    uint32_t hw_threads = std::thread::hardware_concurrency();
+    PlatformInfo platform_info = Platform::detectPlatform();
+    uint32_t hw_threads = platform_info.cpu_cores;
     if (hw_threads == 0) hw_threads = 1;
 
     uint32_t threads = config.cores > 0 ? config.cores : hw_threads;
@@ -1460,6 +1531,9 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     uint32_t max_threads_for_region = static_cast<uint32_t>(std::max<size_t>(1, region.size / 4096));
     threads = std::min(threads, max_threads_for_region);
     if (threads == 0) threads = 1;
+
+    std::vector<WorkerAssignment> assignments = buildWorkerAssignments(region, threads);
+    threads = static_cast<uint32_t>(assignments.size());
 
     std::vector<std::thread> workers;
     ThreadBarrier barrier(threads);
@@ -1502,17 +1576,17 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 
     for (uint32_t t = 0; t < threads; ++t) {
         workers.emplace_back([&, t]() {
-            Platform::setThreadAffinity(t, threads);
-
-            size_t chunk = region.size / threads;
-            chunk = (chunk / 4096) * 4096;
-            size_t offset = t * chunk;
-            size_t size = (t == threads - 1) ? (region.size - offset) : chunk;
+            const WorkerAssignment& assignment = assignments[t];
+            if (!Platform::bindCurrentThread(assignment.target)) {
+                LOG_WARN("Worker %u could not bind to target group=%u cpu=%u", t,
+                         static_cast<unsigned>(assignment.target.group),
+                         static_cast<unsigned>(assignment.target.logical_index));
+            }
 
             MemoryRegion my_region = region;
-            my_region.base += offset;
-            my_region.size = size;
-            my_region.base_offset_bytes += offset;
+            my_region.base += assignment.offset;
+            my_region.size = assignment.size;
+            my_region.base_offset_bytes += assignment.offset;
 
             uint32_t cycle = 0;
             while ((config.cycles == 0 || cycle < config.cycles) && !ctx.shouldStop()) {

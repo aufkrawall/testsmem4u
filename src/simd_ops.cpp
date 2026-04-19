@@ -106,6 +106,18 @@ static SimdCapabilities detect_x86_capabilities() {
     return caps;
 }
 
+#if defined(__AVX2__)
+static inline __m256i load_verify_u256(const uint64_t* src) {
+    return _mm256_loadu_si256((const __m256i*)src);
+}
+#endif
+
+#if defined(__AVX512F__)
+static inline __m512i load_verify_u512(const uint64_t* src) {
+    return _mm512_loadu_si512((const void*)src);
+}
+#endif
+
 #ifdef __clang__
 __attribute__((target("clflushopt")))
 static inline void do_clflushopt(void* ptr) {
@@ -514,13 +526,7 @@ void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t s
         );
 
         for (; i + 8 <= count; i += 8) {
-            // Try to use NT load if aligned (common case with our allocator)
-            __m512i actual;
-            if (((uintptr_t)(src + i) & 63) == 0) {
-                 actual = _mm512_stream_load_si512((void*)(src + i)); 
-            } else {
-                 actual = _mm512_loadu_si512((const void*)(src + i));
-            }
+            __m512i actual = load_verify_u512(src + i);
 
             __mmask8 mask = _mm512_cmpneq_epi64_mask(actual, v_expect);
             if (mask) {
@@ -546,13 +552,7 @@ void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t s
         );
 
         for (; i + 4 <= count; i += 4) {
-            __m256i actual;
-            // Use stream load if aligned to 32 bytes
-            if (((uintptr_t)(src + i) & 31) == 0) {
-                actual = _mm256_stream_load_si256((__m256i*)(src + i));
-            } else {
-                actual = _mm256_loadu_si256((const __m256i*)(src + i));
-            }
+            __m256i actual = load_verify_u256(src + i);
 
             __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
             int mask = _mm256_movemask_epi8(eq);
@@ -597,7 +597,7 @@ void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t star
         __m512i v_idx_step = _mm512_set1_epi64(8);
 
         for (; i + 8 <= count; i += 8) {
-            __m512i actual = _mm512_loadu_si512((const __m512i*)(src + i));
+            __m512i actual = load_verify_u512(src + i);
             __m512i v_mul = _mm512_mullo_epi64(v_idx, v_param1);
             __m512i v_expect = _mm512_xor_si512(v_param0, v_mul);
             __mmask8 mask = _mm512_cmpeq_epi64_mask(actual, v_expect);
@@ -628,12 +628,7 @@ void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t star
         __m256i v_term_step = _mm256_slli_epi64(v_param1, 2); // 4 * param1
 
         for (; i + 4 <= count; i += 4) {
-            __m256i actual;
-            if (((uintptr_t)(src + i) & 31) == 0) {
-                actual = _mm256_stream_load_si256((__m256i*)(src + i));
-            } else {
-                actual = _mm256_loadu_si256((const __m256i*)(src + i));
-            }
+            __m256i actual = load_verify_u256(src + i);
 
             __m256i v_expect = _mm256_xor_si256(v_param0, v_term);
             __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
@@ -670,12 +665,7 @@ void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, s
     if (caps.has_avx512) {
         __m512i v_expect = _mm512_set1_epi64(val);
         for (; i + 8 <= count; i += 8) {
-             __m512i actual;
-             if (((uintptr_t)(src + i) & 63) == 0) {
-                 actual = _mm512_stream_load_si512((void*)(src + i));
-             } else {
-                 actual = _mm512_loadu_si512((const void*)(src + i));
-             }
+             __m512i actual = load_verify_u512(src + i);
 
              __mmask8 mask = _mm512_cmpneq_epi64_mask(actual, v_expect);
              if (mask) {
@@ -693,13 +683,7 @@ void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, s
     if (caps.has_avx2) {
         __m256i v_expect = _mm256_set1_epi64x(val);
         for (; i + 4 <= count; i += 4) {
-            __m256i actual;
-            // Use stream load if aligned to 32 bytes
-            if (((uintptr_t)(src + i) & 31) == 0) {
-                actual = _mm256_stream_load_si256((__m256i*)(src + i));
-            } else {
-                actual = _mm256_loadu_si256((const __m256i*)(src + i));
-            }
+            __m256i actual = load_verify_u256(src + i);
 
             __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
             int mask = _mm256_movemask_epi8(eq);

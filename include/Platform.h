@@ -8,12 +8,28 @@
 
 namespace testsmem4u {
 
+struct CpuTarget {
+    uint16_t group = 0;
+    uint16_t logical_index = 0;
+    uint16_t core_index = 0;
+    uint16_t numa_node = 0;
+    uint8_t efficiency_class = 0;
+    uint8_t scheduling_class = 0;
+    bool smt = false;
+    bool smt_secondary = false;
+    bool parked = false;
+    uint32_t raw_performance = 100;
+    uint32_t weight = 100;
+};
+
 struct PlatformInfo {
     char os_name[32];
     char arch[32];
     uint32_t cpu_cores;
     uint32_t page_size;
     bool large_pages_available;
+    bool heterogeneous_cores = false;
+    std::vector<CpuTarget> cpu_targets;
 };
 
 struct MemoryRegion {
@@ -43,6 +59,8 @@ public:
     static uint64_t getAvailableSystemRAM();
 
     // Process Management
+    static std::vector<CpuTarget> getPreferredCpuTargets(uint32_t max_threads = 0);
+    static bool bindCurrentThread(const CpuTarget& target);
     static bool setThreadAffinity(uint32_t thread_id, uint32_t num_threads);
     static void registerShutdownHandler(void (*callback)());
 
