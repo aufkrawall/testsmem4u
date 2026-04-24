@@ -527,10 +527,6 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
     if (g_shutdown_callback) {
         g_shutdown_callback();
     }
-    
-    // NOTE: Logger::emergencyFlush() removed - may not be safe during shutdown
-    // Rely on normal process exit to flush pending log entries
-
     if (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_BREAK_EVENT ||
         dwCtrlType == CTRL_CLOSE_EVENT || dwCtrlType == CTRL_LOGOFF_EVENT || dwCtrlType == CTRL_SHUTDOWN_EVENT) {
         if (g_shutdown_event && g_shutdown_event != INVALID_HANDLE_VALUE) {
@@ -836,7 +832,7 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
         return false;
     }
 
-    // Set working set size before allocating - CRITICAL for VirtualLock to succeed
+    // Set working set size before allocating so VirtualLock can reserve enough pages.
     HANDLE hProcess = GetCurrentProcess();
     SIZE_T overhead = 128 * 1024 * 1024;
     SIZE_T min_ws = size + overhead;

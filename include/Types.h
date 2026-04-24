@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <memory>
 
@@ -10,7 +11,7 @@ namespace testsmem4u {
 struct TestResult {
     uint64_t hard_errors = 0;
     uint64_t soft_errors = 0;
-    uint64_t unverified_errors = 0;  // Reserved: errors detected but not re-read verified (currently unused, kept for future error-limiting logic)
+    uint64_t unverified_errors = 0;  // Counted mismatches that were not re-read because sample logging is bounded.
     
     uint64_t bytes_tested = 0;
     uint64_t cycles_completed = 0;

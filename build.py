@@ -10,7 +10,6 @@ import argparse
 import os
 import shutil
 import subprocess
-import sys
 import urllib.request
 import zipfile
 import json
@@ -36,6 +35,9 @@ SRC_FILES = [
     PROJECT_ROOT / "src" / "ConfigManager.cpp",
     PROJECT_ROOT / "src" / "ConsoleDisplay.cpp",
 ]
+
+TEST_SRC_FILE = PROJECT_ROOT / "tests" / "test_internal.cpp"
+TEST_SUPPORT_SRC_FILES = [src for src in SRC_FILES if src.name != "main.cpp"]
 
 
 DIST_DIR = PROJECT_ROOT / "dist"
@@ -132,6 +134,47 @@ COMPANION_TARGETS = {
 }
 
 
+def expand_target_names(requested: str) -> list[str]:
+    if requested == "all":
+        names = list(TARGETS.keys())
+    else:
+        names = [t.strip() for t in requested.split(",") if t.strip()]
+
+    expanded_names = []
+    seen = set()
+    for name in names:
+        for candidate in [name, *COMPANION_TARGETS.get(name, [])]:
+            if candidate not in seen:
+                expanded_names.append(candidate)
+                seen.add(candidate)
+    return expanded_names
+
+
+def source_needs_rebuild(src: Path, obj_file: Path) -> bool:
+    if not obj_file.exists():
+        return True
+
+    newest_dependency = src.stat().st_mtime
+    for header in INCLUDE_DIR.glob("*.h"):
+        newest_dependency = max(newest_dependency, header.stat().st_mtime)
+    return newest_dependency >= obj_file.stat().st_mtime
+
+
+def split_compile_link_flags(target: dict) -> tuple[list[str], list[str]]:
+    flags = list(BASE_CXX_FLAGS)
+    target_extra_flags = target.get("extra_flags", [])
+    compile_flags = [f for f in flags if not f.startswith("-Wl")]
+    compile_flags += [
+        f
+        for f in target_extra_flags
+        if not f.startswith("-l") and not f.startswith("-Wl")
+    ]
+
+    link_flags = list(flags)
+    link_flags += target_extra_flags
+    return compile_flags, link_flags
+
+
 def download_zig() -> bool:
     if ZIG_EXE.exists():
         print(f"[*] Zig already installed: {ZIG_EXE}")
@@ -194,20 +237,7 @@ def build_target(name: str) -> bool:
 
     output_path = DIST_DIR / t["output"]
 
-    flags = list(BASE_CXX_FLAGS)
-    target_extra_flags = t.get("extra_flags", [])
-    # Remove linker-only flags from compile step, but keep target CPU/thread flags.
-    compile_flags = [f for f in flags if not f.startswith("-Wl")]
-    compile_flags += [
-        f
-        for f in target_extra_flags
-        if not f.startswith("-l") and not f.startswith("-Wl")
-    ]
-
-    link_flags = list(
-        flags
-    )  # Keep all flags for linking (LTO needs optimization flags)
-    link_flags += target_extra_flags
+    compile_flags, link_flags = split_compile_link_flags(t)
 
     # Base compile command
     base_compile_cmd = [
@@ -228,8 +258,7 @@ def build_target(name: str) -> bool:
         obj_file = obj_dir / (src.stem + t["obj_ext"])
         obj_files.append(obj_file)
 
-        # Check if rebuild needed (simple mtime check)
-        if obj_file.exists() and src.stat().st_mtime < obj_file.stat().st_mtime:
+        if not source_needs_rebuild(src, obj_file):
             continue
 
         jobs.append((base_compile_cmd, src, obj_file))
@@ -292,6 +321,163 @@ def build_target(name: str) -> bool:
     return True
 
 
+def build_tests(run_tests: bool = True) -> bool:
+    if not ZIG_EXE.exists():
+        print("[!] Zig not found. Please run download first.")
+        return False
+
+    if not TEST_SRC_FILE.exists():
+        print(f"[!] Test source not found: {TEST_SRC_FILE}")
+        return False
+
+    target = TARGETS["windows-x86_64"]
+    obj_dir = BUILD_DIR / "obj" / "tests"
+    obj_dir.mkdir(parents=True, exist_ok=True)
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+
+    compile_flags, link_flags = split_compile_link_flags(target)
+    compile_flags = compile_flags + ["-DTESTSMEM4U_TESTING"]
+
+    base_compile_cmd = [
+        str(ZIG_EXE),
+        "c++",
+        "-target",
+        target["zig_target"],
+        *compile_flags,
+        f"-I{INCLUDE_DIR}",
+    ]
+
+    test_sources = [TEST_SRC_FILE, *TEST_SUPPORT_SRC_FILES]
+    obj_files = []
+    jobs = []
+    for src in test_sources:
+        obj_file = obj_dir / (src.stem + target["obj_ext"])
+        obj_files.append(obj_file)
+        if source_needs_rebuild(src, obj_file):
+            jobs.append((base_compile_cmd, src, obj_file))
+
+    cpu_count = os.cpu_count() or 4
+    if jobs:
+        print(f"[*] Compiling {len(jobs)} test objects using {cpu_count} threads...")
+        success = True
+        with concurrent.futures.ThreadPoolExecutor(max_workers=cpu_count) as executor:
+            results = list(executor.map(compile_object, jobs))
+
+            for ok, src, err in results:
+                if not ok:
+                    print(f"[!] Failed to compile {src.name}:")
+                    print(err)
+                    success = False
+                elif err:
+                    print(f"[W] Warnings in {src.name}:")
+                    print(err)
+
+        if not success:
+            return False
+    else:
+        print("[*] Test objects up to date.")
+
+    test_exe = BUILD_DIR / "testsmem4u-tests.exe"
+    print(f"[*] Linking internal tests -> {test_exe}")
+    link_cmd = [
+        str(ZIG_EXE),
+        "c++",
+        "-target",
+        target["zig_target"],
+        *link_flags,
+        *[str(obj) for obj in obj_files],
+        f"-o{test_exe}",
+    ]
+    result = subprocess.run(link_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("[!] Test linking failed:")
+        print(result.stderr)
+        return False
+    if result.stderr.strip():
+        print(f"[W] Test linker warnings:")
+        print(result.stderr)
+
+    if not run_tests:
+        return True
+
+    print("[*] Running internal tests...")
+    result = subprocess.run([str(test_exe)], cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if result.stdout.strip():
+        print(result.stdout)
+    if result.stderr.strip():
+        print(result.stderr)
+    if result.returncode != 0:
+        print(f"[!] Internal tests failed with exit code {result.returncode}")
+        return False
+    return True
+
+
+def write_compile_commands(names: list[str], include_tests: bool = False) -> bool:
+    if not names:
+        names = ["windows-x86_64"]
+
+    entries = []
+    for name in names:
+        if name not in TARGETS:
+            print(f"[!] Unknown target for compile_commands.json: {name}")
+            return False
+
+        target = TARGETS[name]
+        compile_flags, _ = split_compile_link_flags(target)
+        obj_dir = BUILD_DIR / "obj" / name
+
+        for src in SRC_FILES:
+            obj_file = obj_dir / (src.stem + target["obj_ext"])
+            command = [
+                str(ZIG_EXE),
+                "c++",
+                "-target",
+                target["zig_target"],
+                *compile_flags,
+                f"-I{INCLUDE_DIR}",
+                "-c",
+                str(src),
+                "-o",
+                str(obj_file),
+            ]
+            entries.append({
+                "directory": str(PROJECT_ROOT),
+                "command": subprocess.list2cmdline(command),
+                "file": str(src),
+                "output": str(obj_file),
+            })
+
+    if include_tests:
+        target = TARGETS["windows-x86_64"]
+        compile_flags, _ = split_compile_link_flags(target)
+        compile_flags = compile_flags + ["-DTESTSMEM4U_TESTING"]
+        obj_dir = BUILD_DIR / "obj" / "tests"
+        obj_file = obj_dir / (TEST_SRC_FILE.stem + target["obj_ext"])
+        command = [
+            str(ZIG_EXE),
+            "c++",
+            "-target",
+            target["zig_target"],
+            *compile_flags,
+            f"-I{INCLUDE_DIR}",
+            "-c",
+            str(TEST_SRC_FILE),
+            "-o",
+            str(obj_file),
+        ]
+        entries.append({
+            "directory": str(PROJECT_ROOT),
+            "command": subprocess.list2cmdline(command),
+            "file": str(TEST_SRC_FILE),
+            "output": str(obj_file),
+        })
+
+    output_path = PROJECT_ROOT / "compile_commands.json"
+    output_path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+    print(f"[*] Wrote {output_path} ({len(entries)} entries)")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument(
@@ -299,6 +485,21 @@ def main() -> int:
         type=str,
         default="all",
         help=f"Comma-separated: {','.join(TARGETS.keys())} or 'all'",
+    )
+    parser.add_argument(
+        "--tests",
+        action="store_true",
+        help="Build and run the small internal C++ test runner.",
+    )
+    parser.add_argument(
+        "--no-run-tests",
+        action="store_true",
+        help="With --tests, compile and link the test runner without executing it.",
+    )
+    parser.add_argument(
+        "--compile-commands",
+        action="store_true",
+        help="Write compile_commands.json for clangd/LSP tooling.",
     )
     args = parser.parse_args()
 
@@ -310,20 +511,17 @@ def main() -> int:
         print("[!] Failed to download Zig")
         return 1
 
-    requested = args.targets
-    if requested == "all":
-        names = list(TARGETS.keys())
-    else:
-        names = [t.strip() for t in requested.split(",") if t.strip()]
+    names = expand_target_names(args.targets)
+    if not names:
+        print("[!] No build targets requested.")
+        return 1
 
-    expanded_names = []
-    seen = set()
-    for name in names:
-        for candidate in [name, *COMPANION_TARGETS.get(name, [])]:
-            if candidate not in seen:
-                expanded_names.append(candidate)
-                seen.add(candidate)
-    names = expanded_names
+    if args.compile_commands:
+        if not write_compile_commands(names, include_tests=args.tests):
+            return 1
+
+    if args.tests:
+        return 0 if build_tests(run_tests=not args.no_run_tests) else 1
 
     print(f"[*] Building {len(names)} targets in parallel...")
     ok = True

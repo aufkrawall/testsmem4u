@@ -15,6 +15,7 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <sstream>
 #include <thread>

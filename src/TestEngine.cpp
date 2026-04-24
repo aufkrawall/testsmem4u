@@ -5,15 +5,15 @@
 #include "simd_ops.h"
 #include "Utils.h"
 #include <chrono>
-#include <iostream>
 #include <thread>
 #include <atomic>
 #include <vector>
-#include <iomanip>
 #include <sstream>
 #include <random>
 #include <algorithm>
 #include <condition_variable>
+#include <array>
+#include <cstring>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -184,28 +184,41 @@ static inline uint64_t reportAddress(const MemoryRegion& region, const void* ptr
     return static_cast<uint64_t>(region.base_offset_bytes + static_cast<size_t>(byte_ptr - region.base));
 }
 
+static inline size_t globalWordStart(const MemoryRegion& region, size_t local_start_idx = 0) {
+    return (region.base_offset_bytes / sizeof(uint64_t)) + local_start_idx;
+}
+
+static void addUnverifiedOverflow(TestResult& res, size_t total_found, size_t sampled) {
+    if (total_found > sampled) {
+        res.unverified_errors += static_cast<uint64_t>(total_found - sampled);
+    }
+}
+
 size_t TestEngine::verifyAndReport(const MemoryRegion& region, const uint64_t* ptr, size_t count, size_t start_idx,
                                    uint8_t pattern_mode, uint64_t param0, uint64_t param1,
-                                   TestResult& res, TestContext& ctx, const std::string& test_name, bool halt_on_error) {
+                                   TestResult& res, TestContext& ctx, const std::string& test_name, bool halt_on_error,
+                                   size_t max_error_samples) {
     std::vector<std::pair<uint64_t, uint64_t>> errors;
-    errors.reserve(128); // Pre-allocate small amount
+    errors.reserve(std::min<size_t>(128, max_error_samples));
 
+    const size_t global_start_idx = globalWordStart(region, start_idx);
+    size_t found = 0;
     if (pattern_mode == 0) {
-        verify_uniform(ptr, count, param0, errors);
+        found = verify_uniform(ptr, count, param0, errors, max_error_samples);
     } else if (pattern_mode == 1) {
-        verify_pattern_xor(ptr, count, start_idx, param0, param1, errors);
+        found = verify_pattern_xor(ptr, count, global_start_idx, param0, param1, errors, max_error_samples);
     } else {
-        verify_pattern_linear(ptr, count, start_idx, param0, param1, errors);
+        found = verify_pattern_linear(ptr, count, global_start_idx, param0, param1, errors, max_error_samples);
     }
 
-    size_t found = errors.size();
     if (found == 0) return 0;
 
-    for (size_t i = 0; i < found; ++i) {
+    size_t processed_samples = 0;
+    for (size_t i = 0; i < errors.size(); ++i) {
         uint64_t idx = errors[i].first;
         uint64_t first_observed = errors[i].second;
         uint64_t expect;
-        generatePatternValue(start_idx + idx, pattern_mode, param0, param1, expect);
+        generatePatternValue(global_start_idx + idx, pattern_mode, param0, param1, expect);
 
         // Capture first observed value before the forced re-read so soft errors
         // keep actionable transient-value reporting.
@@ -222,11 +235,17 @@ size_t TestEngine::verifyAndReport(const MemoryRegion& region, const uint64_t* p
             LOG_ERROR_DETAIL((test_name + " (Soft/Transient)").c_str(), reportAddress(region, &ptr[idx]), expect, transient);
             res.soft_errors++;
         }
+        ++processed_samples;
         
         if (halt_on_error && res.total_errors() > 0) {
             ctx.requestStop();
             break;
         }
+    }
+
+    addUnverifiedOverflow(res, found, processed_samples);
+    if (halt_on_error && found > 0) {
+        ctx.requestStop();
     }
 
     return found;
@@ -236,6 +255,7 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
     TestResult res = {};
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
+    size_t word_start = globalWordStart(region);
 
     bool use_nt = true;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
@@ -247,13 +267,11 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
         if (config.pattern_mode == 0) {
             generate_pattern_uniform(ptr, count, config.pattern_param0, use_nt);
         } else if (config.pattern_mode == 1) {
-            generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt);
+            generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt, word_start);
         } else {
-            generate_pattern_linear(ptr, count, config.pattern_param0, config.pattern_param1, use_nt);
+            generate_pattern_linear(ptr, count, config.pattern_param0, config.pattern_param1, use_nt, word_start);
         }
 
-        // CRITICAL: Flush entire region from cache to ensure verification reads from RAM
-        // This is essential for detecting real RAM errors vs cache hits
         simd::flush_cache_region(ptr, region.size);
 
         // Verify in blocks (2MB chunks)
@@ -275,7 +293,6 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
 }
 
 TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
-    (void)config;
     TestResult res = {};
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
@@ -289,14 +306,23 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
     
     if (config.parameter > 0) hammer_points = config.parameter;
 
-    // Row size varies by DRAM type: DDR4 typically 8KB, DDR5 typically 32KB
-    // Use 8KB as base stride (conservative for DDR4)
-    // For DDR5, the actual row may be larger but hammering 8KB apart still
-    // creates significant stress on adjacent rows
-    const size_t row_stride_elements = 8192 / 8;
+    const std::array<size_t, 4> row_stride_bytes = {
+        8ULL * 1024ULL,
+        16ULL * 1024ULL,
+        32ULL * 1024ULL,
+        64ULL * 1024ULL,
+    };
     const size_t hammer_iterations = 200000;
 
-    if (row_stride_elements * 3 >= count) {
+    std::vector<size_t> usable_strides;
+    for (size_t stride_bytes : row_stride_bytes) {
+        const size_t stride_elements = stride_bytes / sizeof(uint64_t);
+        if (stride_elements > 0 && stride_elements * 3 < count) {
+            usable_strides.push_back(stride_elements);
+        }
+    }
+
+    if (usable_strides.empty()) {
         LOG_WARN("Region too small for RowHammer test");
         return res;
     }
@@ -330,32 +356,40 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         }
         if (stop && ctx.shouldStop()) break;
 
-        std::uniform_int_distribution<size_t> hammer_dist(0, count - 3 * row_stride_elements - 1);
         volatile uint64_t* vptr = reinterpret_cast<volatile uint64_t*>(ptr);
+        size_t points_remaining = hammer_points;
 
-        for (size_t i = 0; i < hammer_points && !ctx.shouldStop(); ++i) {
-            size_t idxA = hammer_dist(rng);
-            size_t idxB = idxA + row_stride_elements;
-            size_t idxC = idxA + 2 * row_stride_elements;
-            
-            if (idxC >= count) continue;
+        for (size_t stride_index = 0; stride_index < usable_strides.size() && !ctx.shouldStop(); ++stride_index) {
+            const size_t row_stride_elements = usable_strides[stride_index];
+            const size_t strides_left = usable_strides.size() - stride_index;
+            const size_t points_for_stride = std::max<size_t>(1, points_remaining / strides_left);
+            points_remaining -= std::min(points_remaining, points_for_stride);
+            std::uniform_int_distribution<size_t> hammer_dist(0, count - 3 * row_stride_elements - 1);
 
-            for (size_t k = 0; k < hammer_iterations && !ctx.shouldStop(); ++k) {
-                uint64_t pattern = (k & 1) ? aggr_toggle1 : aggr_toggle0;
-                vptr[idxA] = pattern;
-                vptr[idxB] = pattern;
-                vptr[idxC] = pattern;
-                simd::memory_fence();
-                simd::flush_cache_line((void*)&vptr[idxA]);
-                simd::flush_cache_line((void*)&vptr[idxB]);
-                simd::flush_cache_line((void*)&vptr[idxC]);
-                simd::memory_fence();
+            for (size_t i = 0; i < points_for_stride && !ctx.shouldStop(); ++i) {
+                size_t idxA = hammer_dist(rng);
+                size_t idxB = idxA + row_stride_elements;
+                size_t idxC = idxA + 2 * row_stride_elements;
+                
+                if (idxC >= count) continue;
+
+                for (size_t k = 0; k < hammer_iterations && !ctx.shouldStop(); ++k) {
+                    uint64_t pattern = (k & 1) ? aggr_toggle1 : aggr_toggle0;
+                    vptr[idxA] = pattern;
+                    vptr[idxB] = pattern;
+                    vptr[idxC] = pattern;
+                    simd::memory_fence();
+                    simd::flush_cache_line((void*)&vptr[idxA]);
+                    simd::flush_cache_line((void*)&vptr[idxB]);
+                    simd::flush_cache_line((void*)&vptr[idxC]);
+                    simd::memory_fence();
+                }
+
+                vptr[idxA] = victim_fill;
+                vptr[idxB] = victim_fill;
+                vptr[idxC] = victim_fill;
+                simd::sfence();
             }
-
-            vptr[idxA] = victim_fill;
-            vptr[idxB] = victim_fill;
-            vptr[idxC] = victim_fill;
-            simd::sfence();
         }
 
         simd::flush_cache_region(ptr, region.size);
@@ -375,15 +409,15 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
     TestResult res = {};
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
+    size_t word_start = globalWordStart(region);
     bool use_nt = true;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
     size_t block = 256 * 1024;
 
     for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
-        generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt);
+        generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt, word_start);
 
-        // Flush cache before verification for true RAM testing
         simd::flush_cache_region(ptr, region.size);
 
         for (size_t i = 0; i < count; i += block) {
@@ -398,7 +432,6 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
         invert_array(ptr, count, use_nt);
         sfence();
         
-        // Flush cache before verification
         simd::flush_cache_region(ptr, region.size);
 
         // Inverted value: ~(param0 ^ (idx * param1)) = (~param0) ^ (idx * param1)
@@ -478,8 +511,7 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
         }
         sfence();
         
-        // CRITICAL: Flush entire region from cache before verification
-        // This ensures we read from DRAM, not CPU cache
+        // Flush the region before verification so reads come from DRAM, not CPU cache.
         simd::flush_cache_region(ptr, region.size);
 
         for (size_t i = 0; i + 1 < count; i += 2) {
@@ -558,8 +590,7 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
 
     generate_pattern_uniform(ptr, count, config.pattern_param0, true);
 
-    // CRITICAL: Flush cache BEFORE the delay to ensure data is in DRAM during refresh test
-    // If data stays in CPU cache, it's not a valid retention test
+    // Flush before the delay so the retention window exercises DRAM rather than CPU cache.
     simd::flush_cache_region(ptr, region.size);
     simd::memory_fence();
 
@@ -602,14 +633,12 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);
             errors.clear();
-            simd::verify_uniform(ptr + i, n, pattern, errors);
+            size_t found = simd::verify_uniform(ptr + i, n, pattern, errors);
             
-            size_t found = errors.size();
             if (found > 0) {
-                for (size_t k = 0; k < found; ++k) {
+                for (size_t k = 0; k < errors.size(); ++k) {
                     uint64_t offset = i + errors[k].first;
                     uint64_t first_observed = errors[k].second;
-                    // Re-read from DRAM (safe_read_u64 flushes cache internally)
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
 
                     const char* name = invert ? "WalkingZeros" : "WalkingOnes";
@@ -621,7 +650,8 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
                         LOG_ERROR_DETAIL((std::string(name) + " (Soft)").c_str(), reportAddress(region, &ptr[offset]), pattern, first_observed);
                     }
                 }
-                
+                addUnverifiedOverflow(res, found, errors.size());
+                 
                 if (stop) {
                     ctx.requestStop();
                     break;
@@ -642,15 +672,22 @@ TestResult TestEngine::runWalkingZeros(TestContext& ctx, const MemoryRegion& reg
     return runWalkingBit(ctx, region, config, stop, true);
 }
 
-// 64-bit maximal-length Fibonacci LFSR (left-shift)
-// Primitive polynomial: x^64 + x^63 + x^61 + x^60 + 1
-// (reciprocal of the well-known x^64 + x^4 + x^3 + x + 1)
-// Recurrence: s_n = s_{n-1} + s_{n-3} + s_{n-4} + s_{n-64}
-// Period: 2^64 - 1
+// 64-bit maximal-length Galois LFSR using taps 64, 63, 61, 60.
+// The all-zero state is invalid for an LFSR, so callers must seed non-zero.
 static uint64_t lfsr_next(uint64_t val) {
-    uint64_t bit = (val ^ (val >> 2) ^ (val >> 3) ^ (val >> 63)) & 1;
-    return (val << 1) | bit;
+    uint64_t lsb = val & 1ULL;
+    val >>= 1;
+    if (lsb != 0) {
+        val ^= 0xD800000000000000ULL;
+    }
+    return val;
 }
+
+#ifdef TESTSMEM4U_TESTING
+uint64_t test_lfsr_next(uint64_t val) {
+    return lfsr_next(val);
+}
+#endif
 
 TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
     TestResult res = {};
@@ -786,11 +823,10 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);
             errors.clear();
-            simd::verify_uniform(ptr + i, n, pattern, errors);
-            size_t found = errors.size();
-            
+            size_t found = simd::verify_uniform(ptr + i, n, pattern, errors);
+             
             if (found > 0) {
-                for (size_t k = 0; k < found; ++k) {
+                for (size_t k = 0; k < errors.size(); ++k) {
                     uint64_t offset = i + errors[k].first;
                     uint64_t first_observed = errors[k].second;
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
@@ -802,6 +838,7 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
                         LOG_ERROR_DETAIL("MovingInv (Fwd - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
                     }
                 }
+                addUnverifiedOverflow(res, found, errors.size());
 
                 if (stop) {
                     ctx.requestStop();
@@ -826,11 +863,10 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
             i = chunk_start;
 
             errors.clear();
-            simd::verify_uniform(ptr + chunk_start, n, inverted, errors);
-            size_t found = errors.size();
+            size_t found = simd::verify_uniform(ptr + chunk_start, n, inverted, errors);
 
             if (found > 0) {
-                for (size_t k = 0; k < found; ++k) {
+                for (size_t k = 0; k < errors.size(); ++k) {
                     uint64_t offset = chunk_start + errors[k].first;
                     uint64_t first_observed = errors[k].second;
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
@@ -842,7 +878,8 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
                         LOG_ERROR_DETAIL("MovingInv (Bwd - Soft)", reportAddress(region, &ptr[offset]), inverted, first_observed);
                     }
                 }
-                
+                addUnverifiedOverflow(res, found, errors.size());
+                 
                 if (stop) {
                     ctx.requestStop();
                     break;
@@ -881,11 +918,10 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);
             errors.clear();
-            simd::verify_uniform(ptr + i, n, pattern, errors);
-            size_t found = errors.size();
-            
+            size_t found = simd::verify_uniform(ptr + i, n, pattern, errors);
+             
             if (found > 0) {
-                for (size_t k = 0; k < found; ++k) {
+                for (size_t k = 0; k < errors.size(); ++k) {
                     uint64_t offset = i + errors[k].first;
                     uint64_t first_observed = errors[k].second;
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
@@ -897,6 +933,7 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
                         LOG_ERROR_DETAIL("MovInvWalk (Fwd - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
                     }
                 }
+                addUnverifiedOverflow(res, found, errors.size());
 
                 if (stop) {
                     ctx.requestStop();
@@ -921,11 +958,10 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
             i = chunk_start;
 
             errors.clear();
-            simd::verify_uniform(ptr + chunk_start, n, inverted, errors);
-            size_t found = errors.size();
+            size_t found = simd::verify_uniform(ptr + chunk_start, n, inverted, errors);
 
             if (found > 0) {
-                for (size_t k = 0; k < found; ++k) {
+                for (size_t k = 0; k < errors.size(); ++k) {
                     uint64_t offset = chunk_start + errors[k].first;
                     uint64_t first_observed = errors[k].second;
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
@@ -937,7 +973,8 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
                         LOG_ERROR_DETAIL("MovInvWalk (Bwd - Soft)", reportAddress(region, &ptr[offset]), inverted, first_observed);
                     }
                 }
-                
+                addUnverifiedOverflow(res, found, errors.size());
+                 
                 if (stop) {
                     ctx.requestStop();
                     break;
@@ -1141,12 +1178,13 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     TestResult res = {};
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8; // Number of uint64_t elements
+    size_t word_start = globalWordStart(region);
 
     if (count == 0) return res;
 
     // Phase 1: Fill memory with linear pattern (address = value)
     // Use increment pattern: 0, 1, 2, ...
-    simd::generate_pattern_increment(ptr, count, 0, true);
+    simd::generate_pattern_increment(ptr, count, word_start, true);
     sfence();
     simd::flush_cache_region(ptr, region.size);
 
@@ -1156,7 +1194,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     for (size_t i = 0; i < count && !ctx.shouldStop(); i += verify_block) {
         size_t n = (std::min)(verify_block, count - i);
         for (size_t j = 0; j < n; ++j) {
-            uint64_t expected = i + j;
+            uint64_t expected = word_start + i + j;
             uint64_t actual = ptr[i + j];
             if (actual != expected) {
                 // Initial pattern verification failed - memory unstable
@@ -1217,7 +1255,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
             
             // Step 1: Verify location contains expected pattern (address = value)
             // This detects read-path errors and any corruption since initialization
-            uint64_t expected = idx;
+            uint64_t expected = word_start + idx;
             uint64_t actual = ptr[idx];
             
             if (actual != expected) {
@@ -1236,7 +1274,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
             
 // Step 2: Write inverted pattern (regardless of read result)
             // This tests the write path
-            uint64_t inverted = ~idx;
+            uint64_t inverted = ~expected;
             ptr[idx] = inverted;
             simd::sfence();
             simd::flush_cache_line((void*)&ptr[idx]);
@@ -1250,7 +1288,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
             }
             
             // Step 4: Restore original pattern for next iteration
-            ptr[idx] = idx;
+            ptr[idx] = expected;
             simd::sfence();
             simd::flush_cache_line((void*)&ptr[idx]);
             simd::memory_fence();
@@ -1300,11 +1338,10 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
         for (size_t i = 0; i < half_count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, half_count - i);
             errors.clear();
-            simd::verify_uniform(dst + i, n, pattern, errors);
-            size_t found = errors.size();
+            size_t found = simd::verify_uniform(dst + i, n, pattern, errors);
 
             if (found > 0) {
-                for (size_t k = 0; k < found; ++k) {
+                for (size_t k = 0; k < errors.size(); ++k) {
                     uint64_t offset = half_count + i + errors[k].first;
                     uint64_t first_observed = errors[k].second;
                     uint64_t actual = simd::safe_read_u64(&ptr[offset]);
@@ -1316,6 +1353,7 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
                         LOG_ERROR_DETAIL("BlockMove (Dst - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
                     }
                 }
+                addUnverifiedOverflow(res, found, errors.size());
                 if (stop) {
                     ctx.requestStop();
                     break;
@@ -1328,11 +1366,10 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
             for (size_t i = 0; i < half_count && !ctx.shouldStop(); i += block) {
                 size_t n = std::min(block, half_count - i);
                 errors.clear();
-                simd::verify_uniform(src + i, n, pattern, errors);
-                size_t found = errors.size();
+                size_t found = simd::verify_uniform(src + i, n, pattern, errors);
 
                 if (found > 0) {
-                    for (size_t k = 0; k < found; ++k) {
+                    for (size_t k = 0; k < errors.size(); ++k) {
                         uint64_t offset = i + errors[k].first;
                         uint64_t first_observed = errors[k].second;
                         uint64_t actual = simd::safe_read_u64(&ptr[offset]);
@@ -1344,6 +1381,7 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
                             LOG_ERROR_DETAIL("BlockMove (Src - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
                         }
                     }
+                    addUnverifiedOverflow(res, found, errors.size());
                     if (stop) {
                         ctx.requestStop();
                         break;

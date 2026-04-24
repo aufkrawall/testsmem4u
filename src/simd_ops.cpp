@@ -1,4 +1,5 @@
 #include "simd_ops.h"
+#include <atomic>
 #include <cstring>
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -256,7 +257,7 @@ void lfence() {
 }
 
 template<>
-void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt) {
+void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, size_t start_idx) {
     SimdCapabilities caps = getCapabilities();
     (void)caps;
     (void)use_nt;
@@ -265,8 +266,10 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
 #if defined(__AVX512F__)
     if (caps.has_avx512) {
         __m512i v_val = _mm512_set_epi64(
-            param0 + 7 * param1, param0 + 6 * param1, param0 + 5 * param1, param0 + 4 * param1,
-            param0 + 3 * param1, param0 + 2 * param1, param0 + 1 * param1, param0 + 0 * param1
+            param0 + (start_idx + 7) * param1, param0 + (start_idx + 6) * param1,
+            param0 + (start_idx + 5) * param1, param0 + (start_idx + 4) * param1,
+            param0 + (start_idx + 3) * param1, param0 + (start_idx + 2) * param1,
+            param0 + (start_idx + 1) * param1, param0 + (start_idx + 0) * param1
         );
         __m512i v_idx_step = _mm512_set1_epi64(8 * param1);
 
@@ -285,10 +288,10 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
     if (caps.has_avx2 && i + 4 <= count) {
         // Initialize from current i (may be non-zero after AVX512 processed bulk)
         __m256i v_val = _mm256_set_epi64x(
-            param0 + (i + 3) * param1,
-            param0 + (i + 2) * param1,
-            param0 + (i + 1) * param1,
-            param0 + (i + 0) * param1
+            param0 + (start_idx + i + 3) * param1,
+            param0 + (start_idx + i + 2) * param1,
+            param0 + (start_idx + i + 1) * param1,
+            param0 + (start_idx + i + 0) * param1
         );
         __m256i v_idx_step = _mm256_set1_epi64x(4 * param1);
 
@@ -304,7 +307,7 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
 #endif
 
     for (; i < count; ++i) {
-        dst[i] = param0 + (i * param1);
+        dst[i] = param0 + ((start_idx + i) * param1);
     }
     sfence();
 }
@@ -333,7 +336,7 @@ static inline __m256i mul64_avx2(__m256i a, __m256i b) {
 #endif
 
 template<>
-void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt) {
+void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, size_t start_idx) {
     (void)use_nt;
     size_t i = 0;
 #if defined(__AVX512F__) || defined(__AVX2__)
@@ -344,7 +347,8 @@ void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0
     if (caps.has_avx512) {
         __m512i v_param0 = _mm512_set1_epi64(param0);
         __m512i v_param1 = _mm512_set1_epi64(param1);
-        __m512i v_idx = _mm512_set_epi64(7, 6, 5, 4, 3, 2, 1, 0);
+        __m512i v_idx = _mm512_set_epi64(start_idx + 7, start_idx + 6, start_idx + 5, start_idx + 4,
+                                         start_idx + 3, start_idx + 2, start_idx + 1, start_idx);
         __m512i v_idx_step = _mm512_set1_epi64(8);
 
         for (; i + 8 <= count; i += 8) {
@@ -362,17 +366,17 @@ void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0
 #endif
 
 #if defined(__AVX2__)
-    // Optimized AVX2 path - FIXED: removed undefined start_idx dependency
+    // Optimized AVX2 path.
     if (caps.has_avx2 && i + 4 <= count) {
         __m256i v_param0 = _mm256_set1_epi64x(param0);
         __m256i v_param1 = _mm256_set1_epi64x(param1);
         
         // Start indices from current position i: {i+3, i+2, i+1, i}
         __m256i v_idx = _mm256_set_epi64x(
-            static_cast<int64_t>(i + 3), 
-            static_cast<int64_t>(i + 2), 
-            static_cast<int64_t>(i + 1), 
-            static_cast<int64_t>(i)
+            static_cast<int64_t>(start_idx + i + 3),
+            static_cast<int64_t>(start_idx + i + 2),
+            static_cast<int64_t>(start_idx + i + 1),
+            static_cast<int64_t>(start_idx + i)
         );
         
         // Calculate initial term: (idx * param1)
@@ -399,12 +403,10 @@ void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0
 
     // Scalar fallback - guaranteed correct
     for (; i < count; ++i) {
-        dst[i] = param0 ^ (i * param1);
+        dst[i] = param0 ^ ((start_idx + i) * param1);
     }
     sfence();
 }
-
-// NOTE: generate_pattern_moving_inv removed - unused (MovingInversion test uses generate_pattern_uniform)
 
 template<>
 void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t val, bool use_nt) {
@@ -508,8 +510,16 @@ void generate_pattern_increment<uint64_t>(uint64_t* dst, size_t count, uint64_t 
 }
 
 template<>
-void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<std::pair<uint64_t, uint64_t>>& errors) {
+size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1,
+                                       std::vector<std::pair<uint64_t, uint64_t>>& errors, size_t max_error_samples) {
     size_t i = 0;
+    size_t mismatches = 0;
+    auto record_error = [&](size_t offset, uint64_t observed) {
+        ++mismatches;
+        if (errors.size() < max_error_samples) {
+            errors.push_back({offset, observed});
+        }
+    };
 
 #if defined(__AVX512F__) || defined(__AVX2__)
     SimdCapabilities caps = getCapabilities();
@@ -532,7 +542,7 @@ void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t s
             if (mask) {
                 for (int k = 0; k < 8; ++k) {
                     if ((mask >> k) & 1) {
-                         errors.push_back({i + k, src[i + k]});
+                         record_error(i + k, src[i + k]);
                     }
                 }
             }
@@ -559,7 +569,7 @@ void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t s
             if ((uint32_t)mask != 0xFFFFFFFF) {
                 for (size_t k = 0; k < 4; ++k) {
                     if (src[i+k] != (param0 + (start_idx + i + k) * param1)) {
-                       errors.push_back({i + k, src[i + k]});
+                       record_error(i + k, src[i + k]);
                     }
                 }
             }
@@ -570,14 +580,23 @@ void verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t s
 
     for (; i < count; ++i) {
         if (src[i] != (param0 + (start_idx + i) * param1)) {
-            errors.push_back({i, src[i]});
+            record_error(i, src[i]);
         }
     }
+    return mismatches;
 }
 
 template<>
-void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1, std::vector<std::pair<uint64_t, uint64_t>>& errors) {
+size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1,
+                                    std::vector<std::pair<uint64_t, uint64_t>>& errors, size_t max_error_samples) {
     size_t i = 0;
+    size_t mismatches = 0;
+    auto record_error = [&](size_t offset, uint64_t observed) {
+        ++mismatches;
+        if (errors.size() < max_error_samples) {
+            errors.push_back({offset, observed});
+        }
+    };
 
     // NOTE: AVX2 doesn't have native 64-bit integer multiply.
     // Only AVX512 has _mm512_mullo_epi64, so use that if available.
@@ -605,7 +624,7 @@ void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t star
                 for (size_t k = 0; k < 8; ++k) {
                     if (!(mask & (1 << k))) {
                         if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                            errors.push_back({i + k, src[i + k]});
+                            record_error(i + k, src[i + k]);
                         }
                     }
                 }
@@ -637,7 +656,7 @@ void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t star
             if ((uint32_t)mask != 0xFFFFFFFF) {
                 for (size_t k = 0; k < 4; ++k) {
                     if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                        errors.push_back({i + k, src[i + k]});
+                        record_error(i + k, src[i + k]);
                     }
                 }
             }
@@ -649,14 +668,23 @@ void verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t star
     // Scalar fallback - guaranteed correct
     for (; i < count; ++i) {
         if (src[i] != (param0 ^ ((start_idx + i) * param1))) {
-            errors.push_back({i, src[i]});
+            record_error(i, src[i]);
         }
     }
+    return mismatches;
 }
 
 template<>
-void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, std::vector<std::pair<uint64_t, uint64_t>>& errors) {
+size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
+                                std::vector<std::pair<uint64_t, uint64_t>>& errors, size_t max_error_samples) {
     size_t i = 0;
+    size_t mismatches = 0;
+    auto record_error = [&](size_t offset, uint64_t observed) {
+        ++mismatches;
+        if (errors.size() < max_error_samples) {
+            errors.push_back({offset, observed});
+        }
+    };
 #if defined(__AVX512F__) || defined(__AVX2__)
     SimdCapabilities caps = getCapabilities();
 #endif
@@ -671,7 +699,7 @@ void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, s
              if (mask) {
                  for (int k = 0; k < 8; ++k) {
                      if ((mask >> k) & 1) {
-                         errors.push_back({i + k, src[i + k]});
+                         record_error(i + k, src[i + k]);
                      }
                  }
              }
@@ -690,7 +718,7 @@ void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, s
             if ((uint32_t)mask != 0xFFFFFFFF) {
                 for (size_t k = 0; k < 4; ++k) {
                     if (src[i+k] != val) {
-                        errors.push_back({i + k, src[i + k]});
+                        record_error(i + k, src[i + k]);
                     }
                 }
             }
@@ -699,9 +727,10 @@ void verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val, s
 #endif
     for (; i < count; ++i) {
         if (src[i] != val) {
-            errors.push_back({i, src[i]});
+            record_error(i, src[i]);
         }
     }
+    return mismatches;
 }
 
 template<>

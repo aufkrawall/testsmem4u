@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform.h"
+#include "simd_ops.h"
 #include "testsmem4u.h"
 #include "Types.h"
 #include <vector>
@@ -88,7 +89,8 @@ public:
 
     static size_t verifyAndReport(const MemoryRegion& region, const uint64_t* ptr, size_t count, size_t start_idx,
                                    uint8_t pattern_mode, uint64_t param0, uint64_t param1,
-                                   TestResult& res, TestContext& ctx, const std::string& test_name, bool halt_on_error);
+                                   TestResult& res, TestContext& ctx, const std::string& test_name, bool halt_on_error,
+                                   size_t max_error_samples = simd::MAX_ERROR_SAMPLES_PER_BLOCK);
 
 private:
     static RunResult executeSuite(const Config& config, const MemoryRegion& region,
@@ -101,5 +103,9 @@ private:
     static TestResult runTest(TestContext& ctx, const std::string& name, const MemoryRegion& region,
                               const TestConfig& config, bool stop);
 };
+
+#ifdef TESTSMEM4U_TESTING
+uint64_t test_lfsr_next(uint64_t val);
+#endif
 
 } // namespace testsmem4u

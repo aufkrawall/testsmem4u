@@ -3,7 +3,6 @@
 #pragma once
 
 #include <string>
-#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <chrono>
@@ -11,6 +10,8 @@
 #include <sstream>
 #include <thread>
 #include <cstdarg>
+#include <cstdio>
+#include <ctime>
 #include <atomic>
 #include <queue>
 #include <condition_variable>
@@ -48,6 +49,8 @@ public:
         error_count_ = 0;
         error_rate_limit_ = 100;
         suppressed_count_ = 0;
+        dropped_critical_messages_.store(0, std::memory_order_relaxed);
+        dropped_noncritical_messages_.store(0, std::memory_order_relaxed);
         last_summary_time_ = std::chrono::high_resolution_clock::now();
 
         if (!filename.empty()) {
@@ -72,11 +75,6 @@ public:
         if (!running_) return;
 
         running_ = false;
-        
-        {
-            std::lock_guard<std::mutex> queue_lock(queue_mutex_);
-            queue_cv_.notify_all();
-        }
         writer_cv_.notify_one();
         
         if (writer_thread_.joinable()) {
@@ -84,6 +82,14 @@ public:
         }
 
         if (file_handle_) {
+            uint64_t dropped_critical = dropped_critical_messages_.load(std::memory_order_relaxed);
+            uint64_t dropped_noncritical = dropped_noncritical_messages_.load(std::memory_order_relaxed);
+            if (dropped_critical > 0 || dropped_noncritical > 0) {
+                fprintf(file_handle_,
+                        "[LOGGER] Dropped %llu critical and %llu non-critical log messages due to queue backpressure. Final error totals remain authoritative.\n",
+                        (unsigned long long)dropped_critical,
+                        (unsigned long long)dropped_noncritical);
+            }
             fflush(file_handle_);
             fclose(file_handle_);
             file_handle_ = nullptr;
@@ -141,43 +147,6 @@ public:
     
     #undef LOG_FORMAT_ATTR
 
-    void logMemoryAllocation(void* ptr, size_t size, bool locked) {
-        debug("MEMORY ALLOC: ptr=0x%016llX size=%zu locked=%d", (unsigned long long)ptr, size, locked);
-    }
-
-    void logMemoryFree(void* ptr) {
-        debug("MEMORY FREE: ptr=0x%016llX", (unsigned long long)ptr);
-    }
-
-    void logMemoryError(const std::string& operation, uint32_t error_code) {
-        error("MEMORY ERROR: %s failed with code %u", operation.c_str(), error_code);
-    }
-
-    void logTestStart(uint32_t test_num, const std::string& func, uint32_t pattern_mode) {
-        info("TEST START: #%02u func=%s pattern_mode=%u", test_num, func.c_str(), pattern_mode);
-    }
-
-    void logTestProgress(uint32_t test_num, size_t bytes_tested, size_t total, double elapsed) {
-        float percent = (total > 0) ? (100.0f * static_cast<float>(bytes_tested) / static_cast<float>(total)) : 0.0f;
-        debug("TEST PROGRESS: #%02u %zu/%zu (%.1f%%) %.3fs", test_num, bytes_tested, total, percent, elapsed);
-    }
-
-    void logTestComplete(uint32_t test_num, uint64_t errors, size_t bytes_tested, double duration) {
-        if (errors == 0) {
-            info("TEST PASS: #%02u %zu bytes in %.3fs", test_num, bytes_tested, duration);
-        } else {
-            error("TEST FAIL: #%02u %llu errors, %zu bytes in %.3fs", test_num, (unsigned long long)errors, bytes_tested, duration);
-        }
-    }
-
-    void logThreadStart(uint32_t thread_id) {
-        debug("THREAD START: id=%u", thread_id);
-    }
-
-    void logThreadComplete(uint32_t thread_id, double duration) {
-        debug("THREAD DONE: id=%u completed in %.3fs", thread_id, duration);
-    }
-
     void logError(const std::string& context, uint64_t address, uint64_t expected, uint64_t actual) {
         // Build the error message first
         char error_msg[512];
@@ -188,8 +157,8 @@ public:
         // Format with timestamp/thread/elapsed for log file consistency
         std::string formatted = formatLogLine(LogLevel::ERR, std::string(error_msg));
         
-        // CRITICAL: Always log to file FIRST - this must never be skipped
-        // File logging is the authoritative record
+        // File logging is the authoritative record; queue backpressure is
+        // summarized on shutdown if individual lines must be dropped.
         pushMessage(LogLevel::ERR, formatted);
         
         // Handle console output with rate limiting (console is best-effort)
@@ -233,30 +202,17 @@ private:
         
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
-            // Never drop ERROR or higher priority messages - use blocking push
-            // For lower priority, use large cap to prevent OOM
-            const size_t MAX_QUEUE_SIZE = 100000; // 10x larger for WARN/INFO/DEBUG
+            constexpr size_t MAX_QUEUE_SIZE = 100000;
+            constexpr size_t NONCRITICAL_QUEUE_LIMIT = 90000;
             
-            if (level >= LogLevel::ERR) {
-                // Critical: Always queue ERROR messages, even if we have to wait
-                // This ensures no error data is lost
+            if (log_queue_.size() < MAX_QUEUE_SIZE &&
+                (level >= LogLevel::ERR || log_queue_.size() < NONCRITICAL_QUEUE_LIMIT)) {
                 log_queue_.push({level, formatted_message});
             } else {
-                // Non-critical: Drop if queue is extremely full to prevent OOM
-                if (log_queue_.size() < MAX_QUEUE_SIZE) {
-                    log_queue_.push({level, formatted_message});
+                if (level >= LogLevel::ERR) {
+                    dropped_critical_messages_.fetch_add(1, std::memory_order_relaxed);
                 } else {
-                    // Track dropped non-critical messages
-                    static std::atomic<uint64_t> dropped_count{0};
-                    dropped_count++;
-                    // Occasionally log that we're dropping
-                    if ((dropped_count.load() % 1000) == 1) {
-                        char drop_msg[128];
-                        snprintf(drop_msg, sizeof(drop_msg), 
-                            "LOGGER: Dropped %llu non-critical messages due to full queue", 
-                            (unsigned long long)dropped_count.load());
-                        log_queue_.push({LogLevel::WARN, std::string(drop_msg)});
-                    }
+                    dropped_noncritical_messages_.fetch_add(1, std::memory_order_relaxed);
                 }
             }
         }
@@ -271,7 +227,6 @@ private:
 
         if (len < 0) return;
 
-        // FIXED: Allocate len+1 bytes to accommodate null terminator during vsnprintf
         std::string message;
         message.resize(len + 1); // +1 for null terminator during write
         vsnprintf(&message[0], len + 1, format, args);
@@ -309,10 +264,6 @@ private:
                  local_batch.push_back(std::move(log_queue_.front()));
                  log_queue_.pop();
              }
-             
-             // NOTIFY producers that space is available
-             // This wakes up threads blocked in pushMessage
-             queue_cv_.notify_all();
              
              lock.unlock();
 
@@ -359,7 +310,6 @@ private:
     std::mutex console_mutex_; 
     
     std::mutex queue_mutex_;
-    std::condition_variable queue_cv_;  // For producers (blocks when full)
     std::condition_variable writer_cv_; // For consumer (blocks when empty)
     std::queue<std::pair<LogLevel, std::string>> log_queue_;
     std::thread writer_thread_;
@@ -368,6 +318,8 @@ private:
     FILE* file_handle_; // Replaced ofstream
     std::string log_filename_;
     std::atomic<LogLevel> log_level_;
+    std::atomic<uint64_t> dropped_critical_messages_{0};
+    std::atomic<uint64_t> dropped_noncritical_messages_{0};
 
     std::chrono::high_resolution_clock::time_point start_time_;
     
@@ -421,24 +373,11 @@ private:
 
 #ifdef NDEBUG
     #define LOG_DEBUG(...) ((void)0)
-    #define LOG_TEST_PROGRESS(...) ((void)0)
-    #define LOG_THREAD_START(...) ((void)0)
-    #define LOG_THREAD_COMPLETE(...) ((void)0)
 #else
     #define LOG_DEBUG(...) testsmem4u::Logger::get().debug(__VA_ARGS__)
-    #define LOG_TEST_PROGRESS(num, done, total, time) testsmem4u::Logger::get().logTestProgress(num, done, total, time)
-    #define LOG_THREAD_START(id)  testsmem4u::Logger::get().logThreadStart(id)
-    #define LOG_THREAD_COMPLETE(id, duration) testsmem4u::Logger::get().logThreadComplete(id, duration)
 #endif
 
 #define LOG_INFO(...)  testsmem4u::Logger::get().info(__VA_ARGS__)
 #define LOG_WARN(...)  testsmem4u::Logger::get().warn(__VA_ARGS__)
 #define LOG_ERROR(...) testsmem4u::Logger::get().error(__VA_ARGS__)
-
-#define LOG_MEM_ALLOC(ptr, size, locked) testsmem4u::Logger::get().logMemoryAllocation(ptr, size, locked)
-#define LOG_MEM_FREE(ptr)                testsmem4u::Logger::get().logMemoryFree(ptr)
-#define LOG_MEM_ERROR(op, code)          testsmem4u::Logger::get().logMemoryError(op, code)
-
-#define LOG_TEST_START(num, func, mode)  testsmem4u::Logger::get().logTestStart(num, func, mode)
-#define LOG_TEST_DONE(num, errors, bytes, time) testsmem4u::Logger::get().logTestComplete(num, errors, bytes, time)
 #define LOG_ERROR_DETAIL(ctx, addr, exp, act) testsmem4u::Logger::get().logError(ctx, addr, exp, act)

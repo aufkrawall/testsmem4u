@@ -1,6 +1,7 @@
 #include "ConfigManager.h"
 #include "Logger.h"
 #include "Utils.h"
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -27,9 +28,6 @@ bool parseBoolValue(const std::string& raw, bool& value) {
 } // namespace
 
 namespace testsmem4u {
-
-// Local helpers removed, using Utils:: instead
-
 
 bool saveConfig(const std::string& filename, const Config& config) {
     std::ofstream file(filename);
