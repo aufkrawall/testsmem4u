@@ -1,0 +1,19 @@
+# Build artifacts
+build/
+dist/
+
+# Zig toolchain
+tools/zig/
+
+# IDE / LSP
+compile_commands.json
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+
+# OS metadata
+Thumbs.db
+.DS_Store

@@ -1,0 +1,111 @@
+#pragma once
+
+#include "Platform.h"
+#include "simd_ops.h"
+#include "testsmem4u.h"
+#include "Types.h"
+#include <vector>
+#include <map>
+#include <atomic>
+#include <mutex>
+
+namespace testsmem4u {
+
+struct TestContext {
+    std::atomic<bool> stop_flag{false};
+    std::atomic<uint64_t> total_hard_errors{0};
+    std::atomic<uint64_t> total_soft_errors{0};
+    std::atomic<uint64_t> total_unverified_errors{0};
+    std::atomic<uint64_t> total_bytes{0};
+    std::atomic<uint32_t> current_cycle{0};
+    std::atomic<uint32_t> completed_cycles{0};
+    std::atomic<uint32_t> current_test_idx{0};
+    std::atomic<bool> infrastructure_failure{false};
+
+    std::mutex status_mutex;
+    std::mutex failure_mutex;
+    char active_test_name[64] = "Idle";
+    std::string infrastructure_error;
+
+    void setActiveTestName(const std::string& name) {
+        std::lock_guard<std::mutex> lock(status_mutex);
+        size_t len = name.copy(active_test_name, sizeof(active_test_name) - 1);
+        active_test_name[len] = '\0';
+    }
+
+    std::string getActiveTestName() {
+        std::lock_guard<std::mutex> lock(status_mutex);
+        return std::string(active_test_name);
+    }
+
+    void requestStop() {
+        stop_flag.store(true, std::memory_order_release);
+    }
+
+    bool shouldStop() {
+        return stop_flag.load(std::memory_order_acquire);
+    }
+
+    void setInfrastructureFailure(const std::string& message) {
+        bool expected = false;
+        if (infrastructure_failure.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            std::lock_guard<std::mutex> lock(failure_mutex);
+            infrastructure_error = message;
+        }
+        requestStop();
+    }
+
+    bool hasInfrastructureFailure() const {
+        return infrastructure_failure.load(std::memory_order_acquire);
+    }
+
+    std::string getInfrastructureFailureMessage() {
+        std::lock_guard<std::mutex> lock(failure_mutex);
+        return infrastructure_error;
+    }
+};
+
+class TestEngine {
+public:
+    static RunResult runTests(const Config& config);
+    static void requestStop();
+
+    static TestResult runSimpleTest(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runMirrorMove(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runMirrorMove128(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runRefreshStable(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    
+    static TestResult runWalkingBit(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop, bool invert);
+    static TestResult runWalkingOnes(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runWalkingZeros(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    
+    static TestResult runLFSRPattern(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runRowHammerTest(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runMovingInversion(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runMovingInversionLFSR(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runMovingInversionWalking(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runBlockMove(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runRandomAccess(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+
+    static size_t verifyAndReport(const MemoryRegion& region, const uint64_t* ptr, size_t count, size_t start_idx,
+                                   uint8_t pattern_mode, uint64_t param0, uint64_t param1,
+                                   TestResult& res, TestContext& ctx, const std::string& test_name, bool halt_on_error,
+                                   size_t max_error_samples = simd::MAX_ERROR_SAMPLES_PER_BLOCK);
+
+private:
+    static RunResult executeSuite(const Config& config, const MemoryRegion& region,
+                                  const std::vector<uint32_t>& seq,
+                                  const std::map<uint32_t, TestConfig>& configs);
+
+    static TestResult runRegionWork(TestContext& ctx, const MemoryRegion& region, const TestConfig& test_config,
+                                    bool halt_on_error);
+
+    static TestResult runTest(TestContext& ctx, const std::string& name, const MemoryRegion& region,
+                              const TestConfig& config, bool stop);
+};
+
+#ifdef TESTSMEM4U_TESTING
+uint64_t test_lfsr_next(uint64_t val);
+#endif
+
+} // namespace testsmem4u

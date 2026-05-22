@@ -1,0 +1,592 @@
+#!/usr/bin/env python3
+"""testsmem4u Build Script
+
+Downloads Zig, extracts it, and compiles testsmem4u.
+Supports cross-compilation via Zig (Windows x86_64/arm64, Linux x86_64/arm64).
+Uses parallel compilation for object files.
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import urllib.request
+import zipfile
+import json
+import concurrent.futures
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).parent
+ZIG_VERSION = "0.14.0"
+ZIG_URL_WIN_X86_64 = (
+    f"https://ziglang.org/download/{ZIG_VERSION}/zig-windows-x86_64-{ZIG_VERSION}.zip"
+)
+ZIG_DIR = PROJECT_ROOT / "tools" / "zig"
+ZIG_EXE = ZIG_DIR / f"zig-windows-x86_64-{ZIG_VERSION}" / "zig.exe"
+
+INCLUDE_DIR = PROJECT_ROOT / "include"
+SRC_FILES = [
+    PROJECT_ROOT / "src" / "main.cpp",
+    PROJECT_ROOT / "src" / "PresetLoader.cpp",
+    PROJECT_ROOT / "src" / "simd_ops.cpp",
+    PROJECT_ROOT / "src" / "Platform.cpp",
+    PROJECT_ROOT / "src" / "TestEngine.cpp",
+    PROJECT_ROOT / "src" / "ConfigManager.cpp",
+    PROJECT_ROOT / "src" / "ConsoleDisplay.cpp",
+]
+
+TEST_SRC_FILE = PROJECT_ROOT / "tests" / "test_internal.cpp"
+TEST_SUPPORT_SRC_FILES = [src for src in SRC_FILES if src.name != "main.cpp"]
+
+
+DIST_DIR = PROJECT_ROOT / "dist"
+BUILD_DIR = PROJECT_ROOT / "build"
+
+BASE_CXX_FLAGS = [
+    "-std=c++17",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-ffunction-sections",
+    "-fdata-sections",
+    "-fno-rtti",
+    "-fno-asynchronous-unwind-tables",
+    "-fno-ident",
+    "-fno-strict-aliasing",
+    "-funroll-loops",
+]
+
+# Build modes: each mode provides CXX flags and link flags merged with BASE_CXX_FLAGS.
+# "release" is the default (preserves all original behavior).
+BUILD_MODES = {
+    "release": {
+        "cxx_flags": ["-O3", "-flto=thin", "-DNDEBUG", "-fcf-protection=full"],
+        "link_flags": ["-Wl,--gc-sections", "-Wl,-s"],
+        "description": "Optimized release build (default)",
+    },
+    "debug": {
+        "cxx_flags": ["-O0", "-g", "-D_DEBUG"],
+        "link_flags": [],
+        "description": "Debug build with symbols and assertions",
+    },
+    "asan": {
+        "cxx_flags": ["-O1", "-g", "-fsanitize=address", "-fno-omit-frame-pointer", "-D_DEBUG"],
+        "link_flags": ["-fsanitize=address"],
+        "description": "AddressSanitizer (memory safety)",
+    },
+    "ubsan": {
+        "cxx_flags": ["-O1", "-g", "-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-D_DEBUG"],
+        "link_flags": ["-fsanitize=undefined"],
+        "description": "UndefinedBehaviorSanitizer",
+    },
+    "tsan": {
+        "cxx_flags": ["-O1", "-g", "-fsanitize=thread", "-D_DEBUG"],
+        "link_flags": ["-fsanitize=thread"],
+        "description": "ThreadSanitizer (data race detection)",
+    },
+}
+
+HOST_V3_FLAGS = [
+    "-mcpu=x86_64_v3",  # Enable AVX2, FMA, BMI, etc. for x86-64-v3 targets
+    "-mprefer-vector-width=256",  # Prefer 256-bit AVX2 auto-vectorisation on v3 targets
+]
+
+HOST_V4_FLAGS = [
+    "-mcpu=x86_64_v4",  # Enable AVX-512F, AVX-512BW, AVX-512DQ, etc. for x86-64-v4 targets
+    "-mprefer-vector-width=512",  # Prefer 512-bit AVX-512 auto-vectorisation on v4 targets
+]
+
+TARGETS = {
+    "windows-x86_64": {
+        "zig_target": "x86_64-windows-gnu",
+        "output": "testsmem4u-windows-x86_64.exe",
+        "extra_flags": ["-ladvapi32"],
+        "obj_ext": ".obj",
+    },
+    "windows-x86_64-v3": {
+        "zig_target": "x86_64-windows-gnu",
+        "output": "testsmem4u-windows-x86_64-v3.exe",
+        "extra_flags": HOST_V3_FLAGS + ["-ladvapi32"],
+        "obj_ext": ".obj",
+    },
+    "windows-arm64": {
+        "zig_target": "aarch64-windows-gnu",
+        "output": "testsmem4u-windows-arm64.exe",
+        "extra_flags": ["-ladvapi32"],
+        "obj_ext": ".obj",
+    },
+    "linux-x86": {
+        "zig_target": "x86-linux-musl",
+        "output": "testsmem4u-linux-x86",
+        "extra_flags": ["-pthread", "-msse2"],
+        "obj_ext": ".o",
+    },
+    "linux-x86_64": {
+        "zig_target": "x86_64-linux-musl",
+        "output": "testsmem4u-linux-x86_64",
+        "extra_flags": ["-pthread"],
+        "obj_ext": ".o",
+    },
+    "linux-x86_64-v3": {
+        "zig_target": "x86_64-linux-musl",
+        "output": "testsmem4u-linux-x86_64-v3",
+        "extra_flags": ["-pthread"] + HOST_V3_FLAGS,
+        "obj_ext": ".o",
+    },
+    "windows-x86_64-v4": {
+        "zig_target": "x86_64-windows-gnu",
+        "output": "testsmem4u-windows-x86_64-v4.exe",
+        "extra_flags": HOST_V4_FLAGS + ["-ladvapi32"],
+        "obj_ext": ".obj",
+    },
+    "linux-x86_64-v4": {
+        "zig_target": "x86_64-linux-musl",
+        "output": "testsmem4u-linux-x86_64-v4",
+        "extra_flags": ["-pthread"] + HOST_V4_FLAGS,
+        "obj_ext": ".o",
+    },
+    "linux-arm64": {
+        "zig_target": "aarch64-linux-musl",
+        "output": "testsmem4u-linux-arm64",
+        "extra_flags": ["-pthread"],
+        "obj_ext": ".o",
+    },
+}
+
+COMPANION_TARGETS = {
+    "windows-x86_64": ["windows-x86_64-v3", "windows-x86_64-v4"],
+    "linux-x86_64": ["linux-x86_64-v3", "linux-x86_64-v4"],
+}
+
+
+def expand_target_names(requested: str) -> list[str]:
+    if requested == "all":
+        names = list(TARGETS.keys())
+    else:
+        names = [t.strip() for t in requested.split(",") if t.strip()]
+
+    expanded_names = []
+    seen = set()
+    for name in names:
+        for candidate in [name, *COMPANION_TARGETS.get(name, [])]:
+            if candidate not in seen:
+                expanded_names.append(candidate)
+                seen.add(candidate)
+    return expanded_names
+
+
+def source_needs_rebuild(src: Path, obj_file: Path) -> bool:
+    if not obj_file.exists():
+        return True
+
+    newest_dependency = src.stat().st_mtime
+    for header in INCLUDE_DIR.glob("*.h"):
+        newest_dependency = max(newest_dependency, header.stat().st_mtime)
+    return newest_dependency >= obj_file.stat().st_mtime
+
+
+_current_build_mode = "release"
+
+def split_compile_link_flags(target: dict) -> tuple[list[str], list[str]]:
+    mode = BUILD_MODES[_current_build_mode]
+    flags = list(BASE_CXX_FLAGS) + list(mode["cxx_flags"])
+    target_extra_flags = target.get("extra_flags", [])
+    compile_flags = [f for f in flags if not f.startswith("-Wl")]
+    compile_flags += [
+        f
+        for f in target_extra_flags
+        if not f.startswith("-l") and not f.startswith("-Wl")
+    ]
+
+    link_flags = list(BASE_CXX_FLAGS) + list(mode["link_flags"]) + list(mode["cxx_flags"])
+    link_flags += target_extra_flags
+    return compile_flags, link_flags
+
+
+def download_zig() -> bool:
+    if ZIG_EXE.exists():
+        print(f"[*] Zig already installed: {ZIG_EXE}")
+        return True
+
+    ZIG_DIR.mkdir(parents=True, exist_ok=True)
+    zip_path = ZIG_DIR / f"zig-windows-x86_64-{ZIG_VERSION}.zip"
+
+    print(f"[*] Downloading Zig {ZIG_VERSION}...")
+    print(f"[*] URL: {ZIG_URL_WIN_X86_64}")
+
+    try:
+        urllib.request.urlretrieve(ZIG_URL_WIN_X86_64, zip_path)
+        print(f"[*] Downloaded {zip_path.name}")
+
+        print("[*] Extracting...")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(ZIG_DIR)
+
+        zip_path.unlink(missing_ok=True)
+        return ZIG_EXE.exists()
+    except Exception as e:
+        print(f"[!] Error downloading Zig: {e}")
+        return False
+
+
+def compile_object(args):
+    """Compiles a single source file to an object file."""
+    cmd, src_file, obj_file = args
+    # Construct command: zig c++ [flags] -c src_file -o obj_file
+    full_cmd = cmd + ["-c", str(src_file), "-o", str(obj_file)]
+
+    try:
+        result = subprocess.run(
+            full_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            return (False, src_file, result.stderr)
+        # Return warnings from successful compilation too
+        return (True, src_file, result.stderr if result.stderr.strip() else None)
+    except Exception as e:
+        return (False, src_file, str(e))
+
+
+def build_target(name: str) -> bool:
+    if name not in TARGETS:
+        print(f"[!] Unknown target: {name}")
+        return False
+
+    if not ZIG_EXE.exists():
+        print("[!] Zig not found. Please run download first.")
+        return False
+
+    t = TARGETS[name]
+    DIST_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Create object directory for this target and build mode
+    obj_dir = BUILD_DIR / "obj" / _current_build_mode / name
+    obj_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = DIST_DIR / t["output"]
+
+    compile_flags, link_flags = split_compile_link_flags(t)
+
+    # Base compile command
+    base_compile_cmd = [
+        str(ZIG_EXE),
+        "c++",
+        "-target",
+        t["zig_target"],
+        *compile_flags,
+        f"-I{INCLUDE_DIR}",
+    ]
+
+    print(f"[*] Building {name} objects...")
+
+    # Prepare jobs
+    jobs = []
+    obj_files = []
+    for src in SRC_FILES:
+        obj_file = obj_dir / (src.stem + t["obj_ext"])
+        obj_files.append(obj_file)
+
+        if not source_needs_rebuild(src, obj_file):
+            continue
+
+        jobs.append((base_compile_cmd, src, obj_file))
+
+    # Run parallel compilation
+    cpu_count = os.cpu_count() or 4
+    if jobs:
+        print(f"[*] Compiling {len(jobs)} files using {cpu_count} threads...")
+        success = True
+        with concurrent.futures.ThreadPoolExecutor(max_workers=cpu_count) as executor:
+            results = list(executor.map(compile_object, jobs))
+
+            for ok, src, err in results:
+                if not ok:
+                    print(f"[!] Failed to compile {src.name}:")
+                    print(err)
+                    success = False
+                elif err:
+                    print(f"[W] Warnings in {src.name}:")
+                    print(err)
+
+        if not success:
+            return False
+    else:
+        print("[*] All objects up to date.")
+
+    # Link step
+    print(f"[*] Linking {name} -> {output_path}")
+    link_cmd = [
+        str(ZIG_EXE),
+        "c++",
+        "-target",
+        t["zig_target"],
+        *link_flags,
+        *[str(obj) for obj in obj_files],
+        f"-o{output_path}",
+    ]
+
+    result = subprocess.run(link_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("[!] Linking failed:")
+        print(result.stderr)
+        return False
+
+    if result.stdout.strip():
+        print(result.stdout)
+    if result.stderr.strip():
+        print(f"[W] Linker warnings for {name}:")
+        print(result.stderr)
+
+    if output_path.exists():
+        size = output_path.stat().st_size
+        print(f"[*] OK: {size:,} bytes ({size / 1024:.1f} KB)")
+
+    # Copy config files to dist
+    for cfg in PROJECT_ROOT.glob("*.cfg"):
+        shutil.copy2(cfg, DIST_DIR / cfg.name)
+        print(f"[*] Copied {cfg.name}")
+
+    return True
+
+
+def build_tests(run_tests: bool = True) -> bool:
+    if not ZIG_EXE.exists():
+        print("[!] Zig not found. Please run download first.")
+        return False
+
+    if not TEST_SRC_FILE.exists():
+        print(f"[!] Test source not found: {TEST_SRC_FILE}")
+        return False
+
+    target = TARGETS["windows-x86_64"]
+    obj_dir = BUILD_DIR / "obj" / _current_build_mode / "tests"
+    obj_dir.mkdir(parents=True, exist_ok=True)
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+
+    compile_flags, link_flags = split_compile_link_flags(target)
+    compile_flags = compile_flags + ["-DTESTSMEM4U_TESTING"]
+
+    base_compile_cmd = [
+        str(ZIG_EXE),
+        "c++",
+        "-target",
+        target["zig_target"],
+        *compile_flags,
+        f"-I{INCLUDE_DIR}",
+    ]
+
+    test_sources = [TEST_SRC_FILE, *TEST_SUPPORT_SRC_FILES]
+    obj_files = []
+    jobs = []
+    for src in test_sources:
+        obj_file = obj_dir / (src.stem + target["obj_ext"])
+        obj_files.append(obj_file)
+        if source_needs_rebuild(src, obj_file):
+            jobs.append((base_compile_cmd, src, obj_file))
+
+    cpu_count = os.cpu_count() or 4
+    if jobs:
+        print(f"[*] Compiling {len(jobs)} test objects using {cpu_count} threads...")
+        success = True
+        with concurrent.futures.ThreadPoolExecutor(max_workers=cpu_count) as executor:
+            results = list(executor.map(compile_object, jobs))
+
+            for ok, src, err in results:
+                if not ok:
+                    print(f"[!] Failed to compile {src.name}:")
+                    print(err)
+                    success = False
+                elif err:
+                    print(f"[W] Warnings in {src.name}:")
+                    print(err)
+
+        if not success:
+            return False
+    else:
+        print("[*] Test objects up to date.")
+
+    test_exe = BUILD_DIR / "testsmem4u-tests.exe"
+    print(f"[*] Linking internal tests -> {test_exe}")
+    link_cmd = [
+        str(ZIG_EXE),
+        "c++",
+        "-target",
+        target["zig_target"],
+        *link_flags,
+        *[str(obj) for obj in obj_files],
+        f"-o{test_exe}",
+    ]
+    result = subprocess.run(link_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("[!] Test linking failed:")
+        print(result.stderr)
+        return False
+    if result.stderr.strip():
+        print(f"[W] Test linker warnings:")
+        print(result.stderr)
+
+    if not run_tests:
+        return True
+
+    print("[*] Running internal tests...")
+    result = subprocess.run([str(test_exe)], cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if result.stdout.strip():
+        print(result.stdout)
+    if result.stderr.strip():
+        print(result.stderr)
+    if result.returncode != 0:
+        print(f"[!] Internal tests failed with exit code {result.returncode}")
+        return False
+    return True
+
+
+def write_compile_commands(names: list[str], include_tests: bool = False) -> bool:
+    if not names:
+        names = ["windows-x86_64"]
+
+    entries = []
+    for name in names:
+        if name not in TARGETS:
+            print(f"[!] Unknown target for compile_commands.json: {name}")
+            return False
+
+        target = TARGETS[name]
+        compile_flags, _ = split_compile_link_flags(target)
+        obj_dir = BUILD_DIR / "obj" / _current_build_mode / name
+
+        for src in SRC_FILES:
+            obj_file = obj_dir / (src.stem + target["obj_ext"])
+            command = [
+                str(ZIG_EXE),
+                "c++",
+                "-target",
+                target["zig_target"],
+                *compile_flags,
+                f"-I{INCLUDE_DIR}",
+                "-c",
+                str(src),
+                "-o",
+                str(obj_file),
+            ]
+            entries.append({
+                "directory": ".",
+                "command": subprocess.list2cmdline(command),
+                "file": str(src.relative_to(PROJECT_ROOT)),
+                "output": str(obj_file.relative_to(PROJECT_ROOT)),
+            })
+
+    if include_tests:
+        target = TARGETS["windows-x86_64"]
+        compile_flags, _ = split_compile_link_flags(target)
+        compile_flags = compile_flags + ["-DTESTSMEM4U_TESTING"]
+        obj_dir = BUILD_DIR / "obj" / _current_build_mode / "tests"
+        obj_file = obj_dir / (TEST_SRC_FILE.stem + target["obj_ext"])
+        command = [
+            str(ZIG_EXE),
+            "c++",
+            "-target",
+            target["zig_target"],
+            *compile_flags,
+            f"-I{INCLUDE_DIR}",
+            "-c",
+            str(TEST_SRC_FILE),
+            "-o",
+            str(obj_file),
+        ]
+        entries.append({
+            "directory": ".",
+            "command": subprocess.list2cmdline(command),
+            "file": str(TEST_SRC_FILE.relative_to(PROJECT_ROOT)),
+            "output": str(obj_file.relative_to(PROJECT_ROOT)),
+        })
+
+    output_path = PROJECT_ROOT / "compile_commands.json"
+    output_path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+    print(f"[*] Wrote {output_path} ({len(entries)} entries)")
+    return True
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument(
+        "--targets",
+        type=str,
+        default="all",
+        help=f"Comma-separated: {','.join(TARGETS.keys())} or 'all'",
+    )
+    parser.add_argument(
+        "--tests",
+        action="store_true",
+        help="Build and run the small internal C++ test runner.",
+    )
+    parser.add_argument(
+        "--no-run-tests",
+        action="store_true",
+        help="With --tests, compile and link the test runner without executing it.",
+    )
+    parser.add_argument(
+        "--compile-commands",
+        action="store_true",
+        help="Write compile_commands.json for clangd/LSP tooling.",
+    )
+    parser.add_argument(
+        "--build-mode",
+        type=str,
+        default="release",
+        choices=list(BUILD_MODES.keys()),
+        help=f"Build mode: {', '.join(f'{k} ({v["description"]})' for k, v in BUILD_MODES.items())}",
+    )
+    args = parser.parse_args()
+
+    print("=" * 60)
+    print("  testsmem4u Build Script (Multi-threaded)")
+    print("=" * 60)
+
+    if not download_zig():
+        print("[!] Failed to download Zig")
+        return 1
+
+    # Set build mode globally for flag resolution
+    global _current_build_mode
+    _current_build_mode = args.build_mode
+    mode_info = BUILD_MODES[args.build_mode]
+    print(f"[*] Build mode: {args.build_mode} ({mode_info['description']})")
+
+    names = expand_target_names(args.targets)
+    if not names:
+        print("[!] No build targets requested.")
+        return 1
+
+    if args.compile_commands:
+        if not write_compile_commands(names, include_tests=args.tests):
+            return 1
+
+    if args.tests:
+        return 0 if build_tests(run_tests=not args.no_run_tests) else 1
+
+    print(f"[*] Building {len(names)} targets in parallel...")
+    ok = True
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(names)) as executor:
+        future_to_target = {executor.submit(build_target, n): n for n in names}
+        for future in concurrent.futures.as_completed(future_to_target):
+            name = future_to_target[future]
+            try:
+                if not future.result():
+                    print(f"[!] Build failed for target: {name}")
+                    ok = False
+            except Exception as e:
+                print(f"[!] Exception building target {name}: {e}")
+                ok = False
+
+    if ok:
+        print("\nBuild complete.")
+        print(f"Outputs: {DIST_DIR}")
+        return 0
+
+    print("\nBuild failed.")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
