@@ -2,8 +2,13 @@
 build/
 dist/
 
-# Zig toolchain
+# Toolchains (auto-downloaded)
 tools/zig/
+tools/mingw/
+
+# Python cache
+__pycache__/
+.cache/
 
 # IDE / LSP
 compile_commands.json

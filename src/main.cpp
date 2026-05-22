@@ -467,6 +467,7 @@ struct CliOptions {
     bool show_config = false;
     bool dry_run = false;
     bool no_config = false;
+    bool aggressive_defrag = false;
 
     bool config_path_set = false;
     bool preset_specified = false;
@@ -689,7 +690,10 @@ static void printUsage() {
     std::cout << "      --large-pages        Prefer large pages / hugepages\n";
     std::cout << "      --no-large-pages     Disable large pages / hugepages\n";
     std::cout << "      --show-config        Print the resolved configuration before execution\n";
-    std::cout << "      --dry-run            Validate inputs, print config, and exit\n\n";
+    std::cout << "      --dry-run            Validate inputs, print config, and exit\n";
+    std::cout << "      --aggressive-defrag  Enable system-wide memory defragmentation (standby list purge,\n";
+    std::cout << "                             working set trim, file cache disable). May impact other\n";
+    std::cout << "                             running processes. Off by default.\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << kProgramName << " --yes --preset default.cfg\n";
     std::cout << "  " << kProgramName << " --memory 80% --cycles 5 --show-config\n";
@@ -797,6 +801,10 @@ static bool parseCliOptions(int argc, char* argv[], CliOptions& options, std::st
         }
         if (arg == "--no-config") {
             options.no_config = true;
+            continue;
+        }
+        if (arg == "--aggressive-defrag") {
+            options.aggressive_defrag = true;
             continue;
         }
         if (arg == "--halt-on-error") {
@@ -1185,20 +1193,22 @@ Config runConfigWizard() {
     } else if (input.back() == '%') {
         std::string num_part = input.substr(0, input.size() - 1);
         uint32_t pct;
-        if (parseUintOrDefault(num_part, pct, 85)) {
+        if (parseUint32Strict(num_part, pct)) {
             if (pct > 100) pct = 100;
             config.memory_window_percent = pct;
             config.memory_window_mb = 0;
         } else {
+            ConsoleDisplay::get().printLine("[!] Invalid percentage value. Using default 85%.");
             config.memory_window_percent = 85;
             config.memory_window_mb = 0;
         }
     } else {
         uint32_t mb;
-        if (parseUintOrDefault(input, mb, 0)) {
+        if (parseUint32Strict(input, mb) && mb > 0) {
             config.memory_window_mb = mb;
             config.memory_window_percent = 0;
         } else {
+            ConsoleDisplay::get().printLine("[!] Invalid MB value. Using default 85%.");
             config.memory_window_mb = 0;
             config.memory_window_percent = 85;
         }
@@ -1455,6 +1465,7 @@ int main(int argc, char* argv[]) {
 
     reportMemoryWindowAdjustment(requested_window_mb, config.memory_window_mb);
     config.debug_mode = cli.debug;
+    Platform::setAggressiveDefrag(cli.aggressive_defrag);
 
     {
         std::ostringstream ss;

@@ -548,6 +548,78 @@ void testErrorClassification() {
            "Error classification: no soft errors from deliberate modifications");
 }
 
+void testSimpleEndToEnd() {
+    constexpr size_t kTestSize = 4ULL * 1024 * 1024; // 4MB
+    auto guard = Platform::allocateMemoryRAII(kTestSize, false, false, true);
+    expect(guard.valid(), "End-to-end: memory allocation succeeds");
+
+    if (!guard.valid()) return;
+
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    region.base_offset_bytes = 0;
+    region.is_large_pages = guard.is_large_pages();
+    region.large_page_bytes = guard.large_page_bytes();
+    region.is_locked = guard.is_locked();
+
+    TestConfig tc;
+    tc.function = "SimpleTest";
+    tc.enabled = true;
+    tc.pattern_mode = 0;
+    tc.pattern_param0 = 0xDEADBEEFCAFEBABEULL;
+    tc.pattern_param1 = 0;
+    tc.parameter = 1;
+
+    TestContext ctx;
+    TestResult res = TestEngine::runSimpleTest(ctx, region, tc, false);
+
+    expect(res.hard_errors == 0,
+           "End-to-end SimpleTest: no hard errors on clean run");
+    expect(res.soft_errors == 0,
+           "End-to-end SimpleTest: no soft errors on clean run");
+    expect(res.bytes_tested >= region.size,
+           "End-to-end SimpleTest: at least region size bytes tested");
+    expect(!ctx.hasInfrastructureFailure(),
+           "End-to-end SimpleTest: no infrastructure failure");
+}
+
+void testSimpleEndToEndWalkingOnes() {
+    constexpr size_t kTestSize = 1ULL * 1024 * 1024; // 1MB
+    auto guard = Platform::allocateMemoryRAII(kTestSize, false, false, true);
+    expect(guard.valid(), "End-to-end WalkingOnes: memory allocation succeeds");
+
+    if (!guard.valid()) return;
+
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    region.base_offset_bytes = 0;
+    region.is_large_pages = guard.is_large_pages();
+    region.large_page_bytes = guard.large_page_bytes();
+    region.is_locked = guard.is_locked();
+
+    TestConfig tc;
+    tc.function = "WalkingOnes";
+    tc.enabled = true;
+    tc.pattern_mode = 0;
+    tc.pattern_param0 = 0;
+    tc.pattern_param1 = 0;
+    tc.parameter = 1;
+
+    TestContext ctx;
+    TestResult res = TestEngine::runWalkingOnes(ctx, region, tc, false);
+
+    expect(res.hard_errors == 0,
+           "End-to-end WalkingOnes: no hard errors on clean run");
+    expect(res.soft_errors == 0,
+           "End-to-end WalkingOnes: no soft errors on clean run");
+    expect(res.bytes_tested >= region.size,
+           "End-to-end WalkingOnes: at least region size bytes tested");
+    expect(!ctx.hasInfrastructureFailure(),
+           "End-to-end WalkingOnes: no infrastructure failure");
+}
+
 } // namespace
 
 int main() {
@@ -587,6 +659,10 @@ int main() {
     testRunResultMerge();
     testMemoryAllocationRoundTrip();
     testErrorClassification();
+
+    // End-to-end tests with real memory allocation
+    testSimpleEndToEnd();
+    testSimpleEndToEndWalkingOnes();
 
     ConsoleDisplay::get().setTestingActive(false);
 

@@ -70,6 +70,10 @@ public:
     // Safe memory allocation with bounds checking
     static uint64_t getMaxTestableMemory(uint64_t total_ram, uint32_t percent_requested);
     
+    // Control system-wide memory defragmentation (standby list purge, working set trim, etc.)
+    static void setAggressiveDefrag(bool enabled);
+    static bool isAggressiveDefrag();
+
     // Capability Check
     static bool hasMemoryLockPrivilege();
     

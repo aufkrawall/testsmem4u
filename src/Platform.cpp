@@ -69,6 +69,7 @@ static int g_original_hugepages = -1;
 
 namespace {
 
+std::atomic<bool> g_aggressive_defrag{false};
 std::atomic<bool> g_cpu_targets_ready{false};
 std::vector<CpuTarget> g_cached_cpu_targets;
 PlatformInfo g_cached_platform_info{};
@@ -1521,45 +1522,59 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
     FileCacheGuard cache_guard;
 
     if (try_large_pages) {
-        // Disable file cache once before the first defrag. The guard destructor
-        // will re-enable it on any exit path (success, failure, or exception).
-        cache_guard.disable();
+        if (g_aggressive_defrag.load(std::memory_order_relaxed)) {
+            // Disable file cache once before the first defrag. The guard destructor
+            // will re-enable it on any exit path (success, failure, or exception).
+            cache_guard.disable();
 
-        // Step 1: Pre-defrag to maximize contiguous 2MB regions before first attempt
-        LOG_INFO("Defragmenting physical memory before large page allocation...");
-        defragPhysicalMemory();
-
-        if (tryAllocateLargePages(region, region.size)) {
-            return true;
-        }
-
-        // Step 2: More aggressive defrag — multiple rounds with longer pauses
-        LOG_INFO("Large page allocation failed at %zu MB, performing aggressive defragmentation...",
-                 region.size / (1024 * 1024));
-        for (uint32_t round = 1; round <= 3; ++round) {
+            // Step 1: Pre-defrag to maximize contiguous 2MB regions before first attempt
+            LOG_INFO("Defragmenting physical memory before large page allocation...");
             defragPhysicalMemory();
-            Sleep(500 * round); // Increasing delay: 500ms, 1s, 1.5s
 
             if (tryAllocateLargePages(region, region.size)) {
-                LOG_INFO("Large page allocation succeeded after defrag round %u", round);
                 return true;
             }
+
+            // Step 2: More aggressive defrag — multiple rounds with longer pauses
+            LOG_INFO("Large page allocation failed at %zu MB, performing aggressive defragmentation...",
+                     region.size / (1024 * 1024));
+            for (uint32_t round = 1; round <= 3; ++round) {
+                defragPhysicalMemory();
+                Sleep(500 * round); // Increasing delay: 500ms, 1s, 1.5s
+
+                if (tryAllocateLargePages(region, region.size)) {
+                    LOG_INFO("Large page allocation succeeded after defrag round %u", round);
+                    return true;
+                }
+            }
+
+            // Step 3: Single large-page allocation failed — try chunked allocation (1GB chunks)
+            // Each chunk independently finds contiguous 2MB physical regions
+            LOG_INFO("Attempting chunked large page allocation (%zu MB in 1GB chunks)...",
+                     region.size / (1024 * 1024));
+            defragPhysicalMemory();
+
+            if (tryAllocateLargePagesChunked(region, region.size)) {
+                return true;
+            }
+
+            // Large pages failed — fall through to VirtualLock which reliably locks memory
+            LOG_INFO("Large page allocation failed at %zu MB after all defrag attempts. "
+                     "Falling back to fully locked standard pages.",
+                     region.size / (1024 * 1024));
+        } else {
+            // Non-aggressive mode: try large pages directly without defrag
+            LOG_INFO("Attempting large page allocation (defrag disabled, use --aggressive-defrag to enable)...");
+            if (tryAllocateLargePages(region, region.size)) {
+                return true;
+            }
+            if (tryAllocateLargePagesChunked(region, region.size)) {
+                return true;
+            }
+            LOG_INFO("Large page allocation failed at %zu MB without defrag. "
+                     "Falling back to locked standard pages.",
+                     region.size / (1024 * 1024));
         }
-
-        // Step 3: Single large-page allocation failed — try chunked allocation (1GB chunks)
-        // Each chunk independently finds contiguous 2MB physical regions
-        LOG_INFO("Attempting chunked large page allocation (%zu MB in 1GB chunks)...",
-                 region.size / (1024 * 1024));
-        defragPhysicalMemory();
-
-        if (tryAllocateLargePagesChunked(region, region.size)) {
-            return true;
-        }
-
-        // Large pages failed — fall through to VirtualLock which reliably locks memory
-        LOG_INFO("Large page allocation failed at %zu MB after all defrag attempts. "
-                 "Falling back to fully locked standard pages.",
-                 region.size / (1024 * 1024));
     }
 
     if (try_lock) {
@@ -1584,11 +1599,33 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
 #else
     // Linux implementation with hugepages support
     if (try_large_pages) {
-        if (tryAllocateHugepages(region, region.size)) {
-            return true;
+        if (g_aggressive_defrag.load(std::memory_order_relaxed)) {
+            if (tryAllocateHugepages(region, region.size)) {
+                return true;
+            }
+            LOG_INFO("Hugepage allocation failed at %zu MB, falling back to locked standard pages",
+                     region.size / (1024 * 1024));
+        } else {
+            // Non-aggressive: try hugepages once, skip defrag and kernel sysfs writes
+            const size_t hugepage_size = 2ULL * 1024 * 1024;
+            size_t aligned_size = (region.size + hugepage_size - 1) & ~(hugepage_size - 1);
+            void* ptr = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+            if (ptr != MAP_FAILED) {
+                region.base = static_cast<uint8_t*>(ptr);
+                region.size = aligned_size;
+                region.is_large_pages = true;
+                region.large_page_bytes = aligned_size;
+                if (mlock(ptr, aligned_size) == 0) {
+                    region.is_locked = true;
+                }
+                LOG_INFO("Allocated %zu MB using hugepages (2MB pages) without defrag",
+                         aligned_size / 1024 / 1024);
+                return true;
+            }
+            LOG_INFO("Hugepage allocation failed at %zu MB (use --aggressive-defrag to enable auto-reservation)",
+                     region.size / (1024 * 1024));
         }
-        LOG_INFO("Hugepage allocation failed at %zu MB, falling back to locked standard pages",
-                 region.size / (1024 * 1024));
     }
     
     // Linux implementation check for strict locking
@@ -1733,6 +1770,14 @@ bool Platform::setThreadAffinity(uint32_t thread_id, uint32_t num_threads) {
     if (targets.empty()) return false;
     const CpuTarget& target = targets[thread_id % targets.size()];
     return bindCurrentThread(target);
+}
+
+void Platform::setAggressiveDefrag(bool enabled) {
+    g_aggressive_defrag.store(enabled, std::memory_order_relaxed);
+}
+
+bool Platform::isAggressiveDefrag() {
+    return g_aggressive_defrag.load(std::memory_order_relaxed);
 }
 
 void Platform::registerShutdownHandler(void (*callback)()) {

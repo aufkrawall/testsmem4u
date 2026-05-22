@@ -29,6 +29,11 @@ static bool hasUnsafePathCharacters(const std::string& path) {
     if (path.find('\x1b') != std::string::npos) return true;
     // Reject directory traversal components
     if (path.find("..") != std::string::npos) return true;
+    // Reject absolute paths
+    if (!path.empty() && (path[0] == '/' || path[0] == '\\')) return true;
+#ifdef _WIN32
+    if (path.size() >= 2 && path[1] == ':') return true;
+#endif
     return false;
 }
 

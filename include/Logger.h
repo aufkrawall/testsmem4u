@@ -206,8 +206,8 @@ private:
         
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
-            constexpr size_t MAX_QUEUE_SIZE = 100000;
-            constexpr size_t NONCRITICAL_QUEUE_LIMIT = 90000;
+            constexpr size_t MAX_QUEUE_SIZE = 1000000;
+            constexpr size_t NONCRITICAL_QUEUE_LIMIT = 900000;
             
             if (log_queue_.size() < MAX_QUEUE_SIZE &&
                 (level >= LogLevel::ERR || log_queue_.size() < NONCRITICAL_QUEUE_LIMIT)) {

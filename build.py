@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """testsmem4u Build Script
 
-Downloads Zig, extracts it, and compiles testsmem4u.
-Supports cross-compilation via Zig (Windows x86_64/arm64, Linux x86_64/arm64).
+Downloads toolchain and compiles testsmem4u.
+Supports both Zig (cross-compilation to Windows/Linux/ARM) and
+LLVM MinGW (native Windows with CFG/CET/ASan hardening).
 Uses parallel compilation for object files.
 """
 
@@ -18,12 +19,23 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).parent
+
+# Zig toolchain (cross-compilation)
 ZIG_VERSION = "0.14.0"
 ZIG_URL_WIN_X86_64 = (
     f"https://ziglang.org/download/{ZIG_VERSION}/zig-windows-x86_64-{ZIG_VERSION}.zip"
 )
 ZIG_DIR = PROJECT_ROOT / "tools" / "zig"
 ZIG_EXE = ZIG_DIR / f"zig-windows-x86_64-{ZIG_VERSION}" / "zig.exe"
+
+# LLVM MinGW toolchain (native Windows with CFG/CET/ASan support)
+MINGW_VERSION = "20260519"
+MINGW_URL_WIN_X86_64 = (
+    f"https://github.com/mstorsjo/llvm-mingw/releases/download/{MINGW_VERSION}/llvm-mingw-{MINGW_VERSION}-ucrt-x86_64.zip"
+)
+MINGW_DIR = PROJECT_ROOT / "tools" / "mingw"
+MINGW_CXX = MINGW_DIR / f"llvm-mingw-{MINGW_VERSION}-ucrt-x86_64" / "bin" / "clang++.exe"
+MINGW_AR = MINGW_DIR / f"llvm-mingw-{MINGW_VERSION}-ucrt-x86_64" / "bin" / "llvm-ar.exe"
 
 INCLUDE_DIR = PROJECT_ROOT / "include"
 SRC_FILES = [
@@ -71,30 +83,38 @@ BUILD_MODES = {
         "description": "Debug build with symbols and assertions",
     },
     "asan": {
-        "cxx_flags": ["-O1", "-g", "-fsanitize=address", "-fno-omit-frame-pointer", "-D_DEBUG"],
-        "link_flags": ["-fsanitize=address"],
+        "cxx_flags": ["-O1", "-g", "-fsanitize=address", "-fno-omit-frame-pointer", "-D_DEBUG", "-Wno-unused-command-line-argument"],
+        "link_flags": ["-fsanitize=address", "-Wno-unused-command-line-argument"],
         "description": "AddressSanitizer (memory safety)",
     },
     "ubsan": {
-        "cxx_flags": ["-O1", "-g", "-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-D_DEBUG"],
-        "link_flags": ["-fsanitize=undefined"],
+        "cxx_flags": ["-O1", "-g", "-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-D_DEBUG", "-Wno-unused-command-line-argument"],
+        "link_flags": ["-fsanitize=undefined", "-Wno-unused-command-line-argument"],
         "description": "UndefinedBehaviorSanitizer",
     },
     "tsan": {
-        "cxx_flags": ["-O1", "-g", "-fsanitize=thread", "-D_DEBUG"],
-        "link_flags": ["-fsanitize=thread"],
+        "cxx_flags": ["-O1", "-g", "-fsanitize=thread", "-D_DEBUG", "-Wno-unused-command-line-argument"],
+        "link_flags": ["-fsanitize=thread", "-Wno-unused-command-line-argument"],
         "description": "ThreadSanitizer (data race detection)",
     },
 }
 
 HOST_V3_FLAGS = [
-    "-mcpu=x86_64_v3",  # Enable AVX2, FMA, BMI, etc. for x86-64-v3 targets
-    "-mprefer-vector-width=256",  # Prefer 256-bit AVX2 auto-vectorisation on v3 targets
+    "-mcpu=x86_64_v3",
+    "-mprefer-vector-width=256",
+]
+HOST_V3_FLAGS_MINGW = [
+    "-march=x86-64-v3",
+    "-mprefer-vector-width=256",
 ]
 
 HOST_V4_FLAGS = [
-    "-mcpu=x86_64_v4",  # Enable AVX-512F, AVX-512BW, AVX-512DQ, etc. for x86-64-v4 targets
-    "-mprefer-vector-width=512",  # Prefer 512-bit AVX-512 auto-vectorisation on v4 targets
+    "-mcpu=x86_64_v4",
+    "-mprefer-vector-width=512",
+]
+HOST_V4_FLAGS_MINGW = [
+    "-march=x86-64-v4",
+    "-mprefer-vector-width=512",
 ]
 
 TARGETS = {
@@ -102,12 +122,14 @@ TARGETS = {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64.exe",
         "extra_flags": ["-ladvapi32"],
+        "extra_flags_mingw": ["-ladvapi32"],
         "obj_ext": ".obj",
     },
     "windows-x86_64-v3": {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64-v3.exe",
         "extra_flags": HOST_V3_FLAGS + ["-ladvapi32"],
+        "extra_flags_mingw": HOST_V3_FLAGS_MINGW + ["-ladvapi32"],
         "obj_ext": ".obj",
     },
     "windows-arm64": {
@@ -138,6 +160,7 @@ TARGETS = {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64-v4.exe",
         "extra_flags": HOST_V4_FLAGS + ["-ladvapi32"],
+        "extra_flags_mingw": HOST_V4_FLAGS_MINGW + ["-ladvapi32"],
         "obj_ext": ".obj",
     },
     "linux-x86_64-v4": {
@@ -187,53 +210,142 @@ def source_needs_rebuild(src: Path, obj_file: Path) -> bool:
 
 
 _current_build_mode = "release"
+_current_toolchain = "zig"
 
-def split_compile_link_flags(target: dict) -> tuple[list[str], list[str]]:
-    mode = BUILD_MODES[_current_build_mode]
+# LLVM MinGW build modes: same flags as Zig but with /guard:cf and /CETCOMPAT
+# for Control Flow Guard and CET Shadow Stack enforcement in the PE header.
+MINGW_BUILD_MODES = {
+    "release": {
+        "cxx_flags": ["-O3", "-flto=thin", "-DNDEBUG", "-fcf-protection=full"],
+        "link_flags": ["-static", "-Wl,-gc-sections", "-Wl,-s", "-Xlinker", "/guard:cf", "-Xlinker", "/CETCOMPAT"],
+        "description": "Optimized release build with CFG + CET hardening (static, standalone)",
+    },
+    "debug": {
+        "cxx_flags": ["-O0", "-g", "-D_DEBUG"],
+        "link_flags": [],
+        "description": "Debug build with symbols and assertions",
+    },
+    "asan": {
+        "cxx_flags": ["-O1", "-g", "-fsanitize=address", "-fno-omit-frame-pointer", "-D_DEBUG"],
+        "link_flags": ["-fsanitize=address"],
+        "description": "AddressSanitizer (memory safety) - requires ASan DLL in PATH",
+    },
+    "ubsan": {
+        "cxx_flags": ["-O1", "-g", "-fsanitize=undefined", "-fno-sanitize-recover=undefined", "-D_DEBUG"],
+        "link_flags": ["-fsanitize=undefined"],
+        "description": "UndefinedBehaviorSanitizer",
+    },
+}
+
+def get_modes():
+    return MINGW_BUILD_MODES if _current_toolchain == "mingw" else BUILD_MODES
+
+def split_compile_link_flags(target: dict, for_test: bool = False) -> tuple[list[str], list[str]]:
+    modes = get_modes()
+    mode = modes[_current_build_mode]
     flags = list(BASE_CXX_FLAGS) + list(mode["cxx_flags"])
     target_extra_flags = target.get("extra_flags", [])
     compile_flags = [f for f in flags if not f.startswith("-Wl")]
     compile_flags += [
         f
         for f in target_extra_flags
-        if not f.startswith("-l") and not f.startswith("-Wl")
+        if not f.startswith("-l") and not f.startswith("-Wl") and not f.startswith("-Xlinker")
     ]
 
     link_flags = list(BASE_CXX_FLAGS) + list(mode["link_flags"]) + list(mode["cxx_flags"])
     link_flags += target_extra_flags
+    if for_test:
+        # Strip hardening flags from test binaries (not needed for tests)
+        link_flags = [f for f in link_flags if f not in ("/guard:cf", "/CETCOMPAT", "-Xlinker")]
     return compile_flags, link_flags
 
 
-def download_zig() -> bool:
-    if ZIG_EXE.exists():
-        print(f"[*] Zig already installed: {ZIG_EXE}")
-        return True
+def download_toolchain() -> bool:
+    if _current_toolchain == "zig":
+        if ZIG_EXE.exists():
+            print(f"[*] Zig already installed: {ZIG_EXE}")
+            return True
 
-    ZIG_DIR.mkdir(parents=True, exist_ok=True)
-    zip_path = ZIG_DIR / f"zig-windows-x86_64-{ZIG_VERSION}.zip"
+        ZIG_DIR.mkdir(parents=True, exist_ok=True)
+        zip_path = ZIG_DIR / f"zig-windows-x86_64-{ZIG_VERSION}.zip"
 
-    print(f"[*] Downloading Zig {ZIG_VERSION}...")
-    print(f"[*] URL: {ZIG_URL_WIN_X86_64}")
+        print(f"[*] Downloading Zig {ZIG_VERSION}...")
+        print(f"[*] URL: {ZIG_URL_WIN_X86_64}")
 
-    try:
-        urllib.request.urlretrieve(ZIG_URL_WIN_X86_64, zip_path)
-        print(f"[*] Downloaded {zip_path.name}")
+        try:
+            urllib.request.urlretrieve(ZIG_URL_WIN_X86_64, zip_path)
+            print(f"[*] Downloaded {zip_path.name}")
 
-        print("[*] Extracting...")
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(ZIG_DIR)
+            print("[*] Extracting...")
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(ZIG_DIR)
 
-        zip_path.unlink(missing_ok=True)
-        return ZIG_EXE.exists()
-    except Exception as e:
-        print(f"[!] Error downloading Zig: {e}")
-        return False
+            zip_path.unlink(missing_ok=True)
+            return ZIG_EXE.exists()
+        except Exception as e:
+            print(f"[!] Error downloading Zig: {e}")
+            return False
+    else:
+        # LLVM MinGW
+        if MINGW_CXX.exists():
+            print(f"[*] LLVM MinGW already installed: {MINGW_CXX}")
+            return True
 
+        MINGW_DIR.mkdir(parents=True, exist_ok=True)
+        zip_path = MINGW_DIR / f"llvm-mingw-{MINGW_VERSION}-ucrt-x86_64.zip"
+
+        print(f"[*] Downloading LLVM MinGW {MINGW_VERSION}...")
+        print(f"[*] URL: {MINGW_URL_WIN_X86_64}")
+
+        try:
+            urllib.request.urlretrieve(MINGW_URL_WIN_X86_64, zip_path)
+            print(f"[*] Downloaded {zip_path.name} ({zip_path.stat().st_size // 1024 // 1024} MB)")
+
+            print("[*] Extracting...")
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(MINGW_DIR)
+
+            zip_path.unlink(missing_ok=True)
+            return MINGW_CXX.exists()
+        except Exception as e:
+            print(f"[!] Error downloading LLVM MinGW: {e}")
+            return False
+
+
+def get_compiler() -> str:
+    if _current_toolchain == "mingw":
+        return str(MINGW_CXX)
+    return str(ZIG_EXE)
+
+def get_cxx_command(target: dict, compile_flags: list[str]) -> list[str]:
+    if _current_toolchain == "mingw":
+        # Filter flags incompatible with native Clang/LLD or link-only
+        incompatible = ("-mcpu=", "-fno-ident", "-fno-asynchronous-unwind-tables", "-l", "-Xlinker")
+        filtered = [f for f in compile_flags
+                    if not any(f.startswith(p) for p in incompatible)
+                    and f not in ("/guard:cf", "/CETCOMPAT")]
+        extra = [f for f in target.get("extra_flags_mingw", [])
+                 if not f.startswith("-l") and not f.startswith("-Xlinker")]
+        return [
+            str(MINGW_CXX),
+            "--target=x86_64-w64-mingw32",
+            *filtered,
+            *extra,
+            f"-I{INCLUDE_DIR}",
+        ]
+    return [
+        str(ZIG_EXE),
+        "c++",
+        "-target",
+        target["zig_target"],
+        *compile_flags,
+        f"-I{INCLUDE_DIR}",
+    ]
 
 def compile_object(args):
     """Compiles a single source file to an object file."""
     cmd, src_file, obj_file = args
-    # Construct command: zig c++ [flags] -c src_file -o obj_file
+    # Construct command: [compiler] [flags] -c src_file -o obj_file
     full_cmd = cmd + ["-c", str(src_file), "-o", str(obj_file)]
 
     try:
@@ -253,8 +365,9 @@ def build_target(name: str) -> bool:
         print(f"[!] Unknown target: {name}")
         return False
 
-    if not ZIG_EXE.exists():
-        print("[!] Zig not found. Please run download first.")
+    compiler = get_compiler()
+    if not Path(compiler).exists():
+        print(f"[!] Compiler not found: {compiler}")
         return False
 
     t = TARGETS[name]
@@ -269,14 +382,7 @@ def build_target(name: str) -> bool:
     compile_flags, link_flags = split_compile_link_flags(t)
 
     # Base compile command
-    base_compile_cmd = [
-        str(ZIG_EXE),
-        "c++",
-        "-target",
-        t["zig_target"],
-        *compile_flags,
-        f"-I{INCLUDE_DIR}",
-    ]
+    base_compile_cmd = get_cxx_command(t, compile_flags)
 
     print(f"[*] Building {name} objects...")
 
@@ -316,15 +422,28 @@ def build_target(name: str) -> bool:
 
     # Link step
     print(f"[*] Linking {name} -> {output_path}")
-    link_cmd = [
-        str(ZIG_EXE),
-        "c++",
-        "-target",
-        t["zig_target"],
-        *link_flags,
-        *[str(obj) for obj in obj_files],
-        f"-o{output_path}",
-    ]
+    if _current_toolchain == "mingw":
+        # Filter linker-incompatible flags
+        link_filtered = [f for f in link_flags
+                         if f not in ("-fno-ident", "-fno-asynchronous-unwind-tables", "-fno-strict-aliasing")
+                         and not f.startswith("-mcpu=")]
+        link_cmd = [
+            str(MINGW_CXX),
+            "--target=x86_64-w64-mingw32",
+            *link_filtered,
+            *[str(obj) for obj in obj_files],
+            f"-o{output_path}",
+        ]
+    else:
+        link_cmd = [
+            str(ZIG_EXE),
+            "c++",
+            "-target",
+            t["zig_target"],
+            *link_flags,
+            *[str(obj) for obj in obj_files],
+            f"-o{output_path}",
+        ]
 
     result = subprocess.run(link_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
     if result.returncode != 0:
@@ -351,8 +470,9 @@ def build_target(name: str) -> bool:
 
 
 def build_tests(run_tests: bool = True) -> bool:
-    if not ZIG_EXE.exists():
-        print("[!] Zig not found. Please run download first.")
+    compiler = get_compiler()
+    if not Path(compiler).exists():
+        print(f"[!] Compiler not found: {compiler}")
         return False
 
     if not TEST_SRC_FILE.exists():
@@ -364,17 +484,10 @@ def build_tests(run_tests: bool = True) -> bool:
     obj_dir.mkdir(parents=True, exist_ok=True)
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
-    compile_flags, link_flags = split_compile_link_flags(target)
+    compile_flags, link_flags = split_compile_link_flags(target, for_test=True)
     compile_flags = compile_flags + ["-DTESTSMEM4U_TESTING"]
 
-    base_compile_cmd = [
-        str(ZIG_EXE),
-        "c++",
-        "-target",
-        target["zig_target"],
-        *compile_flags,
-        f"-I{INCLUDE_DIR}",
-    ]
+    base_compile_cmd = get_cxx_command(target, compile_flags)
 
     test_sources = [TEST_SRC_FILE, *TEST_SUPPORT_SRC_FILES]
     obj_files = []
@@ -390,33 +503,39 @@ def build_tests(run_tests: bool = True) -> bool:
         print(f"[*] Compiling {len(jobs)} test objects using {cpu_count} threads...")
         success = True
         with concurrent.futures.ThreadPoolExecutor(max_workers=cpu_count) as executor:
-            results = list(executor.map(compile_object, jobs))
-
-            for ok, src, err in results:
+            futures = {executor.submit(compile_object, j): j[1] for j in jobs}
+            for future in concurrent.futures.as_completed(futures):
+                ok, src_file, error = future.result()
                 if not ok:
-                    print(f"[!] Failed to compile {src.name}:")
-                    print(err)
+                    print(f"[!] Failed to compile {src_file.name}:")
+                    print(error)
                     success = False
-                elif err:
-                    print(f"[W] Warnings in {src.name}:")
-                    print(err)
 
         if not success:
             return False
-    else:
-        print("[*] Test objects up to date.")
 
     test_exe = BUILD_DIR / "testsmem4u-tests.exe"
-    print(f"[*] Linking internal tests -> {test_exe}")
-    link_cmd = [
-        str(ZIG_EXE),
-        "c++",
-        "-target",
-        target["zig_target"],
-        *link_flags,
-        *[str(obj) for obj in obj_files],
-        f"-o{test_exe}",
-    ]
+    if _current_toolchain == "mingw":
+        link_filtered = [f for f in link_flags
+                         if f not in ("-fno-ident", "-fno-asynchronous-unwind-tables", "-fno-strict-aliasing")
+                         and not f.startswith("-mcpu=")]
+        link_cmd = [
+            str(MINGW_CXX),
+            "--target=x86_64-w64-mingw32",
+            *link_filtered,
+            *[str(obj) for obj in obj_files],
+            f"-o{test_exe}",
+        ]
+    else:
+        link_cmd = [
+            str(ZIG_EXE),
+            "c++",
+            "-target",
+            target["zig_target"],
+            *link_flags,
+            *[str(obj) for obj in obj_files],
+            f"-o{test_exe}",
+        ]
     result = subprocess.run(link_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
     if result.returncode != 0:
         print("[!] Test linking failed:")
@@ -430,7 +549,11 @@ def build_tests(run_tests: bool = True) -> bool:
         return True
 
     print("[*] Running internal tests...")
-    result = subprocess.run([str(test_exe)], cwd=PROJECT_ROOT, capture_output=True, text=True)
+    test_env = os.environ.copy()
+    if _current_toolchain == "mingw" and MINGW_CXX.exists():
+        mingw_bin = str(MINGW_CXX.parent)
+        test_env["PATH"] = f"{mingw_bin};{test_env.get('PATH', '')}"
+    result = subprocess.run([str(test_exe)], cwd=PROJECT_ROOT, capture_output=True, text=True, env=test_env)
     if result.stdout.strip():
         print(result.stdout)
     if result.stderr.strip():
@@ -457,13 +580,7 @@ def write_compile_commands(names: list[str], include_tests: bool = False) -> boo
 
         for src in SRC_FILES:
             obj_file = obj_dir / (src.stem + target["obj_ext"])
-            command = [
-                str(ZIG_EXE),
-                "c++",
-                "-target",
-                target["zig_target"],
-                *compile_flags,
-                f"-I{INCLUDE_DIR}",
+            command = get_cxx_command(target, compile_flags) + [
                 "-c",
                 str(src),
                 "-o",
@@ -482,13 +599,7 @@ def write_compile_commands(names: list[str], include_tests: bool = False) -> boo
         compile_flags = compile_flags + ["-DTESTSMEM4U_TESTING"]
         obj_dir = BUILD_DIR / "obj" / _current_build_mode / "tests"
         obj_file = obj_dir / (TEST_SRC_FILE.stem + target["obj_ext"])
-        command = [
-            str(ZIG_EXE),
-            "c++",
-            "-target",
-            target["zig_target"],
-            *compile_flags,
-            f"-I{INCLUDE_DIR}",
+        command = get_cxx_command(target, compile_flags) + [
             "-c",
             str(TEST_SRC_FILE),
             "-o",
@@ -531,11 +642,17 @@ def main() -> int:
         help="Write compile_commands.json for clangd/LSP tooling.",
     )
     parser.add_argument(
+        "--toolchain",
+        type=str,
+        default="mingw",
+        choices=["zig", "mingw"],
+        help="Toolchain: mingw (LLVM MinGW, CFG+CET+ASan, static standalone, default) or zig (cross-compiler, musl, for Linux targets)",
+    )
+    parser.add_argument(
         "--build-mode",
         type=str,
         default="release",
-        choices=list(BUILD_MODES.keys()),
-        help=f"Build mode: {', '.join(f'{k} ({v["description"]})' for k, v in BUILD_MODES.items())}",
+        help=f"Build mode: release, debug, asan (mingw only), ubsan",
     )
     args = parser.parse_args()
 
@@ -543,15 +660,27 @@ def main() -> int:
     print("  testsmem4u Build Script (Multi-threaded)")
     print("=" * 60)
 
-    if not download_zig():
-        print("[!] Failed to download Zig")
+    global _current_build_mode, _current_toolchain
+    _current_toolchain = args.toolchain
+
+    if not download_toolchain():
+        print(f"[!] Failed to download toolchain: {args.toolchain}")
         return 1
 
-    # Set build mode globally for flag resolution
-    global _current_build_mode
+    # Validate build mode for the chosen toolchain
+    modes = get_modes()
+    if args.build_mode not in modes:
+        print(f"[!] Build mode '{args.build_mode}' not available for toolchain '{args.toolchain}'.")
+        print(f"    Available modes: {', '.join(modes.keys())}")
+        return 1
+
     _current_build_mode = args.build_mode
-    mode_info = BUILD_MODES[args.build_mode]
+    mode_info = modes[args.build_mode]
     print(f"[*] Build mode: {args.build_mode} ({mode_info['description']})")
+
+    if args.toolchain == "mingw" and args.build_mode == "asan":
+        print("[*] ASan is supported with the mingw toolchain.")
+        print("[*] Ensure libclang_rt.asan_dynamic-x86_64.dll from the mingw bin/ directory is in PATH.")
 
     names = expand_target_names(args.targets)
     if not names:
