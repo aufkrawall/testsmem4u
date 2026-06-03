@@ -365,6 +365,9 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
             points_remaining -= std::min(points_remaining, points_for_stride);
             std::uniform_int_distribution<size_t> hammer_dist(0, count - 3 * row_stride_elements - 1);
 
+            LOG_INFO("RowHammer: Sweeping stride %zu elements (%zu points)",
+                     row_stride_elements, points_for_stride);
+
             for (size_t i = 0; i < points_for_stride && !ctx.shouldStop(); ++i) {
                 size_t idxA = hammer_dist(rng);
                 size_t idxB = idxA + row_stride_elements;
@@ -372,33 +375,33 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
                 
                 if (idxC >= count) continue;
 
+                if (i % 512 == 0) {
+                    LOG_DEBUG("RowHammer: Hammering point %zu/%zu (idxA=%zu, idxB=%zu, idxC=%zu, stride=%zu)",
+                              i, points_for_stride, idxA, idxB, idxC, row_stride_elements);
+                }
+
                 for (size_t k = 0; k < hammer_iterations && !ctx.shouldStop(); ++k) {
                     uint64_t pattern = (k & 1) ? aggr_toggle1 : aggr_toggle0;
 #if defined(__x86_64__) || defined(_M_X64)
                     _mm_stream_si64((long long*)&ptr[idxA], (long long)pattern);
-                    _mm_stream_si64((long long*)&ptr[idxB], (long long)pattern);
                     _mm_stream_si64((long long*)&ptr[idxC], (long long)pattern);
                     _mm_sfence();
 #else
                     __atomic_store_n(&ptr[idxA], pattern, __ATOMIC_RELAXED);
-                    __atomic_store_n(&ptr[idxB], pattern, __ATOMIC_RELAXED);
                     __atomic_store_n(&ptr[idxC], pattern, __ATOMIC_RELAXED);
                     std::atomic_thread_fence(std::memory_order_release);
 #endif
                     simd::flush_cache_line((void*)&ptr[idxA]);
-                    simd::flush_cache_line((void*)&ptr[idxB]);
                     simd::flush_cache_line((void*)&ptr[idxC]);
                     simd::memory_fence();
                 }
 
 #if defined(__x86_64__) || defined(_M_X64)
                 _mm_stream_si64((long long*)&ptr[idxA], (long long)victim_fill);
-                _mm_stream_si64((long long*)&ptr[idxB], (long long)victim_fill);
                 _mm_stream_si64((long long*)&ptr[idxC], (long long)victim_fill);
                 _mm_sfence();
 #else
                 __atomic_store_n(&ptr[idxA], victim_fill, __ATOMIC_RELAXED);
-                __atomic_store_n(&ptr[idxB], victim_fill, __ATOMIC_RELAXED);
                 __atomic_store_n(&ptr[idxC], victim_fill, __ATOMIC_RELAXED);
                 std::atomic_thread_fence(std::memory_order_release);
 #endif
@@ -527,67 +530,52 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
         // Flush the region before verification so reads come from DRAM, not CPU cache.
         simd::flush_cache_region(ptr, region.size);
 
-        for (size_t i = 0; i + 1 < count; i += 2) {
-            if (ctx.shouldStop()) break;
+        // Flush the region before verification so reads come from DRAM, not CPU cache.
+        simd::flush_cache_region(ptr, region.size);
 
-            // Low word check
-            uint64_t lo_observed = ptr[i];
-            if (lo_observed != config.pattern_param0) {
-                // Re-read from DRAM to classify hard vs soft
-                uint64_t confirmed = simd::safe_read_u64(&ptr[i]);
+        // Verify using bounded error sampling consistent with other tests.
+        // MirrorMove128 uses alternating 128-bit {param0, param1} pairs, so we
+        // verify even/odd indices separately against their respective uniform values.
+        {
+            constexpr size_t VERIFY_BLOCK = 256 * 1024; // elements
+            std::vector<std::pair<uint64_t, uint64_t>> errors;
+            errors.reserve(128);
 
-                if (confirmed != config.pattern_param0) {
-                    res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (L - Hard)", reportAddress(region, &ptr[i]), config.pattern_param0, confirmed);
-                } else {
-                    res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (L - Soft)", reportAddress(region, &ptr[i]), config.pattern_param0, lo_observed);
+            // Verify even indices (param0) in blocks
+            for (size_t i = 0; i + 1 < count; i += VERIFY_BLOCK) {
+                if (ctx.shouldStop()) break;
+                size_t n = std::min(VERIFY_BLOCK, count - i);
+                // Scan even positions in this block
+                for (size_t j = 0; j < n && j + i + 1 <= count; j += 2) {
+                    size_t idx = i + j;
+                    if (ptr[idx] != config.pattern_param0) {
+                        uint64_t confirmed = simd::safe_read_u64(&ptr[idx]);
+                        if (confirmed != config.pattern_param0) {
+                            res.hard_errors++;
+                            LOG_ERROR_DETAIL("MirrorMove128 (E - Hard)", reportAddress(region, &ptr[idx]), config.pattern_param0, confirmed);
+                        } else {
+                            res.soft_errors++;
+                            LOG_ERROR_DETAIL("MirrorMove128 (E - Soft)", reportAddress(region, &ptr[idx]), config.pattern_param0, ptr[idx]);
+                        }
+                        if (stop && res.total_errors() > 0) { ctx.requestStop(); break; }
+                    }
                 }
-
-                if (stop && res.total_errors() > 0) {
-                    ctx.requestStop();
-                    break;
+                // Scan odd positions in this block
+                for (size_t j = 1; j < n && j + i < count; j += 2) {
+                    size_t idx = i + j;
+                    if (ptr[idx] != config.pattern_param1) {
+                        uint64_t confirmed = simd::safe_read_u64(&ptr[idx]);
+                        if (confirmed != config.pattern_param1) {
+                            res.hard_errors++;
+                            LOG_ERROR_DETAIL("MirrorMove128 (O - Hard)", reportAddress(region, &ptr[idx]), config.pattern_param1, confirmed);
+                        } else {
+                            res.soft_errors++;
+                            LOG_ERROR_DETAIL("MirrorMove128 (O - Soft)", reportAddress(region, &ptr[idx]), config.pattern_param1, ptr[idx]);
+                        }
+                        if (stop && res.total_errors() > 0) { ctx.requestStop(); break; }
+                    }
                 }
-            }
-
-            // High word check
-            uint64_t hi_observed = ptr[i+1];
-            if (hi_observed != config.pattern_param1) {
-                // Re-read from DRAM to classify hard vs soft
-                uint64_t confirmed = simd::safe_read_u64(&ptr[i+1]);
-
-                if (confirmed != config.pattern_param1) {
-                    res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (H - Hard)", reportAddress(region, &ptr[i + 1]), config.pattern_param1, confirmed);
-                } else {
-                    res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (H - Soft)", reportAddress(region, &ptr[i + 1]), config.pattern_param1, hi_observed);
-                }
-
-                if (stop && res.total_errors() > 0) {
-                    ctx.requestStop();
-                    break;
-                }
-            }
-        }
-
-        // Handle odd tail word if region size not divisible by 16 bytes
-        if (count % 2 == 1) {
-            size_t last = count - 1;
-            uint64_t tail_observed = ptr[last];
-            if (tail_observed != config.pattern_param0) {
-                // Re-read from DRAM to classify hard vs soft
-                uint64_t confirmed = simd::safe_read_u64(&ptr[last]);
-
-                if (confirmed != config.pattern_param0) {
-                    res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Hard)", reportAddress(region, &ptr[last]), config.pattern_param0, confirmed);
-                } else {
-                    res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Soft)", reportAddress(region, &ptr[last]), config.pattern_param0, tail_observed);
-                }
-
-                if (stop) ctx.requestStop();
+                if (stop && ctx.shouldStop()) break;
             }
         }
     }
@@ -1107,39 +1095,60 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
         sfence();
         simd::flush_cache_region(ptr, region.size);
         
-        // Phase 4: Verify Inverted (backward march)
-        seed = initial_seed;
-        for (size_t i = 0; i < count && !ctx.shouldStop() && !early_stop; i += LFSR_BLOCK) {
-            size_t n = std::min(LFSR_BLOCK, count - i);
-            
-            // Compute inverted expected values
-            uint64_t block_seed = seed;
-            for (size_t j = 0; j < n; ++j) {
-                expected[j] = ~block_seed;
-                block_seed = lfsr_next(block_seed);
+        // Phase 4: Verify Inverted (backward march for better address-line coverage)
+        // Pre-compute the LFSR seed at the start of each backward block.
+        // We need the seed state at position (chunk_start) to generate expected values.
+        // Build a seed table: seed_at_block_start[b] = LFSR state after b*LFSR_BLOCK iterations.
+        {
+            std::vector<uint64_t> seed_at_block_start;
+            {
+                size_t num_blocks = (count + LFSR_BLOCK - 1) / LFSR_BLOCK;
+                seed_at_block_start.resize(num_blocks);
+                uint64_t s = initial_seed;
+                for (size_t b = 0; b < num_blocks; ++b) {
+                    seed_at_block_start[b] = s;
+                    size_t n = std::min(LFSR_BLOCK, count - b * LFSR_BLOCK);
+                    for (size_t j = 0; j < n; ++j) {
+                        s = lfsr_next(s);
+                    }
+                }
             }
-            
-            // Fast path: memcmp whole block before per-element scan
-            if (std::memcmp(ptr + i, expected.data(), n * sizeof(uint64_t)) != 0) {
+
+            for (size_t i = count; i > 0 && !ctx.shouldStop() && !early_stop; ) {
+                size_t chunk_end = i;
+                size_t chunk_start = (i > LFSR_BLOCK) ? (i - LFSR_BLOCK) : 0;
+                size_t n = chunk_end - chunk_start;
+                i = chunk_start;
+
+                // Compute inverted expected values for this block
+                size_t block_idx = chunk_start / LFSR_BLOCK;
+                uint64_t block_seed = seed_at_block_start[block_idx];
                 for (size_t j = 0; j < n; ++j) {
-                    if (ptr[i+j] != expected[j]) {
-                        uint64_t actual = simd::safe_read_u64(&ptr[i+j]);
-                        if (actual != expected[j]) {
-                            res.hard_errors++;
-                            LOG_ERROR_DETAIL("MovInvLFSR (Inv - Hard)", reportAddress(region, &ptr[i + j]), expected[j], actual);
-                        } else {
-                            res.soft_errors++;
-                            LOG_ERROR_DETAIL("MovInvLFSR (Inv - Soft)", reportAddress(region, &ptr[i + j]), expected[j], ptr[i + j]);
-                        }
-                        if (stop && res.total_errors() > 0) {
-                            ctx.requestStop();
-                            early_stop = true;
-                            break;
+                    expected[j] = ~block_seed;
+                    block_seed = lfsr_next(block_seed);
+                }
+
+                // Fast path: memcmp whole block before per-element scan
+                if (std::memcmp(ptr + chunk_start, expected.data(), n * sizeof(uint64_t)) != 0) {
+                    for (size_t j = 0; j < n; ++j) {
+                        if (ptr[chunk_start + j] != expected[j]) {
+                            uint64_t actual = simd::safe_read_u64(&ptr[chunk_start + j]);
+                            if (actual != expected[j]) {
+                                res.hard_errors++;
+                                LOG_ERROR_DETAIL("MovInvLFSR (Inv - Hard)", reportAddress(region, &ptr[chunk_start + j]), expected[j], actual);
+                            } else {
+                                res.soft_errors++;
+                                LOG_ERROR_DETAIL("MovInvLFSR (Inv - Soft)", reportAddress(region, &ptr[chunk_start + j]), expected[j], ptr[chunk_start + j]);
+                            }
+                            if (stop && res.total_errors() > 0) {
+                                ctx.requestStop();
+                                early_stop = true;
+                                break;
+                            }
                         }
                     }
                 }
             }
-            seed = block_seed;
         }
     }
     res.bytes_tested = region.size * 2 * repeats;
@@ -1562,6 +1571,7 @@ RunResult TestEngine::runTests(const Config& config) {
 RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& region,
                                    const std::vector<uint32_t>& seq,
                                    const std::map<uint32_t, TestConfig>& configs) {
+    Platform::raiseProcessPriority();
     RunResult result = {};
     TestContext ctx;
     

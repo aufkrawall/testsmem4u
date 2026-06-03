@@ -63,6 +63,7 @@ public:
     static bool bindCurrentThread(const CpuTarget& target);
     static bool setThreadAffinity(uint32_t thread_id, uint32_t num_threads);
     static void registerShutdownHandler(void (*callback)());
+    static void raiseProcessPriority();
 
     // Verify memory is still resident in physical RAM (not swapped/reclaimed)
     static bool checkMemoryResident(const uint8_t* base, size_t size);

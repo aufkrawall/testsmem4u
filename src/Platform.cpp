@@ -227,8 +227,8 @@ static std::vector<CpuTarget> detectWindowsCpuTargets() {
 
     std::sort(targets.begin(), targets.end(), [](const CpuTarget& lhs, const CpuTarget& rhs) {
         if (lhs.parked != rhs.parked) return !lhs.parked && rhs.parked;
-        if (lhs.efficiency_class != rhs.efficiency_class) return lhs.efficiency_class > rhs.efficiency_class;
         if (lhs.smt_secondary != rhs.smt_secondary) return !lhs.smt_secondary && rhs.smt_secondary;
+        if (lhs.efficiency_class != rhs.efficiency_class) return lhs.efficiency_class > rhs.efficiency_class;
         if (lhs.scheduling_class != rhs.scheduling_class) return lhs.scheduling_class > rhs.scheduling_class;
         if (lhs.numa_node != rhs.numa_node) return lhs.numa_node < rhs.numa_node;
         if (lhs.group != rhs.group) return lhs.group < rhs.group;
@@ -405,8 +405,8 @@ static std::vector<CpuTarget> detectLinuxCpuTargets() {
     }
 
     std::sort(targets.begin(), targets.end(), [](const CpuTarget& lhs, const CpuTarget& rhs) {
-        if (lhs.raw_performance != rhs.raw_performance) return lhs.raw_performance > rhs.raw_performance;
         if (lhs.smt_secondary != rhs.smt_secondary) return !lhs.smt_secondary && rhs.smt_secondary;
+        if (lhs.raw_performance != rhs.raw_performance) return lhs.raw_performance > rhs.raw_performance;
         if (lhs.numa_node != rhs.numa_node) return lhs.numa_node < rhs.numa_node;
         return lhs.logical_index < rhs.logical_index;
     });
@@ -579,8 +579,8 @@ static void SignalHandlerWrapper(int signum) {
         _exit(128 + signum);
     }
 
-    // Mark as shutting down (atomic write is async-signal-safe)
-    g_shutdown_initiated.store(true, std::memory_order_relaxed);
+    // Mark as shutting down (release ensures stop flag is visible to workers)
+    g_shutdown_initiated.store(true, std::memory_order_release);
 
     // Callback should only set atomic stop flags.
     if (auto cb = g_shutdown_callback.load(std::memory_order_relaxed)) {
@@ -1082,9 +1082,7 @@ static void defragPhysicalMemory() {
     Sleep(500);
 }
 
-// NOTE: File cache restore is now handled by FileCacheGuard destructor.
-// This standalone helper is superseded but kept for reference.
-// static void restoreSystemFileCache() { ... }
+
 
 bool Platform::tryAllocateLargePages(MemoryRegion& region, size_t size) {
     if (!enablePrivilege(SE_LOCK_MEMORY_NAME)) {
@@ -1778,6 +1776,18 @@ void Platform::setAggressiveDefrag(bool enabled) {
 
 bool Platform::isAggressiveDefrag() {
     return g_aggressive_defrag.load(std::memory_order_relaxed);
+}
+
+void Platform::raiseProcessPriority() {
+#ifdef _WIN32
+    if (SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS)) {
+        LOG_INFO("Process priority class confirmed as NORMAL_PRIORITY_CLASS");
+    } else {
+        LOG_WARN("Failed to confirm process priority class: error %lu", GetLastError());
+    }
+#else
+    LOG_INFO("Process running at default priority (no nice adjustment)");
+#endif
 }
 
 void Platform::registerShutdownHandler(void (*callback)()) {

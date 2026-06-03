@@ -164,12 +164,13 @@ void flush_cache_line(void* ptr) {
 }
 
 void flush_cache_region(void* ptr, size_t bytes) {
-    // Use detected cache line size instead of hardcoded 64
-    const size_t cache_line_size = getCapabilities().cache_line_size;
+    // Cache capabilities once to avoid repeated function call overhead
+    const SimdCapabilities caps = getCapabilities();
+    const size_t cache_line_size = caps.cache_line_size;
+    const bool use_opt = caps.has_clflushopt;
     uint8_t* p = static_cast<uint8_t*>(ptr);
     uint8_t* end = p + bytes;
     
-    const bool use_opt = getCapabilities().has_clflushopt;
     for (; p < end; p += cache_line_size) {
         if (use_opt) {
             do_clflushopt(p);
@@ -200,8 +201,8 @@ void flush_cache_line(void* ptr) {
 }
 
 void flush_cache_region(void* ptr, size_t bytes) {
-    // Use detected cache line size instead of hardcoded 64
-    const size_t cache_line_size = getCapabilities().cache_line_size;
+    const SimdCapabilities caps = getCapabilities();
+    const size_t cache_line_size = caps.cache_line_size;
     uint8_t* p = static_cast<uint8_t*>(ptr);
     uint8_t* end = p + bytes;
     
@@ -285,10 +286,8 @@ void lfence() {
 }
 
 template<>
-void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, size_t start_idx) {
-    SimdCapabilities caps = getCapabilities();
-    (void)caps;
-    (void)use_nt;
+void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, [[maybe_unused]] bool use_nt, size_t start_idx) {
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -364,11 +363,10 @@ static inline __m256i mul64_avx2(__m256i a, __m256i b) {
 #endif
 
 template<>
-void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, size_t start_idx) {
-    (void)use_nt;
+void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, [[maybe_unused]] bool use_nt, size_t start_idx) {
     size_t i = 0;
 #if defined(__AVX512F__) || defined(__AVX2__)
-    SimdCapabilities caps = getCapabilities();
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
 #endif
 
 #if defined(__AVX512F__)
@@ -438,9 +436,7 @@ void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0
 
 template<>
 void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t val, bool use_nt) {
-    SimdCapabilities caps = getCapabilities();
-    (void)caps;
-    (void)use_nt;
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -466,8 +462,9 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
                 _mm256_storeu_si256((__m256i*)(dst + i), v);
             }
         }
-    }
-#elif defined(__SSE2__)
+    } else
+#endif
+#if defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
     if (caps.has_sse4_1) {
         __m128i v = _mm_set1_epi64x(val);
         for (; i + 2 <= count; i += 2) {
@@ -485,10 +482,8 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
 }
 
 template<>
-void generate_pattern_increment<uint64_t>(uint64_t* dst, size_t count, uint64_t start, bool use_nt) {
-    SimdCapabilities caps = getCapabilities();
-    (void)caps;
-    (void)use_nt;
+void generate_pattern_increment<uint64_t>(uint64_t* dst, size_t count, uint64_t start, [[maybe_unused]] bool use_nt) {
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -550,7 +545,7 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
     };
 
 #if defined(__AVX512F__) || defined(__AVX2__)
-    SimdCapabilities caps = getCapabilities();
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
 #endif
 
 #if defined(__AVX512F__)
@@ -631,7 +626,7 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
     // Hoist caps outside the preprocessor blocks to avoid duplicate declaration when
     // both __AVX512F__ and __AVX2__ are defined simultaneously (e.g. v4 builds).
 #if defined(__AVX512F__) || defined(__AVX2__)
-    SimdCapabilities caps = getCapabilities();
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
 #endif
 
 #if defined(__AVX512F__)
@@ -714,7 +709,7 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
         }
     };
 #if defined(__AVX512F__) || defined(__AVX2__)
-    SimdCapabilities caps = getCapabilities();
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
 #endif
 
 #if defined(__AVX512F__)
@@ -763,9 +758,7 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
 
 template<>
 void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
-    SimdCapabilities caps = getCapabilities();
-    (void)caps;
-    (void)use_nt;
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -795,8 +788,9 @@ void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
                 _mm256_storeu_si256((__m256i*)(dst + i), v);
             }
         }
-    }
-#elif defined(__SSE2__)
+    } else
+#endif
+#if defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
     if (caps.has_sse4_1) {
         __m128i ones = _mm_set1_epi64x(~0ULL);
         for (; i + 2 <= count; i += 2) {

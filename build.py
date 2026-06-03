@@ -46,6 +46,7 @@ SRC_FILES = [
     PROJECT_ROOT / "src" / "TestEngine.cpp",
     PROJECT_ROOT / "src" / "ConfigManager.cpp",
     PROJECT_ROOT / "src" / "ConsoleDisplay.cpp",
+    PROJECT_ROOT / "src" / "Logger.cpp",
 ]
 
 TEST_SRC_FILE = PROJECT_ROOT / "tests" / "test_internal.cpp"
