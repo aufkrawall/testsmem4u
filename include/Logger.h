@@ -251,12 +251,50 @@ private:
     void writerThreadFunc() {
         std::vector<std::pair<LogLevel, std::string>> local_batch;
         local_batch.reserve(500); // Process in batches
+        auto last_dropped_report = std::chrono::steady_clock::now();
+        uint64_t last_reported_critical = 0;
+        uint64_t last_reported_noncritical = 0;
 
         while (true) {
              std::unique_lock<std::mutex> lock(queue_mutex_);
               
+              // Report dropped message counts periodically (every 30s during active logging)
+              auto now = std::chrono::steady_clock::now();
+              if (std::chrono::duration_cast<std::chrono::seconds>(now - last_dropped_report).count() >= 30) {
+                  uint64_t crit = dropped_critical_messages_.load(std::memory_order_relaxed);
+                  uint64_t noncrit = dropped_noncritical_messages_.load(std::memory_order_relaxed);
+                  uint64_t new_crit = crit - last_reported_critical;
+                  uint64_t new_noncrit = noncrit - last_reported_noncritical;
+                  if (new_crit > 0 || new_noncrit > 0) {
+                      // Write directly to file to avoid recursion through pushMessage
+                      if (file_handle_) {
+                          auto ts = getTimestamp();
+                          auto tid = std::this_thread::get_id();
+                          double elapsed = getElapsedSeconds();
+                          if (new_crit > 0) {
+                              std::string line = std::to_string(new_crit)
+                                  + " critical messages dropped in last 30s (total: " + std::to_string(crit) + ")";
+                              fprintf(file_handle_, "[%s][WARN][T%zu][%.3fs] LOG DROPPED: %s\n",
+                                      ts.c_str(), std::hash<std::thread::id>{}(tid),
+                                      elapsed, line.c_str());
+                          }
+                          if (new_noncrit > 0) {
+                              std::string line = std::to_string(new_noncrit)
+                                  + " non-critical messages dropped in last 30s (total: " + std::to_string(noncrit) + ")";
+                              fprintf(file_handle_, "[%s][WARN][T%zu][%.3fs] LOG DROPPED: %s\n",
+                                      ts.c_str(), std::hash<std::thread::id>{}(tid),
+                                      elapsed, line.c_str());
+                          }
+                          fflush(file_handle_);
+                      }
+                      last_reported_critical = crit;
+                      last_reported_noncritical = noncrit;
+                  }
+                  last_dropped_report = now;
+              }
+
               // Wait for data or shutdown
-              writer_cv_.wait(lock, [this] {
+              writer_cv_.wait_for(lock, std::chrono::seconds(5), [this] {
                   return !log_queue_.empty() || !running_;
               });
 
@@ -271,7 +309,7 @@ private:
              
              lock.unlock();
 
-             // Process batch IO without holding lock
+              // Process batch IO without holding lock
             if (!local_batch.empty()) {
                   if (file_handle_) {
                       for (const auto& msg : local_batch) {
@@ -286,8 +324,20 @@ private:
               }
         }
         
-        // Final flush
+        // Final flush + report final dropped totals
         if (file_handle_) {
+            uint64_t crit = dropped_critical_messages_.load(std::memory_order_relaxed);
+            uint64_t noncrit = dropped_noncritical_messages_.load(std::memory_order_relaxed);
+            if (crit > 0) {
+                fprintf(file_handle_, "[%s][WARN][T%zu][%.3fs] LOG DROPPED: %llu critical messages dropped total (final)\n",
+                        getTimestamp().c_str(), std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                        getElapsedSeconds(), (unsigned long long)crit);
+            }
+            if (noncrit > 0) {
+                fprintf(file_handle_, "[%s][WARN][T%zu][%.3fs] LOG DROPPED: %llu non-critical messages dropped total (final)\n",
+                        getTimestamp().c_str(), std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                        getElapsedSeconds(), (unsigned long long)noncrit);
+            }
             fflush(file_handle_);
         }
     }

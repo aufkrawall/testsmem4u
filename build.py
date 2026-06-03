@@ -67,6 +67,7 @@ BASE_CXX_FLAGS = [
     "-fno-ident",
     "-fno-strict-aliasing",
     "-funroll-loops",
+    "-fstack-protector-strong",
 ]
 
 # Build modes: each mode provides CXX flags and link flags merged with BASE_CXX_FLAGS.
@@ -121,21 +122,21 @@ TARGETS = {
     "windows-x86_64": {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64.exe",
-        "extra_flags": ["-ladvapi32"],
+        "extra_flags": ["-ladvapi32", "-Xlinker", "/CETCOMPAT"],
         "extra_flags_mingw": ["-ladvapi32"],
         "obj_ext": ".obj",
     },
     "windows-x86_64-v3": {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64-v3.exe",
-        "extra_flags": HOST_V3_FLAGS + ["-ladvapi32"],
+        "extra_flags": HOST_V3_FLAGS + ["-ladvapi32", "-Xlinker", "/CETCOMPAT"],
         "extra_flags_mingw": HOST_V3_FLAGS_MINGW + ["-ladvapi32"],
         "obj_ext": ".obj",
     },
     "windows-arm64": {
         "zig_target": "aarch64-windows-gnu",
         "output": "testsmem4u-windows-arm64.exe",
-        "extra_flags": ["-ladvapi32"],
+        "extra_flags": ["-ladvapi32", "-Xlinker", "/CETCOMPAT"],
         "obj_ext": ".obj",
     },
     "linux-x86": {
@@ -159,7 +160,7 @@ TARGETS = {
     "windows-x86_64-v4": {
         "zig_target": "x86_64-windows-gnu",
         "output": "testsmem4u-windows-x86_64-v4.exe",
-        "extra_flags": HOST_V4_FLAGS + ["-ladvapi32"],
+        "extra_flags": HOST_V4_FLAGS + ["-ladvapi32", "-Xlinker", "/CETCOMPAT"],
         "extra_flags_mingw": HOST_V4_FLAGS_MINGW + ["-ladvapi32"],
         "obj_ext": ".obj",
     },
@@ -255,7 +256,13 @@ def split_compile_link_flags(target: dict, for_test: bool = False) -> tuple[list
     link_flags = list(BASE_CXX_FLAGS) + list(mode["link_flags"]) + list(mode["cxx_flags"])
     link_flags += target_extra_flags
     if for_test:
-        # Strip hardening flags from test binaries (not needed for tests)
+        # Strip hardening flags from test binaries. This allows the test runner
+        # to link without CFG/CET runtime DLL dependencies, but means the test
+        # binary does NOT exercise the same hardened control-flow paths as the
+        # release binary. Any CFG-table or CET-compatibility regression in the
+        # release build would not be caught by the test runner. This trade-off
+        # is acceptable because CFG/CET are mature OS-level mitigations and
+        # application-side regressions affecting them are extremely rare.
         link_flags = [f for f in link_flags if f not in ("/guard:cf", "/CETCOMPAT", "-Xlinker")]
     return compile_flags, link_flags
 
@@ -618,6 +625,53 @@ def write_compile_commands(names: list[str], include_tests: bool = False) -> boo
     return True
 
 
+def run_sanitizer_builds() -> bool:
+    """Build and run tests with ASan and UBSan modes under the MinGW toolchain.
+    This exercises the sanitizer build modes that catch memory safety bugs and
+    undefined behavior not visible in release builds."""
+    global _current_build_mode, _current_toolchain
+
+    original_toolchain = _current_toolchain
+    original_build_mode = _current_build_mode
+    all_ok = True
+
+    sanitizer_modes = {
+        "asan": "AddressSanitizer (memory safety)",
+        "ubsan": "UndefinedBehaviorSanitizer",
+    }
+
+    for mode_name, mode_desc in sanitizer_modes.items():
+        if mode_name not in MINGW_BUILD_MODES:
+            print(f"[!] Sanitizer mode '{mode_name}' not available for MinGW. Skipping.")
+            continue
+
+        print(f"\n[*] === Sanitizer: {mode_name} ({mode_desc}) ===")
+        _current_toolchain = "mingw"
+        _current_build_mode = mode_name
+
+        if not download_toolchain():
+            print(f"[!] Toolchain download failed for {mode_name} build. Skipping.")
+            all_ok = False
+            continue
+
+        mode_info = MINGW_BUILD_MODES[mode_name]
+        print(f"[*] Build mode: {mode_name} ({mode_info['description']})")
+
+        if mode_name == "asan":
+            print("[*] Ensure libclang_rt.asan_dynamic-x86_64.dll from the mingw bin/ directory is in PATH.")
+
+        if not build_tests(run_tests=True):
+            print(f"[!] Sanitizer build/tests FAILED for mode: {mode_name}")
+            all_ok = False
+        else:
+            print(f"[*] Sanitizer build/tests PASSED for mode: {mode_name}")
+
+    # Restore original settings
+    _current_toolchain = original_toolchain
+    _current_build_mode = original_build_mode
+    return all_ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument(
@@ -635,6 +689,11 @@ def main() -> int:
         "--no-run-tests",
         action="store_true",
         help="With --tests, compile and link the test runner without executing it.",
+    )
+    parser.add_argument(
+        "--run-sanitizers",
+        action="store_true",
+        help="Build and run tests with ASan and UBSan modes (MinGW only). Catches memory safety and UB bugs not visible in release builds.",
     )
     parser.add_argument(
         "--compile-commands",
@@ -690,6 +749,16 @@ def main() -> int:
     if args.compile_commands:
         if not write_compile_commands(names, include_tests=args.tests):
             return 1
+
+    if args.run_sanitizers:
+        if args.toolchain != "mingw":
+            print("[!] --run-sanitizers requires the mingw toolchain. Switching to mingw.")
+            _current_toolchain = "mingw"
+        if not run_sanitizer_builds():
+            print("[!] One or more sanitizer builds failed.")
+            return 1
+        print("[*] All sanitizer builds passed.")
+        return 0
 
     if args.tests:
         return 0 if build_tests(run_tests=not args.no_run_tests) else 1

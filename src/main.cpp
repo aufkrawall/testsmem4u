@@ -42,18 +42,40 @@ static constexpr const char* kDefaultConfigPath = "config.ini";
 static constexpr const char* kDefaultPresetPath = "default.cfg";
 static constexpr const char* kOptimizedExecEnv = "TESTSMEM4U_OPTIMIZED_REEXEC";
 
-static bool relaunchExecutablePath(const std::string& executable_path, int argc, char* argv[]) {
-#ifdef _WIN32
-    std::string args;
+// Build a properly escaped command-line string from argv[1..argc) suitable for
+// ShellExecuteExA / CreateProcess. Handles spaces, tabs, and embedded double
+// quotes by wrapping in outer quotes and escaping internal quotes as \".
+// This follows the standard Windows command-line parsing convention used by
+// CommandLineToArgvW.
+static std::string buildArgsString(int argc, char* argv[]) {
+    std::string result;
     for (int i = 1; i < argc; ++i) {
-        if (i > 1) args += " ";
-        std::string arg = argv[i];
-        if (arg.find(' ') != std::string::npos) {
-            args += "\"" + arg + "\"";
+        if (i > 1) result += " ";
+        const std::string arg = argv[i];
+        bool needs_quoting = (arg.find(' ') != std::string::npos ||
+                              arg.find('\t') != std::string::npos ||
+                              arg.find('"') != std::string::npos ||
+                              arg.empty());
+        if (!needs_quoting) {
+            result += arg;
         } else {
-            args += arg;
+            result += '"';
+            for (char c : arg) {
+                if (c == '"') {
+                    result += "\\\"";
+                } else {
+                    result += c;
+                }
+            }
+            result += '"';
         }
     }
+    return result;
+}
+
+static bool relaunchExecutablePath(const std::string& executable_path, int argc, char* argv[]) {
+#ifdef _WIN32
+    std::string args = buildArgsString(argc, argv);
 
     SHELLEXECUTEINFOA sei = {};
     sei.cbSize = sizeof(sei);
@@ -402,17 +424,7 @@ static bool isPrivileged() {
 static bool relaunchAsPrivileged(int argc, char* argv[]) {
 #ifdef _WIN32
     // Re-launch with ShellExecute and "runas" verb
-    std::string args;
-    for (int i = 1; i < argc; ++i) {
-        if (i > 1) args += " ";
-        // Simple quoting - sophisticated quoting might be needed for paths with spaces
-        std::string arg = argv[i];
-        if (arg.find(' ') != std::string::npos) {
-            args += "\"" + arg + "\"";
-        } else {
-            args += arg;
-        }
-    }
+    std::string args = buildArgsString(argc, argv);
 
     // Get current executable path
     char exePath[MAX_PATH];
