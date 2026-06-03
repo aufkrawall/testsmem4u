@@ -42,6 +42,7 @@ static constexpr const char* kDefaultConfigPath = "config.ini";
 static constexpr const char* kDefaultPresetPath = "default.cfg";
 static constexpr const char* kOptimizedExecEnv = "TESTSMEM4U_OPTIMIZED_REEXEC";
 
+#ifdef _WIN32
 // Build a properly escaped command-line string from argv[1..argc) suitable for
 // ShellExecuteExA / CreateProcess. Handles spaces, tabs, and embedded double
 // quotes by wrapping in outer quotes and escaping internal quotes as \".
@@ -72,6 +73,7 @@ static std::string buildArgsString(int argc, char* argv[]) {
     }
     return result;
 }
+#endif
 
 static bool relaunchExecutablePath(const std::string& executable_path, int argc, char* argv[]) {
 #ifdef _WIN32
