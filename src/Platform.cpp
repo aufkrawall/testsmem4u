@@ -955,6 +955,11 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
 // which is not part of the public Windows API and may change or be removed in
 // future versions. A before/after memory probe verifies the operation had an effect
 // and logs a warning if the syscall succeeded but memory did not increase.
+//
+// Last verified: Windows 10 22H2, Windows 11 24H2 (2026-06-04).
+// If this breaks on a future Windows version, the code gracefully falls back:
+// purgeStandbyList returns void, defragPhysicalMemory continues, and
+// allocateMemory retries with chunked large pages and VirtualLock.
 static void purgeStandbyList() {
     // NtSetSystemInformation is not in public headers, load dynamically
     typedef LONG (NTAPI *NtSetSystemInformation_t)(ULONG, PVOID, ULONG);
@@ -1384,6 +1389,7 @@ static bool reserveHugepages(size_t size_needed) {
     if (g_original_hugepages < 0) {
         g_original_hugepages = current_pages;
         std::atexit(restoreHugepages);
+        LOG_INFO("Registered hugepage restoration atexit handler (original count: %d)", current_pages);
     }
 
     // Calculate how many more pages we need

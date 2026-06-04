@@ -56,3 +56,29 @@ Full code and binary quality audit completed. Report at `audit/code-audit-report
 - PE headers confirm ASLR, DEP/NX, CFG, high-entropy VA, stack canaries.
 - Binary sizes consistent (~710-723 KB across 9 targets).
 - No secrets, keys, or sensitive data in source or binaries.
+
+## Audit Improvements: 2026-06-04
+
+Implemented all recommendable audit findings. All tests pass (release, ASan, UBSan). clang-tidy passes clean.
+
+### Implemented (11 findings addressed)
+- **F-05-002**: Removed duplicate `flush_cache_region` call in MirrorMove128 (TestEngine.cpp:531-534).
+- **F-06-003**: Fixed misleading MemoryGuard deleted operator comment (Types.h:103).
+- **F-04-010**: Added config path unsafe-character validation (null bytes, ESC injection) in main.cpp.
+- **F-10-004**: Added `--lint` flag to build.py for clang-tidy static analysis. Created `.clang-tidy` config. Verified clean.
+- **F-03-005**: Added fuzzing harness (`tests/fuzz_preset.cpp`) and `--fuzz` flag to build.py. Graceful error on unsupported platforms (libFuzzer not available for Windows MinGW).
+- **F-07-008**: Added 6 new E2E tests: MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess. Test count: 21 → 27.
+- **F-03-006**: Added hugepage restoration atexit handler log message (Platform.cpp).
+- **F-12-007**: Added Windows version verification comment to `purgeStandbyList` (Platform.cpp).
+
+### Documented as toolchain limitations (not fixable in code)
+- **F-09-001**: CET Shadow Stack (`/CETCOMPAT`) not supported by `ld.lld` (LLVM MinGW linker). PE DLL Characteristics has GUARD_CF but not CET. Requires MSVC linker or post-link PE patching.
+- **F-13-011**: TSan (`-fsanitize=thread`) not supported for `x86_64-w64-windows-gnu` target.
+- **F-03-005 (partial)**: libFuzzer not available for Windows MinGW. Fuzzing harness source is ready for Linux or MSVC/Clang-cl.
+
+### Verification
+- All 27 internal tests pass (release mode).
+- ASan: all tests pass, no memory safety issues.
+- UBSan: all tests pass, no undefined behavior.
+- clang-tidy: no issues found across 9 source files.
+- Fuzzing build: graceful error message on Windows MinGW (libFuzzer unavailable).

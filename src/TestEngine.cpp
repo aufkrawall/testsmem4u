@@ -530,9 +530,6 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
         // Flush the region before verification so reads come from DRAM, not CPU cache.
         simd::flush_cache_region(ptr, region.size);
 
-        // Flush the region before verification so reads come from DRAM, not CPU cache.
-        simd::flush_cache_region(ptr, region.size);
-
         // Verify using bounded error sampling consistent with other tests.
         // MirrorMove128 uses alternating 128-bit {param0, param1} pairs, so we
         // verify even/odd indices separately against their respective uniform values.

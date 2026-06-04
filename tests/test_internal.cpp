@@ -620,6 +620,214 @@ void testSimpleEndToEndWalkingOnes() {
            "End-to-end WalkingOnes: no infrastructure failure");
 }
 
+void testEndToEndMirrorMove128() {
+    constexpr size_t kTestSize = 1ULL * 1024 * 1024; // 1MB
+    auto guard = Platform::allocateMemoryRAII(kTestSize, false, false, true);
+    expect(guard.valid(), "End-to-end MirrorMove128: memory allocation succeeds");
+    if (!guard.valid()) return;
+
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    region.base_offset_bytes = 0;
+    region.is_large_pages = guard.is_large_pages();
+    region.large_page_bytes = guard.large_page_bytes();
+    region.is_locked = guard.is_locked();
+
+    TestConfig tc;
+    tc.function = "MirrorMove128";
+    tc.enabled = true;
+    tc.pattern_mode = 0;
+    tc.pattern_param0 = 0x5555555555555555ULL;
+    tc.pattern_param1 = 0xAAAAAAAAAAAAAAAAULL;
+    tc.parameter = 1;
+
+    TestContext ctx;
+    TestResult res = TestEngine::runMirrorMove128(ctx, region, tc, false);
+
+    expect(res.hard_errors == 0,
+           "End-to-end MirrorMove128: no hard errors on clean run");
+    expect(res.soft_errors == 0,
+           "End-to-end MirrorMove128: no soft errors on clean run");
+    expect(res.bytes_tested >= region.size,
+           "End-to-end MirrorMove128: at least region size bytes tested");
+    expect(!ctx.hasInfrastructureFailure(),
+           "End-to-end MirrorMove128: no infrastructure failure");
+}
+
+void testEndToEndBlockMove() {
+    constexpr size_t kTestSize = 2ULL * 1024 * 1024; // 2MB (needs two halves)
+    auto guard = Platform::allocateMemoryRAII(kTestSize, false, false, true);
+    expect(guard.valid(), "End-to-end BlockMove: memory allocation succeeds");
+    if (!guard.valid()) return;
+
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    region.base_offset_bytes = 0;
+    region.is_large_pages = guard.is_large_pages();
+    region.large_page_bytes = guard.large_page_bytes();
+    region.is_locked = guard.is_locked();
+
+    TestConfig tc;
+    tc.function = "BlockMove";
+    tc.enabled = true;
+    tc.pattern_mode = 0;
+    tc.pattern_param0 = 0xCCCC3333CCCC3333ULL;
+    tc.pattern_param1 = 0;
+    tc.parameter = 1;
+
+    TestContext ctx;
+    TestResult res = TestEngine::runBlockMove(ctx, region, tc, false);
+
+    expect(res.hard_errors == 0,
+           "End-to-end BlockMove: no hard errors on clean run");
+    expect(res.soft_errors == 0,
+           "End-to-end BlockMove: no soft errors on clean run");
+    expect(res.bytes_tested >= region.size,
+           "End-to-end BlockMove: at least region size bytes tested");
+    expect(!ctx.hasInfrastructureFailure(),
+           "End-to-end BlockMove: no infrastructure failure");
+}
+
+void testEndToEndMovingInversion() {
+    constexpr size_t kTestSize = 1ULL * 1024 * 1024; // 1MB
+    auto guard = Platform::allocateMemoryRAII(kTestSize, false, false, true);
+    expect(guard.valid(), "End-to-end MovingInversion: memory allocation succeeds");
+    if (!guard.valid()) return;
+
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    region.base_offset_bytes = 0;
+    region.is_large_pages = guard.is_large_pages();
+    region.large_page_bytes = guard.large_page_bytes();
+    region.is_locked = guard.is_locked();
+
+    TestConfig tc;
+    tc.function = "MovingInversion";
+    tc.enabled = true;
+    tc.pattern_mode = 0;
+    tc.pattern_param0 = 0xAAAAAAAAAAAAAAAAULL;
+    tc.pattern_param1 = 0;
+    tc.parameter = 1;
+
+    TestContext ctx;
+    TestResult res = TestEngine::runMovingInversion(ctx, region, tc, false);
+
+    expect(res.hard_errors == 0,
+           "End-to-end MovingInversion: no hard errors on clean run");
+    expect(res.soft_errors == 0,
+           "End-to-end MovingInversion: no soft errors on clean run");
+    expect(res.bytes_tested >= region.size * 2,
+           "End-to-end MovingInversion: at least 2x region size bytes tested");
+    expect(!ctx.hasInfrastructureFailure(),
+           "End-to-end MovingInversion: no infrastructure failure");
+}
+
+void testEndToEndMovingInversionLFSR() {
+    constexpr size_t kTestSize = 1ULL * 1024 * 1024; // 1MB
+    auto guard = Platform::allocateMemoryRAII(kTestSize, false, false, true);
+    expect(guard.valid(), "End-to-end MovingInversionLFSR: memory allocation succeeds");
+    if (!guard.valid()) return;
+
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    region.base_offset_bytes = 0;
+    region.is_large_pages = guard.is_large_pages();
+    region.large_page_bytes = guard.large_page_bytes();
+    region.is_locked = guard.is_locked();
+
+    TestConfig tc;
+    tc.function = "MovingInversionLFSR";
+    tc.enabled = true;
+    tc.pattern_mode = 0;
+    tc.pattern_param0 = 0xACE1ACE2DEADBEEFULL;
+    tc.pattern_param1 = 0;
+    tc.parameter = 1;
+
+    TestContext ctx;
+    TestResult res = TestEngine::runMovingInversionLFSR(ctx, region, tc, false);
+
+    expect(res.hard_errors == 0,
+           "End-to-end MovingInversionLFSR: no hard errors on clean run");
+    expect(res.soft_errors == 0,
+           "End-to-end MovingInversionLFSR: no soft errors on clean run");
+    expect(res.bytes_tested >= region.size * 2,
+           "End-to-end MovingInversionLFSR: at least 2x region size bytes tested");
+    expect(!ctx.hasInfrastructureFailure(),
+           "End-to-end MovingInversionLFSR: no infrastructure failure");
+}
+
+void testEndToEndLFSRPattern() {
+    constexpr size_t kTestSize = 1ULL * 1024 * 1024; // 1MB
+    auto guard = Platform::allocateMemoryRAII(kTestSize, false, false, true);
+    expect(guard.valid(), "End-to-end LFSRPattern: memory allocation succeeds");
+    if (!guard.valid()) return;
+
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    region.base_offset_bytes = 0;
+    region.is_large_pages = guard.is_large_pages();
+    region.large_page_bytes = guard.large_page_bytes();
+    region.is_locked = guard.is_locked();
+
+    TestConfig tc;
+    tc.function = "LFSRPattern";
+    tc.enabled = true;
+    tc.pattern_mode = 0;
+    tc.pattern_param0 = 0xACE1ACE2DEADBEEFULL;
+    tc.pattern_param1 = 0;
+    tc.parameter = 0;
+
+    TestContext ctx;
+    TestResult res = TestEngine::runLFSRPattern(ctx, region, tc, false);
+
+    expect(res.hard_errors == 0,
+           "End-to-end LFSRPattern: no hard errors on clean run");
+    expect(res.soft_errors == 0,
+           "End-to-end LFSRPattern: no soft errors on clean run");
+    expect(res.bytes_tested >= region.size,
+           "End-to-end LFSRPattern: at least region size bytes tested");
+    expect(!ctx.hasInfrastructureFailure(),
+           "End-to-end LFSRPattern: no infrastructure failure");
+}
+
+void testEndToEndRandomAccess() {
+    constexpr size_t kTestSize = 1ULL * 1024 * 1024; // 1MB
+    auto guard = Platform::allocateMemoryRAII(kTestSize, false, false, true);
+    expect(guard.valid(), "End-to-end RandomAccess: memory allocation succeeds");
+    if (!guard.valid()) return;
+
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    region.base_offset_bytes = 0;
+    region.is_large_pages = guard.is_large_pages();
+    region.large_page_bytes = guard.large_page_bytes();
+    region.is_locked = guard.is_locked();
+
+    TestConfig tc;
+    tc.function = "RandomAccess";
+    tc.enabled = true;
+    tc.pattern_mode = 0;
+    tc.pattern_param0 = 0;
+    tc.pattern_param1 = 0;
+    tc.parameter = 1; // 1 pass
+
+    TestContext ctx;
+    TestResult res = TestEngine::runRandomAccess(ctx, region, tc, false);
+
+    expect(res.hard_errors == 0,
+           "End-to-end RandomAccess: no hard errors on clean run");
+    expect(res.soft_errors == 0,
+           "End-to-end RandomAccess: no soft errors on clean run");
+    expect(!ctx.hasInfrastructureFailure(),
+           "End-to-end RandomAccess: no infrastructure failure");
+}
+
 } // namespace
 
 int main() {
@@ -663,6 +871,12 @@ int main() {
     // End-to-end tests with real memory allocation
     testSimpleEndToEnd();
     testSimpleEndToEndWalkingOnes();
+    testEndToEndMirrorMove128();
+    testEndToEndBlockMove();
+    testEndToEndMovingInversion();
+    testEndToEndMovingInversionLFSR();
+    testEndToEndLFSRPattern();
+    testEndToEndRandomAccess();
 
     ConsoleDisplay::get().setTestingActive(false);
 

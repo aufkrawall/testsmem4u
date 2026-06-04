@@ -50,6 +50,7 @@ SRC_FILES = [
 ]
 
 TEST_SRC_FILE = PROJECT_ROOT / "tests" / "test_internal.cpp"
+FUZZ_SRC_FILE = PROJECT_ROOT / "tests" / "fuzz_preset.cpp"
 TEST_SUPPORT_SRC_FILES = [src for src in SRC_FILES if src.name != "main.cpp"]
 
 
@@ -626,6 +627,204 @@ def write_compile_commands(names: list[str], include_tests: bool = False) -> boo
     return True
 
 
+MINGW_CLANG_TIDY = MINGW_DIR / f"llvm-mingw-{MINGW_VERSION}-ucrt-x86_64" / "bin" / "clang-tidy.exe"
+
+
+def run_lint() -> bool:
+    """Run clang-tidy static analysis on all source files."""
+    if _current_toolchain != "mingw":
+        print("[!] --lint requires the mingw toolchain.")
+        return False
+
+    clang_tidy = MINGW_CLANG_TIDY
+    if not clang_tidy.exists():
+        print(f"[!] clang-tidy not found: {clang_tidy}")
+        return False
+
+    compile_commands = PROJECT_ROOT / "compile_commands.json"
+    if not compile_commands.exists():
+        print("[!] compile_commands.json not found. Run with --compile-commands first.")
+        return False
+
+    all_sources = [str(src.relative_to(PROJECT_ROOT)) for src in SRC_FILES]
+    all_sources.append(str(TEST_SRC_FILE.relative_to(PROJECT_ROOT)))
+
+    print(f"[*] Running clang-tidy on {len(all_sources)} files...")
+    ok = True
+    for src in all_sources:
+        cmd = [
+            str(clang_tidy),
+            f"-p={PROJECT_ROOT}",
+            "--system-headers=0",
+            src,
+        ]
+        print(f"  [*] {src}")
+        result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+        if result.stdout.strip():
+            # Filter out notes from non-project headers
+            lines = result.stdout.strip().split("\n")
+            relevant = [l for l in lines if "warning:" in l or "error:" in l]
+            if relevant:
+                for line in relevant:
+                    print(f"    {line}")
+        if result.returncode != 0:
+            print(f"    [!] clang-tidy returned {result.returncode}")
+            ok = False
+
+    if ok:
+        print("[*] clang-tidy: no issues found.")
+    else:
+        print("[!] clang-tidy: issues found (see above).")
+    return ok
+
+
+def build_fuzz() -> bool:
+    """Build and run the fuzzing harness for preset/config parsers."""
+    global _current_toolchain, _current_build_mode
+
+    if _current_toolchain != "mingw":
+        print("[!] --fuzz requires the mingw toolchain. Switching to mingw.")
+        _current_toolchain = "mingw"
+
+    compiler = get_compiler()
+    if not Path(compiler).exists():
+        print(f"[!] Compiler not found: {compiler}")
+        return False
+
+    if not FUZZ_SRC_FILE.exists():
+        print(f"[!] Fuzz source not found: {FUZZ_SRC_FILE}")
+        return False
+
+    target = TARGETS["windows-x86_64"]
+    obj_dir = BUILD_DIR / "obj" / "fuzz" / "windows-x86_64"
+    obj_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if libFuzzer is supported for this target
+    test_result = subprocess.run(
+        [str(compiler), "--target=x86_64-w64-mingw32", "-fsanitize=fuzzer", "-x", "c++", "-c", "-", "-o", "NUL"],
+        input="int main(){return 0;}", capture_output=True, text=True, cwd=PROJECT_ROOT,
+    )
+    if test_result.returncode != 0:
+        print("[!] -fsanitize=fuzzer is not supported for x86_64-w64-windows-gnu target.")
+        print("    LLVM MinGW does not ship a libFuzzer runtime for Windows.")
+        print("    To run fuzzing, use a Linux build or a native MSVC/Clang-cl toolchain.")
+        print("    The fuzzing harness source (tests/fuzz_preset.cpp) is ready for those platforms.")
+        return False
+
+    # Support sources: compile without fuzzer flag (they just need ASan)
+    support_cxx_flags = [
+        "-std=c++17", "-Wall", "-Wextra",
+        "-O1", "-g",
+        "-fsanitize=address",
+        "-fno-omit-frame-pointer",
+        "-DTESTSMEM4U_FUZZING",
+        "-Wno-unused-command-line-argument",
+    ]
+    support_compile_cmd = [
+        str(compiler),
+        "--target=x86_64-w64-mingw32",
+        *support_cxx_flags,
+        f"-I{INCLUDE_DIR}",
+    ]
+
+    # Fuzz source: compile with both fuzzer and ASan
+    fuzz_cxx_flags = [
+        "-std=c++17", "-Wall", "-Wextra",
+        "-O1", "-g",
+        "-fsanitize=fuzzer,address",
+        "-fno-omit-frame-pointer",
+        "-DTESTSMEM4U_FUZZING",
+        "-Wno-unused-command-line-argument",
+    ]
+    fuzz_compile_cmd = [
+        str(compiler),
+        "--target=x86_64-w64-mingw32",
+        *fuzz_cxx_flags,
+        f"-I{INCLUDE_DIR}",
+    ]
+
+    obj_files = []
+    print(f"[*] Compiling fuzz objects...")
+    ok = True
+
+    # Compile support sources (no fuzzer)
+    for src in TEST_SUPPORT_SRC_FILES:
+        obj_file = obj_dir / (src.stem + target["obj_ext"])
+        obj_files.append(obj_file)
+        cmd = support_compile_cmd + ["-c", str(src), "-o", str(obj_file)]
+        result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"[!] Failed to compile {src.name}:")
+            print(result.stderr)
+            ok = False
+        elif result.stderr.strip():
+            print(f"[W] Warnings in {src.name}:")
+            print(result.stderr)
+
+    # Compile fuzz source (with fuzzer)
+    fuzz_obj = obj_dir / (FUZZ_SRC_FILE.stem + target["obj_ext"])
+    obj_files.append(fuzz_obj)
+    cmd = fuzz_compile_cmd + ["-c", str(FUZZ_SRC_FILE), "-o", str(fuzz_obj)]
+    result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[!] Failed to compile {FUZZ_SRC_FILE.name}:")
+        print(result.stderr)
+        ok = False
+    elif result.stderr.strip():
+        print(f"[W] Warnings in {FUZZ_SRC_FILE.name}:")
+        print(result.stderr)
+
+    if not ok:
+        return False
+
+    # Link with fuzzer runtime
+    fuzz_exe = BUILD_DIR / "testsmem4u-fuzz.exe"
+    link_flags = ["-fsanitize=fuzzer,address", "-Wno-unused-command-line-argument"]
+    link_cmd = [
+        str(compiler),
+        "--target=x86_64-w64-mingw32",
+        *link_flags,
+        *[str(obj) for obj in obj_files],
+        f"-o{fuzz_exe}",
+    ]
+
+    print("[*] Linking fuzzer...")
+    result = subprocess.run(link_cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        print("[!] Fuzz linking failed:")
+        print(result.stderr)
+        return False
+    if result.stderr.strip():
+        print(f"[W] Fuzz linker warnings:")
+        print(result.stderr)
+
+    if fuzz_exe.exists():
+        size = fuzz_exe.stat().st_size
+        print(f"[*] OK: {fuzz_exe} ({size:,} bytes)")
+
+    # Run fuzzer with a brief timeout to verify it works
+    fuzz_corpus = BUILD_DIR / "fuzz_corpus"
+    fuzz_corpus.mkdir(parents=True, exist_ok=True)
+
+    print("[*] Running fuzzer (verification run)...")
+    test_env = os.environ.copy()
+    mingw_bin = str(MINGW_CXX.parent)
+    test_env["PATH"] = f"{mingw_bin};{test_env.get('PATH', '')}"
+    result = subprocess.run(
+        [str(fuzz_exe), str(fuzz_corpus), "-max_len=4096", "-runs=0", "-timeout=10"],
+        cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=30, env=test_env,
+    )
+    if result.returncode != 0 and result.returncode != 1:
+        print(f"[!] Fuzzer exited with code {result.returncode}")
+        if result.stderr.strip():
+            print(result.stderr)
+        return False
+
+    print("[*] Fuzzer verification passed. Run manually for extended fuzzing:")
+    print(f"    {fuzz_exe} {fuzz_corpus} -max_len=4096 -timeout=30")
+    return True
+
+
 def run_sanitizer_builds() -> bool:
     """Build and run tests with ASan and UBSan modes under the MinGW toolchain.
     This exercises the sanitizer build modes that catch memory safety bugs and
@@ -702,6 +901,16 @@ def main() -> int:
         help="Write compile_commands.json for clangd/LSP tooling.",
     )
     parser.add_argument(
+        "--lint",
+        action="store_true",
+        help="Run clang-tidy static analysis on all source files (requires mingw toolchain and compile_commands.json).",
+    )
+    parser.add_argument(
+        "--fuzz",
+        action="store_true",
+        help="Build and run the fuzzing harness for preset/config parsers (MinGW only, requires ASan DLL in PATH).",
+    )
+    parser.add_argument(
         "--toolchain",
         type=str,
         default="mingw",
@@ -760,6 +969,19 @@ def main() -> int:
             return 1
         print("[*] All sanitizer builds passed.")
         return 0
+
+    if args.lint:
+        if not args.compile_commands:
+            # Ensure compile_commands.json exists for lint
+            if not (PROJECT_ROOT / "compile_commands.json").exists():
+                print("[*] Generating compile_commands.json for lint...")
+                names_for_cc = expand_target_names(args.targets)
+                if not write_compile_commands(names_for_cc, include_tests=True):
+                    return 1
+        return 0 if run_lint() else 1
+
+    if args.fuzz:
+        return 0 if build_fuzz() else 1
 
     if args.tests:
         return 0 if build_tests(run_tests=not args.no_run_tests) else 1

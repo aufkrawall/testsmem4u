@@ -99,7 +99,8 @@ public:
         return *this;
     }
 
-    // Self-move assignment safety - do nothing if self-assigned
+    // Prevent accidental copy-assignment (non-const lvalue ref).
+    // Move assignment (MemoryGuard&&) already handles self-assignment via this != &other check.
     MemoryGuard& operator=(MemoryGuard& other) = delete;
 
     uint8_t* base() const { return base_; }

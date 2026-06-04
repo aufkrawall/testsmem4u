@@ -747,6 +747,13 @@ static int printPresetList(const std::string& directory) {
     return 0;
 }
 
+static bool hasUnsafeConfigPathCharacters(const std::string& path) {
+    if (path.empty()) return true;
+    if (path.find('\0') != std::string::npos) return true;
+    if (path.find('\x1b') != std::string::npos) return true;
+    return false;
+}
+
 static bool parseCliOptions(int argc, char* argv[], CliOptions& options, std::string& error) {
     bool saw_preset_source = false;
     bool saw_config_source = false;
@@ -863,6 +870,10 @@ static bool parseCliOptions(int argc, char* argv[], CliOptions& options, std::st
             options.config_path = Utils::trim(value);
             if (options.config_path.empty()) {
                 error = "Config file path cannot be empty.";
+                return false;
+            }
+            if (hasUnsafeConfigPathCharacters(options.config_path)) {
+                error = "Config file path contains unsafe characters (null byte or ESC).";
                 return false;
             }
             options.config_path_set = true;

@@ -21,5 +21,14 @@ It automatically attempts to relaunch itself using AVX2 (-v3) or AVX-512 (-v4) s
 - MovingInversionLFSR Phase 4 uses backward march with pre-computed LFSR seed table for correct address-line coverage.
 - Signal handler uses `memory_order_release` for `g_shutdown_initiated` to ensure stop flag visibility to workers.
 
+## Build Tools
+- `python build.py --lint`: Runs clang-tidy static analysis (requires `--compile-commands` or generates automatically).
+- `python build.py --fuzz`: Builds fuzzing harness for preset/config parsers (requires Linux or MSVC/Clang-cl; libFuzzer unavailable on Windows MinGW).
+- `python build.py --tests`: Builds and runs 27 internal tests (Utils, Preset, Config, SIMD, LFSR, Concurrency, E2E).
+- `python build.py --run-sanitizers`: Runs ASan + UBSan builds and tests.
+
+## Test Coverage
+- 27 internal tests covering: Utils parsing, Preset loading/validation, Config save/load round-trip, SIMD pattern generation/verification, LFSR vectors, Thread barrier, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess.
+
 Last verified: 2026-06-04
 Stale risk: Low
