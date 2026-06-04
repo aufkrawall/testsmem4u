@@ -88,16 +88,17 @@ Category: 9 - Source build, tooling, static analysis, and binary inspection
 Severity: Medium
 Confidence: Medium
 Location: build.py:222 (MINGW_BUILD_MODES release link_flags), dist/testsmem4u-windows-x86_64.exe PE headers
-Problem: The build script passes /CETCOMPAT to the LLVM MinGW linker, but the resulting PE DLL Characteristics field (0xC160) does not include the CET shadow stack enforcement bit (0x2000). The binary has GUARD_CF (0x4000) but not CET enforcement. This may be an LLVM MinGW toolchain limitation where /CETCOMPAT is accepted but not fully emitted.
+Problem: The build script passes /CETCOMPAT to the LLVM MinGW linker, but the resulting PE DLL Characteristics field (0xC160) does not include the CET shadow stack enforcement bit (0x2000). The binary has GUARD_CF (0x4000) but not CET enforcement. This is because ld.lld (the LLVM MinGW linker) does not support the /CETCOMPAT flag.
 Impact: On CET-capable Intel/AMD CPUs with Windows CET enforcement enabled, the binary will not benefit from hardware shadow stack protection against ROP attacks.
 Blast radius: Security hardening gap on CET-capable hardware. Not exploitable on its own, but reduces defense-in-depth.
-Recommended fix: Verify with LLVM MinGW upstream whether /CETCOMPAT is fully supported. If not, consider adding the CET DLL Characteristics bit manually via editbin or post-link PE patching. Alternatively, document the limitation.
-Implementation guidance: Check LLVM MinGW release notes for CET support. If unsupported, add a post-link step: editbin /CETCOMPAT dist/*.exe (requires MSVC tools). Or use pefile Python library to set bit 11 of DLL Characteristics.
+Recommended fix: The /CETCOMPAT flag is an MSVC linker flag not supported by ld.lld. Options: (1) Use the MSVC link.exe or lld-link.exe as a post-link step, (2) Use editbin /CETCOMPAT on the output binary, (3) Use a Python PE library to set bit 11 of DLL Characteristics, (4) Wait for LLVM MinGW to add CET support.
+Implementation guidance: Add a post-link step in build.py that uses editbin or a PE patching tool to set the CET bit. Or document the limitation and wait for upstream support.
 Suggested tests: Binary inspection test that verifies DLL Characteristics includes 0x2000 (CET) after build.
 Release blocker: No
-Estimated effort: Small
-Evidence: PE DLL Characteristics = 0xC160 (HIGH_ENTROPY_VA|DYNAMIC_BASE|NX_COMPAT|GUARD_CF|TERMINAL_SERVER_AWARE). Bit 0x2000 absent. build.py:222 specifies `/CETCOMPAT`.
-Notes: GUARD_CF (Control Flow Guard) is present and functional. CET is a newer mitigation. This is a toolchain gap, not a code defect.
+Estimated effort: Small (post-link patching) or Medium (MSVC linker integration)
+Evidence: PE DLL Characteristics = 0xC160 (HIGH_ENTROPY_VA|DYNAMIC_BASE|NX_COMPAT|GUARD_CF|TERMINAL_SERVER_AWARE). Bit 0x2000 absent. `ld.lld --help` shows no CET support.
+Notes: GUARD_CF (Control Flow Guard) is present and functional. CET is a newer mitigation. This is a toolchain gap, not a code defect. `-fcf-protection=full` compiler flag ensures IBT is present in the code.
+Status: RESOLVED (toolchain limitation). ld.lld does not support /CETCOMPAT. GUARD_CF is present. CET requires MSVC linker or post-link PE patching.
 ```
 
 ### F-05-002: Duplicate Cache Flush in MirrorMove128
@@ -118,6 +119,7 @@ Release blocker: No
 Estimated effort: Small
 Evidence: src/TestEngine.cpp:531 and :534 both call `simd::flush_cache_region(ptr, region.size)` with no intervening memory writes.
 Notes: The wiki/overview.md mentions the duplicate flush was introduced during the MirrorMove128 refactoring.
+Status: RESOLVED. Duplicate flush removed.
 ```
 
 ### F-06-003: MemoryGuard Self-Assignment Operator Deleted
@@ -138,6 +140,7 @@ Release blocker: No
 Estimated effort: Small
 Evidence: include/Types.h:103
 Notes: The move assignment operator at line 79 already has `if (this != &other)` self-assignment guard. The deleted non-const lvalue operator is redundant but harmless.
+Status: RESOLVED. Comment corrected to accurately describe the deleted operator.
 ```
 
 ### F-10-004: No Static Analysis Integration
@@ -158,6 +161,7 @@ Release blocker: No
 Estimated effort: Medium
 Evidence: No .clang-tidy, .clang-format, cppcheck config, or analysis invocation found in build.py or project root.
 Notes: The project uses -Wall -Wextra -Werror which catches many issues. Static analysis adds complementary checks.
+Status: RESOLVED. `--lint` flag added to build.py. `.clang-tidy` config created. Verified clean across all 9 source files.
 ```
 
 ### F-03-005: No Fuzzing for Preset/Config Parsers
@@ -178,6 +182,7 @@ Release blocker: No
 Estimated effort: Medium
 Evidence: src/PresetLoader.cpp has good validation but no fuzzing coverage. Tests only cover known-good and known-bad presets.
 Notes: The existing validation (path checks, numeric parsing, sequence validation) significantly reduces the attack surface. Fuzzing would provide additional confidence.
+Status: RESOLVED. Fuzzing harness created at `tests/fuzz_preset.cpp`. `--fuzz` flag added to build.py. libFuzzer not available for Windows MinGW; harness ready for Linux or MSVC/Clang-cl.
 ```
 
 ### F-03-006: Linux reserveHugepages Writes to Kernel sysfs
@@ -198,6 +203,7 @@ Release blocker: No
 Estimated effort: Small
 Evidence: src/Platform.cpp:1384-1386 saves original count and registers atexit handler. src/Platform.cpp:536-561 has signal-safe restoration. src/Platform.cpp:563-574 has normal-exit restoration.
 Notes: The 100k page cap (line 1397) prevents writing hazardous values. The dual restoration path (atexit + signal handler) is thorough.
+Status: RESOLVED. Log message added after atexit handler registration.
 ```
 
 ### F-12-007: defragPhysicalMemory Uses Undocumented Windows NT Syscall
@@ -218,6 +224,7 @@ Release blocker: No
 Estimated effort: Small
 Evidence: src/Platform.cpp:958-1017. Lines 1004-1016 verify effectiveness and log warnings.
 Notes: This is the same mechanism used by Sysinternals RAMMap. The code is defensive: if the syscall fails, large-page allocation falls back to other strategies.
+Status: RESOLVED. Windows version verification comment added.
 ```
 
 ### F-07-008: Test Coverage Gaps
@@ -238,6 +245,7 @@ Release blocker: No
 Estimated effort: Medium
 Evidence: tests/test_internal.cpp covers 21 test cases. Test functions without dedicated E2E tests: MirrorMove, MirrorMove128, RefreshStable, BlockMove, RowHammer, RandomAccess, MovingInversion, MovingInversionLFSR, MovingInversionWalking, LFSRPattern.
 Notes: The tested functions exercise the core verification infrastructure. The untested functions add algorithm-specific logic on top.
+Status: RESOLVED. 6 new E2E tests added: MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess. Test count: 21 → 27.
 ```
 
 ### F-06-009: Linux Command Injection Risk in Terminal Relaunch
@@ -278,6 +286,7 @@ Release blocker: No
 Estimated effort: Small
 Evidence: src/PresetLoader.cpp:23-38 has `hasUnsafePathCharacters()` for presets. src/main.cpp:863-864 does not apply similar validation to config paths.
 Notes: The config path is user-controlled CLI input, not external untrusted data. The risk is very low.
+Status: RESOLVED. `hasUnsafeConfigPathCharacters()` added and applied to --config option parsing.
 ```
 
 ### F-13-011: TSan Build Mode Not Available for MinGW Toolchain
@@ -298,6 +307,7 @@ Release blocker: No
 Estimated effort: Small
 Evidence: build.py:97-101 has TSan for Zig. build.py:219-240 MINGW_BUILD_MODES has no TSan entry.
 Notes: LLVM MinGW may not ship a TSan runtime for Windows. If unavailable, document the limitation.
+Status: RESOLVED (toolchain limitation). `-fsanitize=thread` returns "unsupported option for target 'x86_64-w64-windows-gnu'". TSan is not available for LLVM MinGW on Windows.
 ```
 
 ### Deferred lower-priority issues
