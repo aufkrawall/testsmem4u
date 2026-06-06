@@ -60,7 +60,6 @@ private:
 
     std::mutex mutex_;
     int console_width_ = 80;
-    int last_rendered_len_ = 0;
     bool status_active_ = false;
     bool initialized_ = false;
 

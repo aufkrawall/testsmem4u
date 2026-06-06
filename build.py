@@ -144,7 +144,11 @@ TARGETS = {
     "linux-x86": {
         "zig_target": "x86-linux-musl",
         "output": "testsmem4u-linux-x86",
-        "extra_flags": ["-pthread", "-msse2"],
+        # -Wno-atomic-alignment: on 32-bit x86 the uint64 RowHammer atomics have an
+        # ABI type-alignment of 4, but the tested region is page-aligned so every
+        # element is in fact 8-byte aligned at runtime. The warning is a provably
+        # false positive here, so it is suppressed only for this target.
+        "extra_flags": ["-pthread", "-msse2", "-Wno-atomic-alignment"],
         "obj_ext": ".o",
     },
     "linux-x86_64": {
@@ -243,6 +247,38 @@ MINGW_BUILD_MODES = {
 def get_modes():
     return MINGW_BUILD_MODES if _current_toolchain == "mingw" else BUILD_MODES
 
+
+def target_is_arm(target: dict) -> bool:
+    return target.get("zig_target", "").startswith("aarch64")
+
+
+def compatible_toolchains(target: dict) -> set:
+    """Which toolchains can correctly produce this target.
+
+    - x86_64 Windows: mingw only. It provides the CFG+CET hardened, statically
+      linked PE; zig's lld rejects the /CETCOMPAT linker switch.
+    - Everything else (all Linux arches and Windows-on-ARM): zig only. The mingw
+      wrapper always targets x86_64-w64-mingw32, so it cannot cross-compile to
+      Linux or to AArch64 Windows.
+    """
+    zt = target.get("zig_target", "")
+    if zt.startswith("x86_64") and zt.endswith("windows-gnu"):
+        return {"mingw"}
+    return {"zig"}
+
+
+def _drop_xlinker_pairs(flags: list[str], drop_values: set) -> list[str]:
+    """Remove '-Xlinker <value>' pairs whose value is in drop_values."""
+    out = []
+    i = 0
+    while i < len(flags):
+        if flags[i] == "-Xlinker" and i + 1 < len(flags) and flags[i + 1] in drop_values:
+            i += 2
+            continue
+        out.append(flags[i])
+        i += 1
+    return out
+
 def split_compile_link_flags(target: dict, for_test: bool = False) -> tuple[list[str], list[str]]:
     modes = get_modes()
     mode = modes[_current_build_mode]
@@ -252,7 +288,12 @@ def split_compile_link_flags(target: dict, for_test: bool = False) -> tuple[list
     compile_flags += [
         f
         for f in target_extra_flags
-        if not f.startswith("-l") and not f.startswith("-Wl") and not f.startswith("-Xlinker")
+        # Exclude link-only flags: libraries (-l), linker passthrough (-Wl/-Xlinker),
+        # and MSVC-style linker switches (/CETCOMPAT, /guard:cf). These belong only
+        # in the link step; leaking them into the compile command makes zig c++
+        # treat e.g. "/CETCOMPAT" as an input file ("unrecognized file extension").
+        if not f.startswith("-l") and not f.startswith("-Wl")
+        and not f.startswith("-Xlinker") and not f.startswith("/")
     ]
 
     link_flags = list(BASE_CXX_FLAGS) + list(mode["link_flags"]) + list(mode["cxx_flags"])
@@ -266,6 +307,15 @@ def split_compile_link_flags(target: dict, for_test: bool = False) -> tuple[list
         # is acceptable because CFG/CET are mature OS-level mitigations and
         # application-side regressions affecting them are extremely rare.
         link_flags = [f for f in link_flags if f not in ("/guard:cf", "/CETCOMPAT", "-Xlinker")]
+
+    if target_is_arm(target):
+        # Intel CET (-fcf-protection / /CETCOMPAT) and Control Flow Guard
+        # (/guard:cf) are x86-only and rejected by the AArch64 backend/linker.
+        # Strip them so ARM targets build; AArch64 has its own (BTI/PAC) schemes.
+        x86_only = {"-fcf-protection=full", "/CETCOMPAT", "/guard:cf"}
+        compile_flags = [f for f in compile_flags if f not in x86_only]
+        link_flags = _drop_xlinker_pairs(link_flags, {"/CETCOMPAT", "/guard:cf"})
+        link_flags = [f for f in link_flags if f not in x86_only]
     return compile_flags, link_flags
 
 
@@ -985,6 +1035,27 @@ def main() -> int:
 
     if args.tests:
         return 0 if build_tests(run_tests=not args.no_run_tests) else 1
+
+    # Only build targets the selected toolchain can correctly produce. This
+    # prevents silently emitting mislabeled/broken binaries (e.g. mingw producing
+    # an x86_64 PE under a "linux-*" name, or zig failing on /CETCOMPAT for
+    # x86_64 Windows). Build the full 10-target matrix with two runs:
+    #   python build.py --toolchain mingw   (x86_64 Windows: hardened PEs)
+    #   python build.py --toolchain zig     (Linux + Windows-ARM)
+    buildable = []
+    for n in names:
+        compat = compatible_toolchains(TARGETS[n])
+        if _current_toolchain in compat:
+            buildable.append(n)
+        else:
+            print(f"[*] Skipping {n}: requires --toolchain {'/'.join(sorted(compat))} "
+                  f"(current: {_current_toolchain}).")
+
+    if not buildable:
+        print("[!] None of the requested targets can be built with the "
+              f"'{_current_toolchain}' toolchain. See messages above.")
+        return 1
+    names = buildable
 
     print(f"[*] Building {len(names)} targets in parallel...")
     ok = True

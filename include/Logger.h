@@ -99,7 +99,7 @@ private:
     std::chrono::high_resolution_clock::time_point start_time_;
 
     uint32_t error_count_;
-    uint32_t error_rate_limit_;
+    std::atomic<uint32_t> error_rate_limit_;
     uint32_t suppressed_count_;
     std::chrono::high_resolution_clock::time_point last_summary_time_;
 };

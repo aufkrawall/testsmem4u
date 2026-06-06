@@ -17,7 +17,7 @@ void Logger::init(const std::string& filename, LogLevel level, bool purge) {
 
     start_time_ = std::chrono::high_resolution_clock::now();
     error_count_ = 0;
-    error_rate_limit_ = 100;
+    error_rate_limit_.store(100, std::memory_order_relaxed);
     suppressed_count_ = 0;
     dropped_critical_messages_.store(0, std::memory_order_relaxed);
     dropped_noncritical_messages_.store(0, std::memory_order_relaxed);
@@ -35,8 +35,7 @@ void Logger::init(const std::string& filename, LogLevel level, bool purge) {
 }
 
 void Logger::setErrorRateLimit(uint32_t errors_per_second) {
-    std::lock_guard<std::mutex> lock(init_mutex_);
-    error_rate_limit_ = errors_per_second;
+    error_rate_limit_.store(errors_per_second, std::memory_order_relaxed);
 }
 
 void Logger::deinit() {
@@ -139,7 +138,7 @@ void Logger::handleConsoleOutput(const std::string& message) {
         last_summary_time_ = now;
     }
 
-    if (error_count_ >= error_rate_limit_) {
+    if (error_count_ >= error_rate_limit_.load(std::memory_order_relaxed)) {
         suppressed_count_++;
         return;
     }

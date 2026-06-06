@@ -1,5 +1,74 @@
 # Recent Log
 
+## Full Review & Fixes: 2026-06-07
+
+Deep review pass. Found and fixed several real issues the prior audit missed, plus
+dead-code/build cleanups. All 10 targets build (zig: Linux+Win-ARM, mingw: x64 Win),
+internal tests + ASan + UBSan pass, clang-tidy clean.
+
+### Correctness / reliability
+- **Barrier deadlock under async stop** (TestEngine `executeSuite`): per-thread
+  `shouldStop()` checks around `ThreadBarrier` (and in the `while` condition) could
+  diverge when Ctrl+C flipped the flag mid-loop, leaving workers stranded on a
+  barrier → hang until the 2nd Ctrl+C force-kills. Fix: leader (t==0) latches the
+  stop decision into `epoch_stop` BEFORE each barrier; all workers read it AFTER,
+  so barrier arrivals stay symmetric. Invariant: number of `barrier.arriveAndWait()`
+  calls per cycle is identical across all workers regardless of stop timing.
+- **AVX-512 never auto-selected**: AVX-512 CPUID/XCR0 detection was behind
+  `#if defined(__AVX512F__)`, so the baseline binary (which makes the relaunch
+  decision) could never set `has_avx512` → it relaunched to -v3 even on AVX-512 HW
+  and -v4 stayed dead. Fix: detect AVX-512 capability unconditionally in
+  `detect_x86_capabilities`; instruction emission stays `#if`-guarded so baseline/v3
+  never emit AVX-512.
+- **MirrorMove128 soft-error logging** reported the re-read (corrected) value, not
+  the originally-observed bad value. Fix: capture `observed` before `safe_read_u64`.
+
+### Effectiveness / robustness
+- **RefreshStable** now sleeps in 100 ms slices checking `shouldStop()` (was a single
+  up-to-10 s blocking sleep, unresponsive to Ctrl+C). Region untouched → retention
+  window preserved.
+- **MovingInversionLFSR** seed table hoisted out of the repeat loop (was an extra
+  O(count) LFSR walk per repeat); now built once (invariant of repeats).
+- **Loop-count 32-bit overflow** in `executeSuite` (`time_percent*time_percent`)
+  → 64-bit math.
+- Added a startup SIMD diagnostic log: `built for <ISA>; CPU supports AVX2/AVX-512`
+  to confirm the v3/v4 variant is actually running.
+
+### Build system (all 10 targets now build correctly)
+- `-fcf-protection=full` / `/CETCOMPAT` / `/guard:cf` are x86-only; stripped for
+  AArch64 targets (`target_is_arm`) so linux-arm64 and windows-arm64 build with zig.
+- MSVC linker switches (`/CETCOMPAT` etc.) no longer leak into the compile command
+  (zig treated `/CETCOMPAT` as an input file).
+- linux-x86 (32-bit): `-Wno-atomic-alignment` (RowHammer uint64 atomics are 8-byte
+  aligned at runtime via page-aligned region; i386 ABI just can't prove it).
+- **Per-toolchain target compatibility**: `compatible_toolchains()` — x64 Windows ⇒
+  mingw (CFG+CET hardened PE; zig lld rejects /CETCOMPAT); Linux + Win-ARM ⇒ zig
+  (mingw wrapper only targets x86_64-w64-mingw32). `--targets all` now SKIPS
+  incompatible targets with a message instead of emitting broken/mislabeled binaries.
+  **Full 10-binary build = two runs:** `--toolchain mingw` then `--toolchain zig`.
+
+### Dead code / cleanliness
+- Removed: `simd::lfence`, `simd::safe_read_u32`, `simd::getSimdLevelName`,
+  `Platform::setThreadAffinity`, `Platform::isAggressiveDefrag`,
+  `SimdCapabilities::nt_store_width`, `ConsoleDisplay::last_rendered_len_`.
+- `Platform::raiseProcessPriority` → `confirmNormalProcessPriority` (honest name;
+  never elevates priority).
+- `Logger::error_rate_limit_` → `std::atomic<uint32_t>` (removes a latent
+  cross-mutex data race).
+- Added `[[maybe_unused]]` to `use_nt` in `generate_pattern_uniform`/`invert_array`
+  (ARM scalar path -Wunused-parameter under -Werror).
+
+### Assessed, intentionally unchanged (recommendations / known tradeoffs)
+- `default.cfg`: well-balanced, covers all fault classes; left as-is.
+- Barrier-synchronized parallelism causes brief core idle at each test transition;
+  acceptable tradeoff for coherent progress/accounting (not redesigned).
+- Test runner only builds the SSE2 baseline → AVX2/AVX-512 verify paths are not
+  unit-tested (mirror scalar logic; v3/v4 compile clean). Recommend a v3 test build.
+- Oversized files (Platform.cpp/TestEngine.cpp ~1.8k, main.cpp ~1.6k) exceed the
+  600-800 line guideline; splitting deferred (high churn / regression risk).
+- Windows optimized-relaunch (`ShellExecuteExA`) returns 0 without waiting, so
+  exit codes aren't propagated for scripted runs of the baseline exe on AVX2/512 HW.
+
 ## Code Review & Fixes: 2026-06-04
 
 Comprehensive code review completed. All priority 1-3 improvements implemented and committed.

@@ -61,9 +61,9 @@ public:
     // Process Management
     static std::vector<CpuTarget> getPreferredCpuTargets(uint32_t max_threads = 0);
     static bool bindCurrentThread(const CpuTarget& target);
-    static bool setThreadAffinity(uint32_t thread_id, uint32_t num_threads);
     static void registerShutdownHandler(void (*callback)());
-    static void raiseProcessPriority();
+    // Confirms the process runs at NORMAL priority (never elevates it).
+    static void confirmNormalProcessPriority();
 
     // Verify memory is still resident in physical RAM (not swapped/reclaimed)
     static bool checkMemoryResident(const uint8_t* base, size_t size);
@@ -73,7 +73,6 @@ public:
     
     // Control system-wide memory defragmentation (standby list purge, working set trim, etc.)
     static void setAggressiveDefrag(bool enabled);
-    static bool isAggressiveDefrag();
 
     // Capability Check
     static bool hasMemoryLockPrivilege();

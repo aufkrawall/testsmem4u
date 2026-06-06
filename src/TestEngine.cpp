@@ -545,14 +545,15 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
                 // Scan even positions in this block
                 for (size_t j = 0; j < n && j + i + 1 <= count; j += 2) {
                     size_t idx = i + j;
-                    if (ptr[idx] != config.pattern_param0) {
+                    uint64_t observed = ptr[idx];
+                    if (observed != config.pattern_param0) {
                         uint64_t confirmed = simd::safe_read_u64(&ptr[idx]);
                         if (confirmed != config.pattern_param0) {
                             res.hard_errors++;
                             LOG_ERROR_DETAIL("MirrorMove128 (E - Hard)", reportAddress(region, &ptr[idx]), config.pattern_param0, confirmed);
                         } else {
                             res.soft_errors++;
-                            LOG_ERROR_DETAIL("MirrorMove128 (E - Soft)", reportAddress(region, &ptr[idx]), config.pattern_param0, ptr[idx]);
+                            LOG_ERROR_DETAIL("MirrorMove128 (E - Soft)", reportAddress(region, &ptr[idx]), config.pattern_param0, observed);
                         }
                         if (stop && res.total_errors() > 0) { ctx.requestStop(); break; }
                     }
@@ -560,14 +561,15 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
                 // Scan odd positions in this block
                 for (size_t j = 1; j < n && j + i < count; j += 2) {
                     size_t idx = i + j;
-                    if (ptr[idx] != config.pattern_param1) {
+                    uint64_t observed = ptr[idx];
+                    if (observed != config.pattern_param1) {
                         uint64_t confirmed = simd::safe_read_u64(&ptr[idx]);
                         if (confirmed != config.pattern_param1) {
                             res.hard_errors++;
                             LOG_ERROR_DETAIL("MirrorMove128 (O - Hard)", reportAddress(region, &ptr[idx]), config.pattern_param1, confirmed);
                         } else {
                             res.soft_errors++;
-                            LOG_ERROR_DETAIL("MirrorMove128 (O - Soft)", reportAddress(region, &ptr[idx]), config.pattern_param1, ptr[idx]);
+                            LOG_ERROR_DETAIL("MirrorMove128 (O - Soft)", reportAddress(region, &ptr[idx]), config.pattern_param1, observed);
                         }
                         if (stop && res.total_errors() > 0) { ctx.requestStop(); break; }
                     }
@@ -603,8 +605,15 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
         simd::flush_cache_region(ptr, region.size);
         simd::memory_fence();
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-        
+        // Sleep in short slices so an async stop (Ctrl+C) is honored promptly.
+        // The region is never touched here, so the retention window is preserved.
+        for (uint32_t slept = 0; slept < delay_ms && !ctx.shouldStop(); ) {
+            uint32_t slice = std::min<uint32_t>(100, delay_ms - slept);
+            std::this_thread::sleep_for(std::chrono::milliseconds(slice));
+            slept += slice;
+        }
+        if (ctx.shouldStop()) break;
+
         // Flush again before verification to ensure we read from DRAM
         simd::flush_cache_region(ptr, region.size);
 
@@ -1044,7 +1053,25 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
     constexpr size_t LFSR_BLOCK = 512;
     // Pre-allocate expected buffer once and reuse
     std::array<uint64_t, LFSR_BLOCK> expected{};
-    
+
+    // Precompute the LFSR seed at the start of each block once. seed_at_block_start[b]
+    // is the LFSR state after b*LFSR_BLOCK iterations. This depends only on
+    // initial_seed and count, so it is invariant across repeats and is reused by
+    // the Phase 4 backward march (avoids rebuilding an O(count) table every repeat).
+    std::vector<uint64_t> seed_at_block_start;
+    {
+        size_t num_blocks = (count + LFSR_BLOCK - 1) / LFSR_BLOCK;
+        seed_at_block_start.resize(num_blocks);
+        uint64_t s = initial_seed;
+        for (size_t b = 0; b < num_blocks; ++b) {
+            seed_at_block_start[b] = s;
+            size_t n = std::min(LFSR_BLOCK, count - b * LFSR_BLOCK);
+            for (size_t j = 0; j < n; ++j) {
+                s = lfsr_next(s);
+            }
+        }
+    }
+
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop() && !early_stop; ++r) {
         // Phase 1: Fill with LFSR pattern using NT stores to bypass cache
         (void)lfsr_write_pattern(ptr, count, initial_seed, ctx);
@@ -1093,24 +1120,9 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
         simd::flush_cache_region(ptr, region.size);
         
         // Phase 4: Verify Inverted (backward march for better address-line coverage)
-        // Pre-compute the LFSR seed at the start of each backward block.
-        // We need the seed state at position (chunk_start) to generate expected values.
-        // Build a seed table: seed_at_block_start[b] = LFSR state after b*LFSR_BLOCK iterations.
+        // Uses the precomputed seed_at_block_start table to generate expected
+        // values at each backward block start.
         {
-            std::vector<uint64_t> seed_at_block_start;
-            {
-                size_t num_blocks = (count + LFSR_BLOCK - 1) / LFSR_BLOCK;
-                seed_at_block_start.resize(num_blocks);
-                uint64_t s = initial_seed;
-                for (size_t b = 0; b < num_blocks; ++b) {
-                    seed_at_block_start[b] = s;
-                    size_t n = std::min(LFSR_BLOCK, count - b * LFSR_BLOCK);
-                    for (size_t j = 0; j < n; ++j) {
-                        s = lfsr_next(s);
-                    }
-                }
-            }
-
             for (size_t i = count; i > 0 && !ctx.shouldStop() && !early_stop; ) {
                 size_t chunk_end = i;
                 size_t chunk_start = (i > LFSR_BLOCK) ? (i - LFSR_BLOCK) : 0;
@@ -1568,7 +1580,7 @@ RunResult TestEngine::runTests(const Config& config) {
 RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& region,
                                    const std::vector<uint32_t>& seq,
                                    const std::map<uint32_t, TestConfig>& configs) {
-    Platform::raiseProcessPriority();
+    Platform::confirmNormalProcessPriority();
     RunResult result = {};
     TestContext ctx;
     
@@ -1588,6 +1600,25 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     std::vector<WorkerAssignment> assignments = buildWorkerAssignments(region, threads);
     threads = static_cast<uint32_t>(assignments.size());
 
+    {
+        // Report the ISA this binary was compiled to emit (i.e. which variant is
+        // running) alongside the CPU's detected capabilities. This makes it easy
+        // to confirm that the -v3 (AVX2) / -v4 (AVX-512) optimized binary was
+        // actually selected by the auto-relaunch on capable hardware.
+#if defined(__AVX512F__)
+        const char* built_isa = "AVX-512 (v4)";
+#elif defined(__AVX2__)
+        const char* built_isa = "AVX2 (v3)";
+#else
+        const char* built_isa = "SSE2 baseline";
+#endif
+        const simd::SimdCapabilities caps = simd::getCapabilities();
+        LOG_INFO("SIMD: built for %s; CPU supports AVX2=%s AVX-512=%s; worker threads = %u",
+                 built_isa,
+                 caps.has_avx2 ? "yes" : "no",
+                 caps.has_avx512 ? "yes" : "no", threads);
+    }
+
     // Warn if estimated runtime from preset configuration is excessive
     {
         uint64_t total_loop_estimate = 0;
@@ -1596,7 +1627,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             if (it == configs.end()) continue;
             const TestConfig& tc = it->second;
             if (!tc.enabled) continue;
-            uint64_t loops = (config.preset.time_percent * tc.time_percent) / 100;
+            uint64_t loops = (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100;
             if (loops == 0) loops = 1;
             uint64_t internal_reps = tc.parameter > 0 ? tc.parameter : 1;
             total_loop_estimate += loops * internal_reps;
@@ -1615,6 +1646,12 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 
     std::vector<std::thread> workers;
     ThreadBarrier barrier(threads);
+    // Stop decision latched once per barrier epoch by the leader (t==0) and read
+    // by every worker after the barrier, so all workers always perform the same
+    // number of barrier arrivals even when an async stop (Ctrl+C) flips the flag
+    // mid-loop. Without this, divergent per-thread shouldStop() checks around a
+    // barrier could leave some workers waiting on a barrier the others already left.
+    std::atomic<bool> epoch_stop{false};
 
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -1667,7 +1704,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             my_region.base_offset_bytes += assignment.offset;
 
             uint32_t cycle = 0;
-            while ((config.cycles == 0 || cycle < config.cycles) && !ctx.shouldStop()) {
+            while (config.cycles == 0 || cycle < config.cycles) {
                 if (t == 0) {
                     // Verify memory is still resident before each cycle
                     if (!Platform::checkMemoryResident(region.base, region.size)) {
@@ -1679,15 +1716,17 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         ctx.current_cycle.store(cycle + 1, std::memory_order_release);
                         LOG_INFO("=== Cycle %u Started ===", cycle + 1);
                     }
+                    epoch_stop.store(ctx.shouldStop(), std::memory_order_relaxed);
                 }
                 barrier.arriveAndWait();
-                if (ctx.shouldStop()) break;
+                if (epoch_stop.load(std::memory_order_relaxed)) break;
 
                 uint32_t seq_idx = 0;
                 for (uint32_t test_id : seq) {
+                    if (t == 0) epoch_stop.store(ctx.shouldStop(), std::memory_order_relaxed);
                     barrier.arriveAndWait();
 
-                    if (ctx.shouldStop()) break;
+                    if (epoch_stop.load(std::memory_order_relaxed)) break;
                     auto it = configs.find(test_id);
                     if (it == configs.end()) {
                         if (t == 0) {
@@ -1716,7 +1755,8 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                     }
                     barrier.arriveAndWait();
 
-                    uint32_t loops = (config.preset.time_percent * tc.time_percent) / 100;
+                    uint32_t loops = static_cast<uint32_t>(
+                        (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100);
                     if (loops == 0) loops = 1;
 
                     for (uint32_t L = 0; L < loops; ++L) {

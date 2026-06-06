@@ -52,56 +52,52 @@ static SimdCapabilities detect_x86_capabilities() {
     const bool cpu_has_osxsave = (info[2] & (1 << 27)) != 0;
     caps.has_clflush = (info[3] & (1 << 19)) != 0;
 
+    // Detect XSAVE-enabled OS state support. AVX-512 state is probed
+    // unconditionally (not behind __AVX512F__) so the baseline binary can detect
+    // AVX-512-capable hardware and relaunch the -v4 sibling.
     bool os_has_avx_state = false;
-#if defined(__AVX512F__)
     bool os_has_avx512_state = false;
-#endif
     if (cpu_has_osxsave) {
         const uint64_t xcr0 = read_xcr0();
         os_has_avx_state = (xcr0 & 0x6ULL) == 0x6ULL;        // XMM + YMM state
-#if defined(__AVX512F__)
         os_has_avx512_state = os_has_avx_state && ((xcr0 & 0xE0ULL) == 0xE0ULL); // Opmask + ZMM_Hi256 + Hi16_ZMM
-#endif
     }
 
     bool cpu_has_avx2 = false;
-#if defined(__AVX512F__)
     bool cpu_has_avx512f = false;
-#endif
     if (max_leaf >= 7) {
         __cpuidex(info, 7, 0);
         caps.has_clflushopt = (info[1] & (1 << 23)) != 0;
         cpu_has_avx2 = (info[1] & (1 << 5)) != 0;
-#if defined(__AVX512F__)
         cpu_has_avx512f = (info[1] & (1 << 16)) != 0;
-#endif
     }
 
+    // Report true CPU+OS AVX-512 support regardless of the instruction set this
+    // binary was compiled for. This flag drives the -v4 relaunch decision; it is
+    // only acted on for code generation where guarded by __AVX512F__, so the
+    // baseline/v3 binaries never emit AVX-512 instructions even when it is true.
+    caps.has_avx512 = cpu_has_avx512f && cpu_has_avx && os_has_avx512_state;
+
 #if defined(__AVX512F__)
-    if (cpu_has_avx512f && cpu_has_avx && os_has_avx512_state) {
+    if (caps.has_avx512) {
         caps.level = SimdLevel::AVX512;
-        caps.has_avx512 = true;
         caps.has_avx2 = true;
         caps.has_sse4_1 = true;
         caps.has_nt_stores = true;
         caps.vector_width = 64;
     } else
 #endif
-    {
-        if (cpu_has_avx2 && cpu_has_avx && os_has_avx_state) {
-            caps.level = SimdLevel::AVX2;
-            caps.has_avx2 = true;
-            caps.has_sse4_1 = true;
-            caps.has_nt_stores = true;
-            caps.vector_width = 32;
-        } else {
-            if (cpu_has_sse41) {
-                caps.level = SimdLevel::SSE4_1;
-                caps.has_sse4_1 = true;
-                caps.has_nt_stores = true;
-                caps.vector_width = 16;
-            }
-        }
+    if (cpu_has_avx2 && cpu_has_avx && os_has_avx_state) {
+        caps.level = SimdLevel::AVX2;
+        caps.has_avx2 = true;
+        caps.has_sse4_1 = true;
+        caps.has_nt_stores = true;
+        caps.vector_width = 32;
+    } else if (cpu_has_sse41) {
+        caps.level = SimdLevel::SSE4_1;
+        caps.has_sse4_1 = true;
+        caps.has_nt_stores = true;
+        caps.vector_width = 16;
     }
     // Detect cache line size
     caps.cache_line_size = 64; // Safe default
@@ -128,7 +124,6 @@ static SimdCapabilities detect_x86_capabilities() {
         }
     }
 
-    caps.nt_store_width = caps.vector_width;
     return caps;
 }
 
@@ -187,7 +182,6 @@ static SimdCapabilities detect_arm_capabilities() {
     SimdCapabilities caps;
     caps.has_neon = true;
     caps.vector_width = 16;
-    caps.nt_store_width = 16;
     caps.level = SimdLevel::NEON;
     // ARM64 cache line size is typically 64 bytes (could also be 128 on some CPUs)
     caps.cache_line_size = 64;
@@ -250,17 +244,6 @@ SimdCapabilities getCapabilities() {
     return caps;
 }
 
-const char* getSimdLevelName(SimdLevel level) {
-    switch (level) {
-        case SimdLevel::NONE: return "Scalar";
-        case SimdLevel::SSE4_1: return "SSE4.1";
-        case SimdLevel::AVX2: return "AVX2";
-        case SimdLevel::AVX512: return "AVX-512";
-        case SimdLevel::NEON: return "NEON";
-        default: return "Unknown";
-    }
-}
-
 void memory_fence() {
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     _mm_mfence();
@@ -274,14 +257,6 @@ void sfence() {
     _mm_sfence();
 #else
     std::atomic_thread_fence(std::memory_order_release);
-#endif
-}
-
-void lfence() {
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-    _mm_lfence();
-#else
-    std::atomic_thread_fence(std::memory_order_acquire);
 #endif
 }
 
@@ -435,7 +410,7 @@ void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0
 }
 
 template<>
-void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t val, bool use_nt) {
+void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t val, [[maybe_unused]] bool use_nt) {
     [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;
 
@@ -757,7 +732,7 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
 }
 
 template<>
-void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
+void invert_array<uint64_t>(uint64_t* dst, size_t count, [[maybe_unused]] bool use_nt) {
     [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;
 
@@ -854,47 +829,6 @@ uint64_t safe_read_u64(const uint64_t* ptr) {
 #else
     // Fallback for other architectures
     return *(volatile uint64_t*)ptr;
-#endif
-}
-
-uint32_t safe_read_u32(const uint32_t* ptr) {
-    flush_cache_line((void*)ptr);
-    memory_fence();
-    
-#if defined(__aarch64__) || defined(_M_ARM64)
-    // ARM64 implementation
-    uint32_t val;
-#if defined(__GNUC__) || defined(__clang__)
-    __asm__ volatile(
-        "ldr %w0, [%1]"
-        : "=r" (val)
-        : "r" (ptr)
-        : "memory"
-    );
-#else // MSVC ARM64
-    val = *(volatile uint32_t*)ptr;
-#endif
-    return val;
-#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-    // x86/x64 implementation
-#if defined(__GNUC__) || defined(__clang__)
-    uint32_t val;
-    __asm__ volatile(
-        "movl (%1), %0"
-        : "=r" (val)
-        : "r" (ptr)
-        : "memory"
-    );
-    return val;
-#else // MSVC
-    _ReadWriteBarrier();
-    uint32_t val = *ptr;
-    _ReadWriteBarrier();
-    return val;
-#endif
-#else
-    // Fallback
-    return *(volatile uint32_t*)ptr;
 #endif
 }
 

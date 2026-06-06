@@ -14,12 +14,29 @@ It automatically attempts to relaunch itself using AVX2 (-v3) or AVX-512 (-v4) s
 - `include/Logger.h`: Logger class declaration and LOG_* macros.
 
 ## Key Design Decisions
-- Process runs at NORMAL priority (not elevated) to avoid semi-freezing Windows.
+- Process runs at NORMAL priority (not elevated) to avoid semi-freezing Windows
+  (`Platform::confirmNormalProcessPriority`, never raises priority).
 - Logger split into header (.h) + implementation (.cpp) to reduce compile-time overhead per translation unit.
 - `flush_cache_region` caches `getCapabilities()` once per call to avoid repeated function call overhead in hot loops.
 - SIMD dispatch uses `#if`/`else`/`#if` chains (not `#elif`) so SSE2 NT-store path is available as runtime fallback in AVX2-compiled builds.
-- MovingInversionLFSR Phase 4 uses backward march with pre-computed LFSR seed table for correct address-line coverage.
+- AVX-512 capability (`caps.has_avx512`) is detected unconditionally (not behind
+  `#if __AVX512F__`) so the baseline binary can detect AVX-512 HW and relaunch the
+  -v4 sibling; AVX-512 *instruction emission* stays `#if __AVX512F__`-guarded.
+- MovingInversionLFSR uses a pre-computed LFSR seed table (built once, invariant of
+  repeats) for the Phase 4 backward march address-line coverage.
+- Worker stop decisions at `ThreadBarrier` boundaries are latched once by thread 0
+  into `epoch_stop` BEFORE the barrier and read by all workers AFTER it, so barrier
+  arrival counts stay symmetric under async (Ctrl+C) stop — prevents deadlock.
 - Signal handler uses `memory_order_release` for `g_shutdown_initiated` to ensure stop flag visibility to workers.
+
+## Build Toolchain Split (important)
+- **x86_64 Windows** targets (`windows-x86_64`, `-v3`, `-v4`) build with **mingw**
+  (LLVM MinGW) for CFG+CET hardened static PEs. zig's lld rejects `/CETCOMPAT`.
+- **Linux (all arches) + Windows-ARM** build with **zig** (cross-compiler). The mingw
+  wrapper always targets `x86_64-w64-mingw32`, so it cannot produce these.
+- `compatible_toolchains()` enforces this: `--targets all` skips incompatible targets
+  (instead of emitting broken binaries). Full 10-binary release = two runs:
+  `python build.py --toolchain mingw` and `python build.py --toolchain zig`.
 
 ## Build Tools
 - `python build.py --lint`: Runs clang-tidy static analysis (requires `--compile-commands` or generates automatically).
@@ -30,5 +47,5 @@ It automatically attempts to relaunch itself using AVX2 (-v3) or AVX-512 (-v4) s
 ## Test Coverage
 - 27 internal tests covering: Utils parsing, Preset loading/validation, Config save/load round-trip, SIMD pattern generation/verification, LFSR vectors, Thread barrier, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess.
 
-Last verified: 2026-06-04
+Last verified: 2026-06-07
 Stale risk: Low

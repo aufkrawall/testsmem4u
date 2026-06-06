@@ -28,7 +28,6 @@ struct SimdCapabilities {
     bool has_clflush = false;
     bool has_clflushopt = false;
     size_t vector_width = 16;
-    size_t nt_store_width = 16;
     size_t cache_line_size = 64; // Default 64 bytes; detected via CPUID on x86
 };
 
@@ -38,12 +37,10 @@ struct SimdCapabilities {
 constexpr size_t MAX_ERROR_SAMPLES_PER_BLOCK = 4096;
 
 SimdCapabilities getCapabilities();
-const char* getSimdLevelName(SimdLevel level);
 
 // Memory Fences
 void memory_fence();
 void sfence();
-void lfence();
 
 // Cache Management
 void flush_cache_line(void* ptr);
@@ -91,6 +88,5 @@ size_t verify_uniform(const T* src, size_t count, uint64_t val,
 // Use this instead of volatile casts (which are UB in C++)
 // Performs: flush cache line, memory fence, read value
 uint64_t safe_read_u64(const uint64_t* ptr);
-uint32_t safe_read_u32(const uint32_t* ptr);
 
 }} // namespace testsmem4u::simd

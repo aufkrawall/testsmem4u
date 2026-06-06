@@ -1769,22 +1769,14 @@ bool Platform::checkMemoryResident(const uint8_t* base, size_t size) {
 #endif
 }
 
-bool Platform::setThreadAffinity(uint32_t thread_id, uint32_t num_threads) {
-    std::vector<CpuTarget> targets = getPreferredCpuTargets(num_threads);
-    if (targets.empty()) return false;
-    const CpuTarget& target = targets[thread_id % targets.size()];
-    return bindCurrentThread(target);
-}
-
 void Platform::setAggressiveDefrag(bool enabled) {
     g_aggressive_defrag.store(enabled, std::memory_order_relaxed);
 }
 
-bool Platform::isAggressiveDefrag() {
-    return g_aggressive_defrag.load(std::memory_order_relaxed);
-}
-
-void Platform::raiseProcessPriority() {
+// The RAM tester is memory-bandwidth bound; elevating the process priority does
+// not help and HIGH_PRIORITY_CLASS can freeze Windows when every core is
+// saturated. This only confirms/normalizes the process to NORMAL priority.
+void Platform::confirmNormalProcessPriority() {
 #ifdef _WIN32
     if (SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS)) {
         LOG_INFO("Process priority class confirmed as NORMAL_PRIORITY_CLASS");
