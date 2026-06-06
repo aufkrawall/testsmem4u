@@ -1,9 +1,67 @@
 # Recent Log
 
+## Audit-Driven Fix Pass: 2026-06-07
+
+User requested implementation of the highest-value audit-style fixes, not a new
+audit report. Implemented parser, relaunch, build-chain, fuzzer, and diagnostic
+hardening.
+
+### Correctness / reliability
+- **Windows optimized relaunch exit codes**: baseline launcher now waits for the
+  v3/v4 optimized sibling and returns the child exit code, so scripted runs see
+  real memory-test/config failures instead of unconditional success from the
+  launcher process. Windows argument quoting now follows CommandLineToArgvW-style
+  backslash/quote handling, including trailing backslashes.
+- **Config load fail-closed**: `loadConfig()` now parses into a temporary copy and
+  only commits on full success. Invalid config files no longer leave partially
+  applied values in the active/default config.
+- **Preset path behavior fixed**: hardening no longer blocks legitimate explicit
+  absolute or parent-relative preset paths. Empty/control-character paths are
+  rejected, then valid paths are canonicalized before opening.
+- **Strict preset parsing**: malformed `Test Sequence` tokens invalidate the whole
+  sequence; `Enable` must be 0/1; `Pattern Mode` must be 0/1/2; block sizes are
+  bounded against platform `size_t` overflow. Execution loop counts remain 64-bit.
+
+### Diagnostics / tests
+- Unsafe preset paths are hex-escaped in logs, preventing newline/ESC/null bytes
+  from altering terminal output while preserving diagnosable bytes.
+- Logger elapsed time is initialized at construction so pre-init diagnostics do
+  not show epoch-sized elapsed durations.
+- Internal tests expanded from 27 to 33, covering strict sequence parsing,
+  absolute preset paths, malformed preset field rejection, config rollback on
+  invalid load, and unsafe config paths.
+
+### Build / supply chain
+- `build.py` now verifies pinned SHA-256 values for downloaded Zig and LLVM MinGW
+  archives and validates ZIP member paths before extraction.
+- Object files are separated by toolchain and build mode, and source rebuild
+  checks include `build.py` mtime so flag/script changes cannot silently reuse
+  stale objects.
+- Fuzzer harness now uses unique files in the system temp directory instead of a
+  literal `fuzz_preset_XXXXXX.cfg` path.
+- README build instructions updated to document the verified two-toolchain release
+  matrix.
+
+### Verification
+- `python -m py_compile build.py` passes.
+- `python build.py --tests` passes.
+- `python build.py --compile-commands --tests --targets windows-x86_64` passes.
+- `python build.py --lint --targets windows-x86_64` passes with clang-tidy clean.
+- `python build.py --run-sanitizers` passes ASan and UBSan internal tests.
+- `python build.py --toolchain mingw --targets all` builds the 3 Windows x86-64
+  release targets.
+- `python build.py --toolchain zig --targets all` builds the 6 Zig release targets
+  (Linux + Windows ARM).
+
+### Notes / stale-risk
+- `audit/code-audit-report.md` disappeared from the worktree during this pass but
+  was not part of the requested implementation changes and was not intentionally
+  modified here. Treat any audit-report deletion as unrelated unless confirmed.
+
 ## Full Review & Fixes: 2026-06-07
 
 Deep review pass. Found and fixed several real issues the prior audit missed, plus
-dead-code/build cleanups. All 10 targets build (zig: Linux+Win-ARM, mingw: x64 Win),
+dead-code/build cleanups. All then-current release targets build (zig: Linux+Win-ARM, mingw: x64 Win),
 internal tests + ASan + UBSan pass, clang-tidy clean.
 
 ### Correctness / reliability
@@ -45,7 +103,7 @@ internal tests + ASan + UBSan pass, clang-tidy clean.
   mingw (CFG+CET hardened PE; zig lld rejects /CETCOMPAT); Linux + Win-ARM ⇒ zig
   (mingw wrapper only targets x86_64-w64-mingw32). `--targets all` now SKIPS
   incompatible targets with a message instead of emitting broken/mislabeled binaries.
-  **Full 10-binary build = two runs:** `--toolchain mingw` then `--toolchain zig`.
+  **Full release matrix build = two runs:** `--toolchain mingw` then `--toolchain zig`.
 
 ### Dead code / cleanliness
 - Removed: `simd::lfence`, `simd::safe_read_u32`, `simd::getSimdLevelName`,

@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cerrno>
+#include <cctype>
+#include <cstdio>
 #include <limits>
 
 namespace testsmem4u {
@@ -88,6 +90,31 @@ public:
 
         value = static_cast<uint32_t>(parsed);
         return true;
+    }
+
+    static bool hasUnsafePathControlCharacters(const std::string& path) {
+        if (path.empty()) return true;
+        for (unsigned char ch : path) {
+            if (ch == '\0' || std::iscntrl(ch)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static std::string sanitizeForLog(const std::string& value) {
+        std::string out;
+        out.reserve(value.size());
+        for (unsigned char ch : value) {
+            if (ch >= 0x20 && ch != 0x7F) {
+                out.push_back(static_cast<char>(ch));
+            } else {
+                char escaped[5];
+                std::snprintf(escaped, sizeof(escaped), "\\x%02X", ch);
+                out += escaped;
+            }
+        }
+        return out;
     }
 };
 

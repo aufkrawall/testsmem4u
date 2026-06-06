@@ -62,6 +62,11 @@ static void recoverOrphanedTempFile(const std::string& filename) {
 }
 
 bool saveConfig(const std::string& filename, const Config& config) {
+    if (Utils::hasUnsafePathControlCharacters(filename)) {
+        LOG_ERROR("Refusing to save config to unsafe path");
+        return false;
+    }
+
     // Atomic write: write to temporary file first, then rename over target.
     // This prevents partial/corrupted config files on crash or power loss.
     recoverOrphanedTempFile(filename);
@@ -116,6 +121,11 @@ bool saveConfig(const std::string& filename, const Config& config) {
 }
 
 bool loadConfig(const std::string& filename, Config& config) {
+    if (Utils::hasUnsafePathControlCharacters(filename)) {
+        LOG_ERROR("Refusing to load config from unsafe path");
+        return false;
+    }
+
     recoverOrphanedTempFile(filename);
 
     std::ifstream file(filename);
@@ -124,6 +134,8 @@ bool loadConfig(const std::string& filename, Config& config) {
     }
 
     LOG_INFO("Loading configuration from %s", filename.c_str());
+
+    Config parsed = config;
     
     std::string line;
     while (std::getline(file, line)) {
@@ -135,46 +147,51 @@ bool loadConfig(const std::string& filename, Config& config) {
         if (!Utils::parseKeyValue(line, key, value)) continue;
 
         if (key == "MemoryWindowPercent") {
-            if (!Utils::parseUintStrict(value, config.memory_window_percent)) {
+            if (!Utils::parseUintStrict(value, parsed.memory_window_percent)) {
                 LOG_ERROR("Invalid config value for MemoryWindowPercent in %s", filename.c_str());
                 return false;
             }
         } else if (key == "MemoryWindowMB") {
-            if (!Utils::parseUintStrict(value, config.memory_window_mb)) {
+            if (!Utils::parseUintStrict(value, parsed.memory_window_mb)) {
                 LOG_ERROR("Invalid config value for MemoryWindowMB in %s", filename.c_str());
                 return false;
             }
         } else if (key == "Cores") {
-            if (!Utils::parseUintStrict(value, config.cores)) {
+            if (!Utils::parseUintStrict(value, parsed.cores)) {
                 LOG_ERROR("Invalid config value for Cores in %s", filename.c_str());
                 return false;
             }
         } else if (key == "Cycles") {
-            if (!Utils::parseUintStrict(value, config.cycles)) {
+            if (!Utils::parseUintStrict(value, parsed.cycles)) {
                 LOG_ERROR("Invalid config value for Cycles in %s", filename.c_str());
                 return false;
             }
         } else if (key == "UseLockedMemory") {
-            if (!parseBoolValue(value, config.use_locked_memory)) {
+            if (!parseBoolValue(value, parsed.use_locked_memory)) {
                 LOG_ERROR("Invalid config value for UseLockedMemory in %s", filename.c_str());
                 return false;
             }
         } else if (key == "UseLargePages") {
-            if (!parseBoolValue(value, config.use_large_pages)) {
+            if (!parseBoolValue(value, parsed.use_large_pages)) {
                 LOG_ERROR("Invalid config value for UseLargePages in %s", filename.c_str());
                 return false;
             }
         } else if (key == "HaltOnError") {
-            if (!parseBoolValue(value, config.halt_on_error)) {
+            if (!parseBoolValue(value, parsed.halt_on_error)) {
                 LOG_ERROR("Invalid config value for HaltOnError in %s", filename.c_str());
                 return false;
             }
         } else if (key == "PresetFile") {
-            config.preset_file = value;
+            if (Utils::hasUnsafePathControlCharacters(value)) {
+                LOG_ERROR("Invalid config value for PresetFile in %s", filename.c_str());
+                return false;
+            }
+            parsed.preset_file = value;
         }
     }
 
     file.close();
+    config = parsed;
     return true;
 }
 

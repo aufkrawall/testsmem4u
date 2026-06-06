@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cerrno>
 #include <filesystem>
+#include <limits>
 #include <system_error>
 
 #ifdef _WIN32
@@ -21,20 +22,7 @@
 namespace testsmem4u {
 
 static bool hasUnsafePathCharacters(const std::string& path) {
-    // Reject empty paths
-    if (path.empty()) return true;
-    // Reject null bytes (string truncation attacks)
-    if (path.find('\0') != std::string::npos) return true;
-    // Reject ESC byte (terminal injection)
-    if (path.find('\x1b') != std::string::npos) return true;
-    // Reject directory traversal components
-    if (path.find("..") != std::string::npos) return true;
-    // Reject absolute paths
-    if (!path.empty() && (path[0] == '/' || path[0] == '\\')) return true;
-#ifdef _WIN32
-    if (path.size() >= 2 && path[1] == ':') return true;
-#endif
-    return false;
+    return Utils::hasUnsafePathControlCharacters(path);
 }
 
 PresetInfo loadPreset(const std::string& filepath) {
@@ -44,7 +32,8 @@ PresetInfo loadPreset(const std::string& filepath) {
             preset.valid = false;
             preset.validation_error = message;
         }
-        LOG_ERROR("Invalid preset '%s': %s", filepath.c_str(), message.c_str());
+        const std::string safe_path = Utils::sanitizeForLog(filepath);
+        LOG_ERROR("Invalid preset '%s': %s", safe_path.c_str(), message.c_str());
     };
 
     if (hasUnsafePathCharacters(filepath)) {
@@ -64,7 +53,7 @@ PresetInfo loadPreset(const std::string& filepath) {
 
     std::ifstream file(resolved_path);
     if (!file.is_open()) {
-        LOG_ERROR("Failed to open preset file: %s", filepath.c_str());
+        invalidate("preset file could not be opened: " + filepath);
         return preset;
     }
 
@@ -174,7 +163,13 @@ PresetInfo loadPreset(const std::string& filepath) {
 
             if (key == "Enable") {
                 uint32_t parsed = 0;
-                if (parseUintField(parsed)) tc.enabled = (parsed != 0);
+                if (parseUintField(parsed)) {
+                    if (parsed > 1) {
+                        invalidate("Enable must be 0 or 1 in [Test" + std::to_string(current_test) + "]");
+                    } else {
+                        tc.enabled = (parsed != 0);
+                    }
+                }
             } else if (key == "Time (%)") {
                 parseUintField(tc.time_percent);
             } else if (key == "Function") {
@@ -185,7 +180,13 @@ PresetInfo loadPreset(const std::string& filepath) {
                 LOG_DEBUG("Test %u function: %s", current_test, value.c_str());
             } else if (key == "Pattern Mode") {
                 uint32_t parsed = 0;
-                if (parseUintField(parsed)) tc.pattern_mode = static_cast<uint8_t>(parsed);
+                if (parseUintField(parsed)) {
+                    if (parsed > 2) {
+                        invalidate("Pattern Mode must be 0, 1, or 2 in [Test" + std::to_string(current_test) + "]");
+                    } else {
+                        tc.pattern_mode = static_cast<uint8_t>(parsed);
+                    }
+                }
             } else if (key == "Pattern Param0") {
                 parseHexField(tc.pattern_param0);
             } else if (key == "Pattern Param1") {
@@ -193,7 +194,16 @@ PresetInfo loadPreset(const std::string& filepath) {
             } else if (key == "Parameter") {
                 parseUintField(tc.parameter);
             } else if (key == "Test Block Size (Mb)" || key == "Block Size") {
-                parseUintField(tc.block_size_mb);
+                uint32_t parsed = 0;
+                if (parseUintField(parsed)) {
+                    constexpr size_t bytes_per_mb = 1024ULL * 1024ULL;
+                    constexpr size_t max_block_mb = std::numeric_limits<size_t>::max() / bytes_per_mb;
+                    if (static_cast<size_t>(parsed) > max_block_mb) {
+                        invalidate("Block Size is too large for this platform in [Test" + std::to_string(current_test) + "]");
+                    } else {
+                        tc.block_size_mb = parsed;
+                    }
+                }
             }
         }
     }

@@ -17,6 +17,8 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
+#include <filesystem>
+#include <system_error>
 
 using namespace testsmem4u;
 
@@ -98,6 +100,19 @@ void testUtilsParseKeyValue() {
     expect(Utils::parseKeyValue("=value", key, value) == false, "parseKeyValue no key");
     expect(Utils::parseKeyValue("key=", key, value) && key == "key" && value == "",
            "parseKeyValue empty value");
+}
+
+void testParseTestSequenceStrict() {
+    std::vector<uint32_t> seq = parseTestSequence("0, 1,2");
+    expect(seq.size() == 3 && seq[0] == 0 && seq[1] == 1 && seq[2] == 2,
+           "parseTestSequence accepts comma-separated numeric IDs");
+
+    expect(parseTestSequence("1,bad,2").empty(),
+           "parseTestSequence rejects mixed invalid tokens");
+    expect(parseTestSequence("1,,2").empty(),
+           "parseTestSequence rejects empty middle tokens");
+    expect(parseTestSequence("1,").empty(),
+           "parseTestSequence rejects trailing separators");
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +237,77 @@ void testPresetLoadUnsafePath() {
     std::string esc_path = "test\x1b.cfg";
     preset = loadPreset(esc_path);
     expect(!preset.valid, "preset with ESC byte path is rejected");
+    std::string newline_path = "test\n.cfg";
+    preset = loadPreset(newline_path);
+    expect(!preset.valid, "preset with newline path is rejected");
+}
+
+void testPresetLoadAllowsExplicitAbsolutePath() {
+    std::string path = uniqueTempPath("_absolute_preset.cfg");
+    {
+        std::ofstream f(path);
+        f << "[Config]\n";
+        f << "Tests = 1\n";
+        f << "Test Sequence = 1\n";
+        f << "[Test1]\n";
+        f << "Enable = 1\n";
+        f << "Function = SimpleTest\n";
+    }
+
+    std::error_code ec;
+    std::filesystem::path absolute = std::filesystem::absolute(path, ec);
+    expect(!ec, "absolute preset path can be resolved for test");
+    PresetInfo preset = loadPreset(absolute.string());
+    expect(preset.valid, "preset loader accepts explicit absolute paths");
+    expect(preset.test_configs.size() == 1, "absolute preset path loads test config");
+    cleanupFile(path);
+}
+
+void testPresetLoadRejectsMalformedSequence() {
+    std::string path = uniqueTempPath("_bad_sequence.cfg");
+    {
+        std::ofstream f(path);
+        f << "[Config]\n";
+        f << "Tests = 1\n";
+        f << "Test Sequence = 1,bad\n";
+        f << "[Test1]\n";
+        f << "Enable = 1\n";
+        f << "Function = SimpleTest\n";
+    }
+    PresetInfo preset = loadPreset(path);
+    expect(!preset.valid, "preset with mixed invalid Test Sequence is rejected");
+    cleanupFile(path);
+}
+
+void testPresetLoadRejectsInvalidModeAndEnable() {
+    std::string mode_path = uniqueTempPath("_bad_mode.cfg");
+    {
+        std::ofstream f(mode_path);
+        f << "[Config]\n";
+        f << "Tests = 1\n";
+        f << "Test Sequence = 1\n";
+        f << "[Test1]\n";
+        f << "Enable = 1\n";
+        f << "Function = SimpleTest\n";
+        f << "Pattern Mode = 99\n";
+    }
+    PresetInfo preset = loadPreset(mode_path);
+    expect(!preset.valid, "preset with invalid Pattern Mode is rejected");
+    cleanupFile(mode_path);
+
+    std::string enable_path = uniqueTempPath("_bad_enable.cfg");
+    {
+        std::ofstream f(enable_path);
+        f << "[Config]\n";
+        f << "Tests = 1\n";
+        f << "Test Sequence = 1\n";
+        f << "[Test1]\n";
+        f << "Enable = 2\n";
+        f << "Function = SimpleTest\n";
+    }
+    preset = loadPreset(enable_path);
+    expect(!preset.valid, "preset with invalid Enable value is rejected");
+    cleanupFile(enable_path);
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +359,33 @@ void testConfigLoadMissing() {
     Config cfg{};
     bool ok = loadConfig("nonexistent_file_that_does_not_exist.ini", cfg);
     expect(!ok, "loading missing config returns false");
+}
+
+void testConfigInvalidLoadDoesNotPartiallyApply() {
+    std::string path = uniqueTempPath("_invalid_config.ini");
+    {
+        std::ofstream f(path);
+        f << "[Settings]\n";
+        f << "MemoryWindowMB=4096\n";
+        f << "Cores=not-a-number\n";
+    }
+
+    Config cfg{};
+    cfg.memory_window_mb = 128;
+    cfg.cores = 2;
+    bool ok = loadConfig(path, cfg);
+    expect(!ok, "invalid config load returns false");
+    expect(cfg.memory_window_mb == 128, "invalid config does not partially apply MemoryWindowMB");
+    expect(cfg.cores == 2, "invalid config does not partially apply Cores");
+    cleanupFile(path);
+    cleanupFile(path + ".tmp");
+}
+
+void testConfigRejectsUnsafePath() {
+    Config cfg{};
+    std::string unsafe_path = "bad\nconfig.ini";
+    expect(!loadConfig(unsafe_path, cfg), "config load rejects control-character path");
+    expect(!saveConfig(unsafe_path, cfg), "config save rejects control-character path");
 }
 
 // ---------------------------------------------------------------------------
@@ -839,6 +952,7 @@ int main() {
     testUtilsParseUintStrict();
     testUtilsParseHex();
     testUtilsParseKeyValue();
+    testParseTestSequenceStrict();
 
     // Preset loading tests
     testPresetLoadValid();
@@ -848,10 +962,15 @@ int main() {
     testPresetLoadBadTestSequenceRef();
     testPresetLoadEmptyFile();
     testPresetLoadUnsafePath();
+    testPresetLoadAllowsExplicitAbsolutePath();
+    testPresetLoadRejectsMalformedSequence();
+    testPresetLoadRejectsInvalidModeAndEnable();
 
     // Config round-trip tests
     testConfigRoundTrip();
     testConfigLoadMissing();
+    testConfigInvalidLoadDoesNotPartiallyApply();
+    testConfigRejectsUnsafePath();
 
     // Existing tests from original file
     testBoundedUniformVerification();

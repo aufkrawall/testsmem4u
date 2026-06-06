@@ -15,6 +15,7 @@ import urllib.request
 import zipfile
 import json
 import concurrent.futures
+import hashlib
 from pathlib import Path
 
 
@@ -27,6 +28,7 @@ ZIG_URL_WIN_X86_64 = (
 )
 ZIG_DIR = PROJECT_ROOT / "tools" / "zig"
 ZIG_EXE = ZIG_DIR / f"zig-windows-x86_64-{ZIG_VERSION}" / "zig.exe"
+ZIG_SHA256_WIN_X86_64 = "f53e5f9011ba20bbc3e0e6d0a9441b31eb227a97bac0e7d24172f1b8b27b4371"
 
 # LLVM MinGW toolchain (native Windows with CFG/CET/ASan support)
 MINGW_VERSION = "20260519"
@@ -36,6 +38,7 @@ MINGW_URL_WIN_X86_64 = (
 MINGW_DIR = PROJECT_ROOT / "tools" / "mingw"
 MINGW_CXX = MINGW_DIR / f"llvm-mingw-{MINGW_VERSION}-ucrt-x86_64" / "bin" / "clang++.exe"
 MINGW_AR = MINGW_DIR / f"llvm-mingw-{MINGW_VERSION}-ucrt-x86_64" / "bin" / "llvm-ar.exe"
+MINGW_SHA256_WIN_X86_64 = "72dbd6e64614e3b3401998992d1bd9c8ace29e74611d71c80309ea71c3fb26f9"
 
 INCLUDE_DIR = PROJECT_ROOT / "include"
 SRC_FILES = [
@@ -211,6 +214,7 @@ def source_needs_rebuild(src: Path, obj_file: Path) -> bool:
         return True
 
     newest_dependency = src.stat().st_mtime
+    newest_dependency = max(newest_dependency, (PROJECT_ROOT / "build.py").stat().st_mtime)
     for header in INCLUDE_DIR.glob("*.h"):
         newest_dependency = max(newest_dependency, header.stat().st_mtime)
     return newest_dependency >= obj_file.stat().st_mtime
@@ -279,6 +283,36 @@ def _drop_xlinker_pairs(flags: list[str], drop_values: set) -> list[str]:
         i += 1
     return out
 
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_archive_hash(path: Path, expected_sha256: str, label: str) -> bool:
+    actual = sha256_file(path)
+    if actual.lower() != expected_sha256.lower():
+        print(f"[!] {label} SHA-256 mismatch.")
+        print(f"    expected: {expected_sha256}")
+        print(f"    actual:   {actual}")
+        path.unlink(missing_ok=True)
+        return False
+    print(f"[*] Verified {label} SHA-256: {actual}")
+    return True
+
+
+def safe_extract_zip(zip_path: Path, destination: Path) -> None:
+    root = destination.resolve()
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for member in zf.infolist():
+            target = (destination / member.filename).resolve()
+            if target != root and root not in target.parents:
+                raise RuntimeError(f"Refusing to extract unsafe zip member: {member.filename}")
+        zf.extractall(destination)
+
 def split_compile_link_flags(target: dict, for_test: bool = False) -> tuple[list[str], list[str]]:
     modes = get_modes()
     mode = modes[_current_build_mode]
@@ -334,10 +368,11 @@ def download_toolchain() -> bool:
         try:
             urllib.request.urlretrieve(ZIG_URL_WIN_X86_64, zip_path)
             print(f"[*] Downloaded {zip_path.name}")
+            if not verify_archive_hash(zip_path, ZIG_SHA256_WIN_X86_64, "Zig toolchain archive"):
+                return False
 
             print("[*] Extracting...")
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(ZIG_DIR)
+            safe_extract_zip(zip_path, ZIG_DIR)
 
             zip_path.unlink(missing_ok=True)
             return ZIG_EXE.exists()
@@ -359,10 +394,11 @@ def download_toolchain() -> bool:
         try:
             urllib.request.urlretrieve(MINGW_URL_WIN_X86_64, zip_path)
             print(f"[*] Downloaded {zip_path.name} ({zip_path.stat().st_size // 1024 // 1024} MB)")
+            if not verify_archive_hash(zip_path, MINGW_SHA256_WIN_X86_64, "LLVM MinGW toolchain archive"):
+                return False
 
             print("[*] Extracting...")
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(MINGW_DIR)
+            safe_extract_zip(zip_path, MINGW_DIR)
 
             zip_path.unlink(missing_ok=True)
             return MINGW_CXX.exists()
@@ -433,7 +469,7 @@ def build_target(name: str) -> bool:
     DIST_DIR.mkdir(parents=True, exist_ok=True)
 
     # Create object directory for this target and build mode
-    obj_dir = BUILD_DIR / "obj" / _current_build_mode / name
+    obj_dir = BUILD_DIR / "obj" / _current_toolchain / _current_build_mode / name
     obj_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = DIST_DIR / t["output"]
@@ -539,7 +575,7 @@ def build_tests(run_tests: bool = True) -> bool:
         return False
 
     target = TARGETS["windows-x86_64"]
-    obj_dir = BUILD_DIR / "obj" / _current_build_mode / "tests"
+    obj_dir = BUILD_DIR / "obj" / _current_toolchain / _current_build_mode / "tests"
     obj_dir.mkdir(parents=True, exist_ok=True)
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -635,7 +671,7 @@ def write_compile_commands(names: list[str], include_tests: bool = False) -> boo
 
         target = TARGETS[name]
         compile_flags, _ = split_compile_link_flags(target)
-        obj_dir = BUILD_DIR / "obj" / _current_build_mode / name
+        obj_dir = BUILD_DIR / "obj" / _current_toolchain / _current_build_mode / name
 
         for src in SRC_FILES:
             obj_file = obj_dir / (src.stem + target["obj_ext"])
@@ -656,7 +692,7 @@ def write_compile_commands(names: list[str], include_tests: bool = False) -> boo
         target = TARGETS["windows-x86_64"]
         compile_flags, _ = split_compile_link_flags(target)
         compile_flags = compile_flags + ["-DTESTSMEM4U_TESTING"]
-        obj_dir = BUILD_DIR / "obj" / _current_build_mode / "tests"
+        obj_dir = BUILD_DIR / "obj" / _current_toolchain / _current_build_mode / "tests"
         obj_file = obj_dir / (TEST_SRC_FILE.stem + target["obj_ext"])
         command = get_cxx_command(target, compile_flags) + [
             "-c",
@@ -746,7 +782,7 @@ def build_fuzz() -> bool:
         return False
 
     target = TARGETS["windows-x86_64"]
-    obj_dir = BUILD_DIR / "obj" / "fuzz" / "windows-x86_64"
+    obj_dir = BUILD_DIR / "obj" / _current_toolchain / "fuzz" / "windows-x86_64"
     obj_dir.mkdir(parents=True, exist_ok=True)
 
     # Check if libFuzzer is supported for this target

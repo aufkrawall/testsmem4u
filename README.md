@@ -30,18 +30,20 @@ Recent reliability work in this revision includes:
 
 ## Build
 
-The repository ships with a Python build script that uses Zig as the C++ toolchain.
+The repository ships with a Python build script with two supported toolchain paths:
+LLVM MinGW for hardened Windows x86-64 binaries, and Zig for Linux plus Windows ARM cross-builds.
 
 Build one Windows target:
 
 ```powershell
-python build.py --targets windows-x86_64
+python build.py --toolchain mingw --targets windows-x86_64
 ```
 
-Build every configured target:
+Build the full configured release matrix:
 
 ```powershell
-python build.py --targets all
+python build.py --toolchain mingw --targets all
+python build.py --toolchain zig --targets all
 ```
 
 Build and run the lightweight internal tests:

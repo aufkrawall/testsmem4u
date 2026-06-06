@@ -64,7 +64,9 @@ public:
 
 private:
     Logger() : running_(false), file_handle_(nullptr), log_filename_(), log_level_(LogLevel::DEBUG),
-               error_count_(0), error_rate_limit_(500), suppressed_count_(0) {}
+               start_time_(std::chrono::high_resolution_clock::now()),
+               error_count_(0), error_rate_limit_(500), suppressed_count_(0),
+               last_summary_time_(start_time_) {}
 
     ~Logger() { deinit(); }
 

@@ -146,16 +146,28 @@ static std::atomic<bool> g_rowhammer_large_page_warning_emitted{false};
 
 std::vector<uint32_t> parseTestSequence(const std::string& sequence) {
     std::vector<uint32_t> result;
-    std::stringstream ss(sequence);
-    std::string item;
-    while (std::getline(ss, item, ',')) {
-        size_t start = item.find_first_not_of(" \t");
-        if (start != std::string::npos) {
-            uint32_t parsed = 0;
-            if (Utils::parseUintStrict(item.substr(start), parsed)) {
-                result.push_back(parsed);
-            }
+    const std::string text = Utils::trim(sequence);
+    if (text.empty()) return result;
+
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t comma = text.find(',', start);
+        const std::string item = Utils::trim(
+            text.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+        if (item.empty()) {
+            result.clear();
+            return result;
         }
+
+        uint32_t parsed = 0;
+        if (!Utils::parseUintStrict(item, parsed)) {
+            result.clear();
+            return result;
+        }
+        result.push_back(parsed);
+
+        if (comma == std::string::npos) break;
+        start = comma + 1;
     }
     return result;
 }
@@ -1755,11 +1767,10 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                     }
                     barrier.arriveAndWait();
 
-                    uint32_t loops = static_cast<uint32_t>(
-                        (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100);
+                    uint64_t loops = (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100;
                     if (loops == 0) loops = 1;
 
-                    for (uint32_t L = 0; L < loops; ++L) {
+                    for (uint64_t L = 0; L < loops; ++L) {
                         if (ctx.shouldStop()) break;
                         TestResult tr = runRegionWork(ctx, my_region, tc, config.halt_on_error);
 
