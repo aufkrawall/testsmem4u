@@ -39,9 +39,9 @@ It automatically attempts to relaunch itself using AVX2 (-v3) or AVX-512 (-v4) s
   (LLVM MinGW) for CFG+CET hardened static PEs. zig's lld rejects `/CETCOMPAT`.
 - **Linux (all arches) + Windows-ARM** build with **zig** (cross-compiler). The mingw
   wrapper always targets `x86_64-w64-mingw32`, so it cannot produce these.
-- `compatible_toolchains()` enforces this: `--targets all` skips incompatible targets
-  (instead of emitting broken binaries). Full release matrix build = two runs:
-  `python build.py --toolchain mingw` and `python build.py --toolchain zig`.
+- `compatible_toolchains()` enforces this: each target is built with its correct toolchain.
+  Default `python build.py` (or `--toolchain all`) builds the full 10-target matrix
+  automatically by partitioning targets into mingw and zig groups.
 - Toolchain downloads are pinned with SHA-256 checks and ZIP members are validated before extraction to prevent path traversal. Object files live under toolchain/build-mode-specific directories and rebuild when `build.py` changes.
 
 ## Build Tools

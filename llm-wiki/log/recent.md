@@ -52,6 +52,8 @@ hardening.
   release targets.
 - `python build.py --toolchain zig --targets all` builds the 6 Zig release targets
   (Linux + Windows ARM).
+- `python build.py` (default `--toolchain all`) builds the full 10-target matrix
+  automatically by partitioning targets into mingw and zig groups.
 
 ### Notes / stale-risk
 - `audit/code-audit-report.md` disappeared from the worktree during this pass but
@@ -103,7 +105,7 @@ internal tests + ASan + UBSan pass, clang-tidy clean.
   mingw (CFG+CET hardened PE; zig lld rejects /CETCOMPAT); Linux + Win-ARM ⇒ zig
   (mingw wrapper only targets x86_64-w64-mingw32). `--targets all` now SKIPS
   incompatible targets with a message instead of emitting broken/mislabeled binaries.
-  **Full release matrix build = two runs:** `--toolchain mingw` then `--toolchain zig`.
+  **`--toolchain all` (default) builds the full 10-target matrix automatically.**
 
 ### Dead code / cleanliness
 - Removed: `simd::lfence`, `simd::safe_read_u32`, `simd::getSimdLevelName`,

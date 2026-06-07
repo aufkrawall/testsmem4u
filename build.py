@@ -999,9 +999,9 @@ def main() -> int:
     parser.add_argument(
         "--toolchain",
         type=str,
-        default="mingw",
-        choices=["zig", "mingw"],
-        help="Toolchain: mingw (LLVM MinGW, CFG+CET+ASan, static standalone, default) or zig (cross-compiler, musl, for Linux targets)",
+        default="all",
+        choices=["zig", "mingw", "all"],
+        help="Toolchain: mingw (LLVM MinGW, CFG+CET+ASan, static standalone), zig (cross-compiler, musl, for Linux targets), or all (default: run both toolchains to build all targets)",
     )
     parser.add_argument(
         "--build-mode",
@@ -1016,40 +1016,46 @@ def main() -> int:
     print("=" * 60)
 
     global _current_build_mode, _current_toolchain
-    _current_toolchain = args.toolchain
-
-    if not download_toolchain():
-        print(f"[!] Failed to download toolchain: {args.toolchain}")
-        return 1
-
-    # Validate build mode for the chosen toolchain
-    modes = get_modes()
-    if args.build_mode not in modes:
-        print(f"[!] Build mode '{args.build_mode}' not available for toolchain '{args.toolchain}'.")
-        print(f"    Available modes: {', '.join(modes.keys())}")
-        return 1
-
-    _current_build_mode = args.build_mode
-    mode_info = modes[args.build_mode]
-    print(f"[*] Build mode: {args.build_mode} ({mode_info['description']})")
-
-    if args.toolchain == "mingw" and args.build_mode == "asan":
-        print("[*] ASan is supported with the mingw toolchain.")
-        print("[*] Ensure libclang_rt.asan_dynamic-x86_64.dll from the mingw bin/ directory is in PATH.")
 
     names = expand_target_names(args.targets)
     if not names:
         print("[!] No build targets requested.")
         return 1
 
+    # When --toolchain all (default), download both toolchains upfront.
+    if args.toolchain == "all":
+        for tc in ("mingw", "zig"):
+            _current_toolchain = tc
+            if not download_toolchain():
+                print(f"[!] Failed to download toolchain: {tc}")
+                return 1
+    else:
+        _current_toolchain = args.toolchain
+        if not download_toolchain():
+            print(f"[!] Failed to download toolchain: {args.toolchain}")
+            return 1
+
+    # Validate build mode for all active toolchains.
+    for tc in (("mingw", "zig") if args.toolchain == "all" else (args.toolchain,)):
+        _current_toolchain = tc
+        modes = get_modes()
+        if args.build_mode not in modes:
+            print(f"[!] Build mode '{args.build_mode}' not available for toolchain '{tc}'.")
+            print(f"    Available modes: {', '.join(modes.keys())}")
+            return 1
+
+    _current_build_mode = args.build_mode
+    _current_toolchain = args.toolchain
+
     if args.compile_commands:
         if not write_compile_commands(names, include_tests=args.tests):
             return 1
 
     if args.run_sanitizers:
-        if args.toolchain != "mingw":
-            print("[!] --run-sanitizers requires the mingw toolchain. Switching to mingw.")
-            _current_toolchain = "mingw"
+        if args.toolchain not in ("mingw", "all"):
+            print("[!] --run-sanitizers requires the mingw toolchain.")
+            return 1
+        _current_toolchain = "mingw"
         if not run_sanitizer_builds():
             print("[!] One or more sanitizer builds failed.")
             return 1
@@ -1058,7 +1064,6 @@ def main() -> int:
 
     if args.lint:
         if not args.compile_commands:
-            # Ensure compile_commands.json exists for lint
             if not (PROJECT_ROOT / "compile_commands.json").exists():
                 print("[*] Generating compile_commands.json for lint...")
                 names_for_cc = expand_target_names(args.targets)
@@ -1067,47 +1072,69 @@ def main() -> int:
         return 0 if run_lint() else 1
 
     if args.fuzz:
+        if args.toolchain not in ("mingw", "all"):
+            print("[!] --fuzz requires the mingw toolchain.")
+            return 1
+        _current_toolchain = "mingw"
         return 0 if build_fuzz() else 1
 
     if args.tests:
+        # Tests use the first available toolchain; prefer mingw for native host.
+        if args.toolchain == "all":
+            _current_toolchain = "mingw"
         return 0 if build_tests(run_tests=not args.no_run_tests) else 1
 
-    # Only build targets the selected toolchain can correctly produce. This
-    # prevents silently emitting mislabeled/broken binaries (e.g. mingw producing
-    # an x86_64 PE under a "linux-*" name, or zig failing on /CETCOMPAT for
-    # x86_64 Windows). Build the full 10-target matrix with two runs:
-    #   python build.py --toolchain mingw   (x86_64 Windows: hardened PEs)
-    #   python build.py --toolchain zig     (Linux + Windows-ARM)
-    buildable = []
-    for n in names:
-        compat = compatible_toolchains(TARGETS[n])
-        if _current_toolchain in compat:
-            buildable.append(n)
-        else:
-            print(f"[*] Skipping {n}: requires --toolchain {'/'.join(sorted(compat))} "
-                  f"(current: {_current_toolchain}).")
+    # Partition targets by their required toolchain, then build each group with
+    # the correct one. This prevents silently emitting mislabeled/broken binaries
+    # (e.g. mingw producing an x86_64 PE under a "linux-*" name, or zig failing
+    # on /CETCOMPAT for x86_64 Windows).
+    if args.toolchain == "all":
+        groups: dict[str, list[str]] = {"mingw": [], "zig": []}
+        for n in names:
+            for tc in compatible_toolchains(TARGETS[n]):
+                groups[tc].append(n)
+    else:
+        groups = {args.toolchain: []}
+        for n in names:
+            compat = compatible_toolchains(TARGETS[n])
+            if args.toolchain in compat:
+                groups[args.toolchain].append(n)
+            else:
+                print(f"[*] Skipping {n}: requires --toolchain {'/'.join(sorted(compat))} "
+                      f"(current: {args.toolchain}).")
 
-    if not buildable:
-        print("[!] None of the requested targets can be built with the "
-              f"'{_current_toolchain}' toolchain. See messages above.")
-        return 1
-    names = buildable
+    overall_ok = True
+    for tc, tc_names in groups.items():
+        if not tc_names:
+            continue
+        _current_toolchain = tc
+        modes = get_modes()
+        mode_info = modes[args.build_mode]
+        print(f"\n{'=' * 60}")
+        print(f"  Toolchain: {tc}  |  Build mode: {args.build_mode} ({mode_info['description']})")
+        print(f"{'=' * 60}")
 
-    print(f"[*] Building {len(names)} targets in parallel...")
-    ok = True
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(names)) as executor:
-        future_to_target = {executor.submit(build_target, n): n for n in names}
-        for future in concurrent.futures.as_completed(future_to_target):
-            name = future_to_target[future]
-            try:
-                if not future.result():
-                    print(f"[!] Build failed for target: {name}")
+        if tc == "mingw" and args.build_mode == "asan":
+            print("[*] Ensure libclang_rt.asan_dynamic-x86_64.dll from the mingw bin/ directory is in PATH.")
+
+        print(f"[*] Building {len(tc_names)} targets in parallel...")
+        ok = True
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(tc_names)) as executor:
+            future_to_target = {executor.submit(build_target, n): n for n in tc_names}
+            for future in concurrent.futures.as_completed(future_to_target):
+                name = future_to_target[future]
+                try:
+                    if not future.result():
+                        print(f"[!] Build failed for target: {name}")
+                        ok = False
+                except Exception as e:
+                    print(f"[!] Exception building target {name}: {e}")
                     ok = False
-            except Exception as e:
-                print(f"[!] Exception building target {name}: {e}")
-                ok = False
 
-    if ok:
+        if not ok:
+            overall_ok = False
+
+    if overall_ok:
         print("\nBuild complete.")
         print(f"Outputs: {DIST_DIR}")
         return 0
