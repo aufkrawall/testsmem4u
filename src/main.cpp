@@ -42,18 +42,52 @@ static constexpr const char* kDefaultConfigPath = "config.ini";
 static constexpr const char* kDefaultPresetPath = "default.cfg";
 static constexpr const char* kOptimizedExecEnv = "TESTSMEM4U_OPTIMIZED_REEXEC";
 
-static bool relaunchExecutablePath(const std::string& executable_path, int argc, char* argv[]) {
 #ifdef _WIN32
-    std::string args;
-    for (int i = 1; i < argc; ++i) {
-        if (i > 1) args += " ";
-        std::string arg = argv[i];
-        if (arg.find(' ') != std::string::npos) {
-            args += "\"" + arg + "\"";
-        } else {
-            args += arg;
+// Build a properly escaped command-line string from argv[1..argc) suitable for
+// ShellExecuteExA / CreateProcess. Handles spaces, tabs, embedded quotes, and
+// trailing backslashes using the CommandLineToArgvW-compatible quoting rules.
+// This follows the standard Windows command-line parsing convention used by
+// CommandLineToArgvW.
+static std::string quoteWindowsArg(const std::string& arg) {
+    const bool needs_quoting = (arg.find_first_of(" \t\"") != std::string::npos || arg.empty());
+    if (!needs_quoting) return arg;
+
+    std::string quoted;
+    quoted.reserve(arg.size() + 2);
+    quoted.push_back('"');
+    size_t backslashes = 0;
+    for (char c : arg) {
+        if (c == '\\') {
+            ++backslashes;
+            continue;
         }
+        if (c == '"') {
+            quoted.append(backslashes * 2 + 1, '\\');
+            quoted.push_back('"');
+        } else {
+            quoted.append(backslashes, '\\');
+            quoted.push_back(c);
+        }
+        backslashes = 0;
     }
+    quoted.append(backslashes * 2, '\\');
+    quoted.push_back('"');
+    return quoted;
+}
+
+static std::string buildArgsString(int argc, char* argv[]) {
+    std::string result;
+    for (int i = 1; i < argc; ++i) {
+        if (i > 1) result += " ";
+        result += quoteWindowsArg(argv[i]);
+    }
+    return result;
+}
+#endif
+
+static bool relaunchExecutablePath(const std::string& executable_path, int argc, char* argv[], int& exit_code) {
+#ifdef _WIN32
+    std::string args = buildArgsString(argc, argv);
 
     SHELLEXECUTEINFOA sei = {};
     sei.cbSize = sizeof(sei);
@@ -65,8 +99,29 @@ static bool relaunchExecutablePath(const std::string& executable_path, int argc,
     if (!ShellExecuteExA(&sei)) {
         return false;
     }
+    if (!sei.hProcess) {
+        exit_code = 0;
+        return true;
+    }
+    DWORD wait_result = WaitForSingleObject(sei.hProcess, INFINITE);
+    if (wait_result != WAIT_OBJECT_0) {
+        std::cerr << "Failed to wait for optimized child process: error " << GetLastError() << std::endl;
+        CloseHandle(sei.hProcess);
+        exit_code = 2;
+        return true;
+    }
+    DWORD child_exit_code = 0;
+    if (!GetExitCodeProcess(sei.hProcess, &child_exit_code)) {
+        std::cerr << "Failed to read optimized child exit code: error " << GetLastError() << std::endl;
+        CloseHandle(sei.hProcess);
+        exit_code = 2;
+        return true;
+    }
+    CloseHandle(sei.hProcess);
+    exit_code = static_cast<int>(child_exit_code);
     return true;
 #else
+    (void)exit_code;
     std::vector<char*> new_argv;
     new_argv.reserve(static_cast<size_t>(argc) + 1);
     new_argv.push_back(const_cast<char*>(executable_path.c_str()));
@@ -79,7 +134,7 @@ static bool relaunchExecutablePath(const std::string& executable_path, int argc,
 #endif
 }
 
-static bool maybeRelaunchOptimizedBinary(int argc, char* argv[]) {
+static bool maybeRelaunchOptimizedBinary(int argc, char* argv[], int& exit_code) {
     const char* marker = std::getenv(kOptimizedExecEnv);
     if (marker != nullptr && std::strcmp(marker, "1") == 0) {
         return false;
@@ -142,7 +197,7 @@ static bool maybeRelaunchOptimizedBinary(int argc, char* argv[]) {
     setenv(kOptimizedExecEnv, "1", 1);
 #endif
 
-    if (relaunchExecutablePath(candidate.string(), argc, argv)) {
+    if (relaunchExecutablePath(candidate.string(), argc, argv, exit_code)) {
         return true;
     }
 
@@ -342,10 +397,9 @@ static bool parseUintOrDefault(const std::string& str, uint32_t& result, uint32_
         result = default_val;
         return true;
     }
-    char* endptr = nullptr;
-    unsigned long val = std::strtoul(str.c_str(), &endptr, 10);
-    if (endptr && *endptr == '\0') {
-        result = static_cast<uint32_t>(val);
+    uint32_t parsed = 0;
+    if (Utils::parseUintStrict(str, parsed)) {
+        result = parsed;
         return true;
     }
     return false;
@@ -402,17 +456,7 @@ static bool isPrivileged() {
 static bool relaunchAsPrivileged(int argc, char* argv[]) {
 #ifdef _WIN32
     // Re-launch with ShellExecute and "runas" verb
-    std::string args;
-    for (int i = 1; i < argc; ++i) {
-        if (i > 1) args += " ";
-        // Simple quoting - sophisticated quoting might be needed for paths with spaces
-        std::string arg = argv[i];
-        if (arg.find(' ') != std::string::npos) {
-            args += "\"" + arg + "\"";
-        } else {
-            args += arg;
-        }
-    }
+    std::string args = buildArgsString(argc, argv);
 
     // Get current executable path
     char exePath[MAX_PATH];
@@ -467,6 +511,7 @@ struct CliOptions {
     bool show_config = false;
     bool dry_run = false;
     bool no_config = false;
+    bool aggressive_defrag = false;
 
     bool config_path_set = false;
     bool preset_specified = false;
@@ -689,7 +734,10 @@ static void printUsage() {
     std::cout << "      --large-pages        Prefer large pages / hugepages\n";
     std::cout << "      --no-large-pages     Disable large pages / hugepages\n";
     std::cout << "      --show-config        Print the resolved configuration before execution\n";
-    std::cout << "      --dry-run            Validate inputs, print config, and exit\n\n";
+    std::cout << "      --dry-run            Validate inputs, print config, and exit\n";
+    std::cout << "      --aggressive-defrag  Enable system-wide memory defragmentation (standby list purge,\n";
+    std::cout << "                             working set trim, file cache disable). May impact other\n";
+    std::cout << "                             running processes. Off by default.\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << kProgramName << " --yes --preset default.cfg\n";
     std::cout << "  " << kProgramName << " --memory 80% --cycles 5 --show-config\n";
@@ -727,6 +775,10 @@ static int printPresetList(const std::string& directory) {
     }
 
     return 0;
+}
+
+static bool hasUnsafeConfigPathCharacters(const std::string& path) {
+    return Utils::hasUnsafePathControlCharacters(path);
 }
 
 static bool parseCliOptions(int argc, char* argv[], CliOptions& options, std::string& error) {
@@ -799,6 +851,10 @@ static bool parseCliOptions(int argc, char* argv[], CliOptions& options, std::st
             options.no_config = true;
             continue;
         }
+        if (arg == "--aggressive-defrag") {
+            options.aggressive_defrag = true;
+            continue;
+        }
         if (arg == "--halt-on-error") {
             options.halt_on_error = true;
             options.halt_overridden = true;
@@ -841,6 +897,10 @@ static bool parseCliOptions(int argc, char* argv[], CliOptions& options, std::st
             options.config_path = Utils::trim(value);
             if (options.config_path.empty()) {
                 error = "Config file path cannot be empty.";
+                return false;
+            }
+            if (hasUnsafeConfigPathCharacters(options.config_path)) {
+                error = "Config file path contains unsafe characters (null byte or ESC).";
                 return false;
             }
             options.config_path_set = true;
@@ -1185,20 +1245,22 @@ Config runConfigWizard() {
     } else if (input.back() == '%') {
         std::string num_part = input.substr(0, input.size() - 1);
         uint32_t pct;
-        if (parseUintOrDefault(num_part, pct, 85)) {
+        if (parseUint32Strict(num_part, pct)) {
             if (pct > 100) pct = 100;
             config.memory_window_percent = pct;
             config.memory_window_mb = 0;
         } else {
+            ConsoleDisplay::get().printLine("[!] Invalid percentage value. Using default 85%.");
             config.memory_window_percent = 85;
             config.memory_window_mb = 0;
         }
     } else {
         uint32_t mb;
-        if (parseUintOrDefault(input, mb, 0)) {
+        if (parseUint32Strict(input, mb) && mb > 0) {
             config.memory_window_mb = mb;
             config.memory_window_percent = 0;
         } else {
+            ConsoleDisplay::get().printLine("[!] Invalid MB value. Using default 85%.");
             config.memory_window_mb = 0;
             config.memory_window_percent = 85;
         }
@@ -1320,8 +1382,9 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
-    if (maybeRelaunchOptimizedBinary(argc, argv)) {
-        return 0;
+    int relaunch_exit_code = 0;
+    if (maybeRelaunchOptimizedBinary(argc, argv, relaunch_exit_code)) {
+        return relaunch_exit_code;
     }
 
     ConsoleDisplay::get().init();
@@ -1455,6 +1518,7 @@ int main(int argc, char* argv[]) {
 
     reportMemoryWindowAdjustment(requested_window_mb, config.memory_window_mb);
     config.debug_mode = cli.debug;
+    Platform::setAggressiveDefrag(cli.aggressive_defrag);
 
     {
         std::ostringstream ss;

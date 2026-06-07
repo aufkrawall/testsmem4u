@@ -72,7 +72,6 @@ void ConsoleDisplay::printLine(const std::string& line) {
     
     if (status_active_) {
         std::cout << "\r\033[K" << line << "\n";
-        last_rendered_len_ = 0;
         status_active_ = false;
     } else {
         std::cout << line << "\n";
@@ -89,7 +88,6 @@ void ConsoleDisplay::updateProgressLine(const std::string& line) {
         std::cout << line << std::flush;
         status_active_ = true;
     }
-    last_rendered_len_ = static_cast<int>(line.size());
 }
 
 void ConsoleDisplay::printError(const std::string& line) {
@@ -100,9 +98,8 @@ void ConsoleDisplay::printError(const std::string& line) {
     }
     
     std::cout << "\033[31m" << line << "\033[0m\n";
-    
+
     if (status_active_) {
-        last_rendered_len_ = 0;
         status_active_ = false;
     }
     std::cout << std::flush;
@@ -112,7 +109,6 @@ void ConsoleDisplay::clearStatus() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (status_active_) {
         std::cout << "\r\033[K" << std::flush;
-        last_rendered_len_ = 0;
         status_active_ = false;
     }
 }
@@ -168,7 +164,6 @@ void ConsoleDisplay::updateStatus(const StatusInfo& info) {
     }
     
     std::cout << "\r" << status << "\033[K" << std::flush;
-    last_rendered_len_ = static_cast<int>(status.size());
 }
 
 }

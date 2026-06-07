@@ -146,16 +146,28 @@ static std::atomic<bool> g_rowhammer_large_page_warning_emitted{false};
 
 std::vector<uint32_t> parseTestSequence(const std::string& sequence) {
     std::vector<uint32_t> result;
-    std::stringstream ss(sequence);
-    std::string item;
-    while (std::getline(ss, item, ',')) {
-        size_t start = item.find_first_not_of(" \t");
-        if (start != std::string::npos) {
-            uint32_t parsed = 0;
-            if (Utils::parseUintStrict(item.substr(start), parsed)) {
-                result.push_back(parsed);
-            }
+    const std::string text = Utils::trim(sequence);
+    if (text.empty()) return result;
+
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t comma = text.find(',', start);
+        const std::string item = Utils::trim(
+            text.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+        if (item.empty()) {
+            result.clear();
+            return result;
         }
+
+        uint32_t parsed = 0;
+        if (!Utils::parseUintStrict(item, parsed)) {
+            result.clear();
+            return result;
+        }
+        result.push_back(parsed);
+
+        if (comma == std::string::npos) break;
+        start = comma + 1;
     }
     return result;
 }
@@ -356,7 +368,6 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         }
         if (stop && ctx.shouldStop()) break;
 
-        volatile uint64_t* vptr = reinterpret_cast<volatile uint64_t*>(ptr);
         size_t points_remaining = hammer_points;
 
         for (size_t stride_index = 0; stride_index < usable_strides.size() && !ctx.shouldStop(); ++stride_index) {
@@ -366,6 +377,9 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
             points_remaining -= std::min(points_remaining, points_for_stride);
             std::uniform_int_distribution<size_t> hammer_dist(0, count - 3 * row_stride_elements - 1);
 
+            LOG_INFO("RowHammer: Sweeping stride %zu elements (%zu points)",
+                     row_stride_elements, points_for_stride);
+
             for (size_t i = 0; i < points_for_stride && !ctx.shouldStop(); ++i) {
                 size_t idxA = hammer_dist(rng);
                 size_t idxB = idxA + row_stride_elements;
@@ -373,22 +387,36 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
                 
                 if (idxC >= count) continue;
 
+                if (i % 512 == 0) {
+                    LOG_DEBUG("RowHammer: Hammering point %zu/%zu (idxA=%zu, idxB=%zu, idxC=%zu, stride=%zu)",
+                              i, points_for_stride, idxA, idxB, idxC, row_stride_elements);
+                }
+
                 for (size_t k = 0; k < hammer_iterations && !ctx.shouldStop(); ++k) {
                     uint64_t pattern = (k & 1) ? aggr_toggle1 : aggr_toggle0;
-                    vptr[idxA] = pattern;
-                    vptr[idxB] = pattern;
-                    vptr[idxC] = pattern;
-                    simd::memory_fence();
-                    simd::flush_cache_line((void*)&vptr[idxA]);
-                    simd::flush_cache_line((void*)&vptr[idxB]);
-                    simd::flush_cache_line((void*)&vptr[idxC]);
+#if defined(__x86_64__) || defined(_M_X64)
+                    _mm_stream_si64((long long*)&ptr[idxA], (long long)pattern);
+                    _mm_stream_si64((long long*)&ptr[idxC], (long long)pattern);
+                    _mm_sfence();
+#else
+                    __atomic_store_n(&ptr[idxA], pattern, __ATOMIC_RELAXED);
+                    __atomic_store_n(&ptr[idxC], pattern, __ATOMIC_RELAXED);
+                    std::atomic_thread_fence(std::memory_order_release);
+#endif
+                    simd::flush_cache_line((void*)&ptr[idxA]);
+                    simd::flush_cache_line((void*)&ptr[idxC]);
                     simd::memory_fence();
                 }
 
-                vptr[idxA] = victim_fill;
-                vptr[idxB] = victim_fill;
-                vptr[idxC] = victim_fill;
-                simd::sfence();
+#if defined(__x86_64__) || defined(_M_X64)
+                _mm_stream_si64((long long*)&ptr[idxA], (long long)victim_fill);
+                _mm_stream_si64((long long*)&ptr[idxC], (long long)victim_fill);
+                _mm_sfence();
+#else
+                __atomic_store_n(&ptr[idxA], victim_fill, __ATOMIC_RELAXED);
+                __atomic_store_n(&ptr[idxC], victim_fill, __ATOMIC_RELAXED);
+                std::atomic_thread_fence(std::memory_order_release);
+#endif
             }
         }
 
@@ -514,67 +542,51 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
         // Flush the region before verification so reads come from DRAM, not CPU cache.
         simd::flush_cache_region(ptr, region.size);
 
-        for (size_t i = 0; i + 1 < count; i += 2) {
-            if (ctx.shouldStop()) break;
+        // Verify using bounded error sampling consistent with other tests.
+        // MirrorMove128 uses alternating 128-bit {param0, param1} pairs, so we
+        // verify even/odd indices separately against their respective uniform values.
+        {
+            constexpr size_t VERIFY_BLOCK = 256 * 1024; // elements
+            std::vector<std::pair<uint64_t, uint64_t>> errors;
+            errors.reserve(128);
 
-            // Low word check
-            uint64_t lo_observed = ptr[i];
-            if (lo_observed != config.pattern_param0) {
-                // Re-read from DRAM to classify hard vs soft
-                uint64_t confirmed = simd::safe_read_u64(&ptr[i]);
-
-                if (confirmed != config.pattern_param0) {
-                    res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (L - Hard)", reportAddress(region, &ptr[i]), config.pattern_param0, confirmed);
-                } else {
-                    res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (L - Soft)", reportAddress(region, &ptr[i]), config.pattern_param0, lo_observed);
+            // Verify even indices (param0) in blocks
+            for (size_t i = 0; i + 1 < count; i += VERIFY_BLOCK) {
+                if (ctx.shouldStop()) break;
+                size_t n = std::min(VERIFY_BLOCK, count - i);
+                // Scan even positions in this block
+                for (size_t j = 0; j < n && j + i + 1 <= count; j += 2) {
+                    size_t idx = i + j;
+                    uint64_t observed = ptr[idx];
+                    if (observed != config.pattern_param0) {
+                        uint64_t confirmed = simd::safe_read_u64(&ptr[idx]);
+                        if (confirmed != config.pattern_param0) {
+                            res.hard_errors++;
+                            LOG_ERROR_DETAIL("MirrorMove128 (E - Hard)", reportAddress(region, &ptr[idx]), config.pattern_param0, confirmed);
+                        } else {
+                            res.soft_errors++;
+                            LOG_ERROR_DETAIL("MirrorMove128 (E - Soft)", reportAddress(region, &ptr[idx]), config.pattern_param0, observed);
+                        }
+                        if (stop && res.total_errors() > 0) { ctx.requestStop(); break; }
+                    }
                 }
-
-                if (stop && res.total_errors() > 0) {
-                    ctx.requestStop();
-                    break;
+                // Scan odd positions in this block
+                for (size_t j = 1; j < n && j + i < count; j += 2) {
+                    size_t idx = i + j;
+                    uint64_t observed = ptr[idx];
+                    if (observed != config.pattern_param1) {
+                        uint64_t confirmed = simd::safe_read_u64(&ptr[idx]);
+                        if (confirmed != config.pattern_param1) {
+                            res.hard_errors++;
+                            LOG_ERROR_DETAIL("MirrorMove128 (O - Hard)", reportAddress(region, &ptr[idx]), config.pattern_param1, confirmed);
+                        } else {
+                            res.soft_errors++;
+                            LOG_ERROR_DETAIL("MirrorMove128 (O - Soft)", reportAddress(region, &ptr[idx]), config.pattern_param1, observed);
+                        }
+                        if (stop && res.total_errors() > 0) { ctx.requestStop(); break; }
+                    }
                 }
-            }
-
-            // High word check
-            uint64_t hi_observed = ptr[i+1];
-            if (hi_observed != config.pattern_param1) {
-                // Re-read from DRAM to classify hard vs soft
-                uint64_t confirmed = simd::safe_read_u64(&ptr[i+1]);
-
-                if (confirmed != config.pattern_param1) {
-                    res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (H - Hard)", reportAddress(region, &ptr[i + 1]), config.pattern_param1, confirmed);
-                } else {
-                    res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (H - Soft)", reportAddress(region, &ptr[i + 1]), config.pattern_param1, hi_observed);
-                }
-
-                if (stop && res.total_errors() > 0) {
-                    ctx.requestStop();
-                    break;
-                }
-            }
-        }
-
-        // Handle odd tail word if region size not divisible by 16 bytes
-        if (count % 2 == 1) {
-            size_t last = count - 1;
-            uint64_t tail_observed = ptr[last];
-            if (tail_observed != config.pattern_param0) {
-                // Re-read from DRAM to classify hard vs soft
-                uint64_t confirmed = simd::safe_read_u64(&ptr[last]);
-
-                if (confirmed != config.pattern_param0) {
-                    res.hard_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Hard)", reportAddress(region, &ptr[last]), config.pattern_param0, confirmed);
-                } else {
-                    res.soft_errors++;
-                    LOG_ERROR_DETAIL("MirrorMove128 (Tail - Soft)", reportAddress(region, &ptr[last]), config.pattern_param0, tail_observed);
-                }
-
-                if (stop) ctx.requestStop();
+                if (stop && ctx.shouldStop()) break;
             }
         }
     }
@@ -587,26 +599,45 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
     TestResult res = {};
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
+    uint32_t delay_ms = config.parameter > 0 ? config.parameter : 100;
 
-    generate_pattern_uniform(ptr, count, config.pattern_param0, true);
+    // Test both the configured pattern and its complement for comprehensive
+    // DRAM retention coverage. Retention failures can be pattern-dependent.
+    const uint64_t patterns[] = { config.pattern_param0, ~config.pattern_param0 };
+    const char* phase_names[] = { "RefreshStable", "RefreshStable (Inv)" };
 
-    // Flush before the delay so the retention window exercises DRAM rather than CPU cache.
-    simd::flush_cache_region(ptr, region.size);
-    simd::memory_fence();
+    for (int phase = 0; phase < 2; ++phase) {
+        if (ctx.shouldStop()) break;
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(config.parameter > 0 ? config.parameter : 100));
-    
-    // Flush again before verification to ensure we read from DRAM
-    simd::flush_cache_region(ptr, region.size);
+        uint64_t pattern = patterns[phase];
 
-    size_t block = 256 * 1024;
-    for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
-        size_t n = std::min(block, count - i);
-        TestEngine::verifyAndReport(region, ptr + i, n, i, 0, config.pattern_param0, 0, res, ctx, "RefreshStable", stop);
-        if (stop && ctx.shouldStop()) break;
+        generate_pattern_uniform(ptr, count, pattern, true);
+
+        // Flush before the delay so the retention window exercises DRAM rather than CPU cache.
+        simd::flush_cache_region(ptr, region.size);
+        simd::memory_fence();
+
+        // Sleep in short slices so an async stop (Ctrl+C) is honored promptly.
+        // The region is never touched here, so the retention window is preserved.
+        for (uint32_t slept = 0; slept < delay_ms && !ctx.shouldStop(); ) {
+            uint32_t slice = std::min<uint32_t>(100, delay_ms - slept);
+            std::this_thread::sleep_for(std::chrono::milliseconds(slice));
+            slept += slice;
+        }
+        if (ctx.shouldStop()) break;
+
+        // Flush again before verification to ensure we read from DRAM
+        simd::flush_cache_region(ptr, region.size);
+
+        size_t block = 256 * 1024;
+        for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
+            size_t n = std::min(block, count - i);
+            TestEngine::verifyAndReport(region, ptr + i, n, i, 0, pattern, 0, res, ctx, phase_names[phase], stop);
+            if (stop && ctx.shouldStop()) break;
+        }
     }
 
-    res.bytes_tested = region.size;
+    res.bytes_tested = region.size * 2;
     return res;
 }
 
@@ -689,16 +720,11 @@ uint64_t test_lfsr_next(uint64_t val) {
 }
 #endif
 
-TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
-    TestResult res = {};
-    uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
-    size_t count = region.size / 8;
-
-    // Use full 64-bit seed for maximal LFSR period
-    uint64_t initial_seed = config.pattern_param0 ? config.pattern_param0 : 0xACE1ACE2DEADBEEFULL;
-    uint64_t seed = initial_seed;
-
-    // Generate pattern using 64-bit LFSR with NT stores to bypass cache
+// Shared LFSR write helper: fills ptr[0..count) with LFSR-generated values.
+// Uses AVX2 batched NT stores when available, SSE NT stores on x86_64, or
+// plain stores as fallback. Returns the final LFSR seed after count iterations.
+// Checks ctx.shouldStop() every 0x10000 elements for prompt cancellation.
+static uint64_t lfsr_write_pattern(uint64_t* ptr, size_t count, uint64_t seed, TestContext& ctx) {
 #if defined(__AVX2__)
     simd::SimdCapabilities caps = simd::getCapabilities();
     size_t i = 0;
@@ -740,38 +766,57 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
     }
 #endif
     sfence();
+    return seed;
+}
+
+TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
+    TestResult res = {};
+    uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
+    size_t count = region.size / 8;
+
+    // Use full 64-bit seed for maximal LFSR period
+    uint64_t initial_seed = config.pattern_param0 ? config.pattern_param0 : 0xACE1ACE2DEADBEEFULL;
+
+    // Generate pattern using 64-bit LFSR with NT stores to bypass cache
+    (void)lfsr_write_pattern(ptr, count, initial_seed, ctx);
     
     // Flush cache for true RAM testing
     simd::flush_cache_region(ptr, region.size);
 
-    // Verify - reset seed and check
-    seed = initial_seed;
+    // Verify - reset seed and check using pre-allocated buffer
+    uint64_t seed = initial_seed;
+    constexpr size_t LFSR_BLOCK = 512;
+    // Pre-allocate expected buffer once and reuse; 512 * 8 = 4KB fits on stack
+    std::array<uint64_t, LFSR_BLOCK> expected_values{};
+    std::vector<std::pair<uint64_t, uint64_t>> errors;
+    errors.reserve(128);
 
-    for (size_t i = 0; i < count; i += 512) {
+    for (size_t i = 0; i < count; i += LFSR_BLOCK) {
         if (ctx.shouldStop()) break;
-        size_t n = std::min((size_t)512, count - i);
+        size_t n = std::min(LFSR_BLOCK, count - i);
 
-        // Store expected values BEFORE checking so we can log correct values
-        uint64_t expected_values[512];
+        // Compute expected values for this block
         uint64_t block_seed = seed;
         for (size_t j = 0; j < n; ++j) {
             expected_values[j] = block_seed;
             block_seed = lfsr_next(block_seed);
         }
 
-        size_t found = 0;
-        std::pair<uint64_t, uint64_t> errors[512];
-        for (size_t j = 0; j < n; ++j) {
-            uint64_t val = ptr[i + j];
-            if (val != expected_values[j]) {
-                errors[found++] = {j, val};
+        // Fast path: compare whole block with memcmp (SIMD-accelerated in libc)
+        // Only scan element-by-element on mismatch
+        errors.clear();
+        if (std::memcmp(ptr + i, expected_values.data(), n * sizeof(uint64_t)) != 0) {
+            for (size_t j = 0; j < n; ++j) {
+                if (ptr[i + j] != expected_values[j]) {
+                    errors.emplace_back(j, ptr[i + j]);
+                }
             }
         }
 
-        if (found > 0) {
-            for (size_t k = 0; k < found; ++k) {
-                size_t idx = errors[k].first;
-                uint64_t first_observed = errors[k].second;
+        if (!errors.empty()) {
+            for (const auto& err : errors) {
+                size_t idx = err.first;
+                uint64_t first_observed = err.second;
                 // Re-read check for LFSR
                 uint64_t actual = simd::safe_read_u64(&ptr[i + idx]);
                 
@@ -1017,83 +1062,66 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
     uint64_t initial_seed = config.pattern_param0 ? config.pattern_param0 : 0xACE1ACE2DEADBEEFULL;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
     bool early_stop = false;
-    
+    constexpr size_t LFSR_BLOCK = 512;
+    // Pre-allocate expected buffer once and reuse
+    std::array<uint64_t, LFSR_BLOCK> expected{};
+
+    // Precompute the LFSR seed at the start of each block once. seed_at_block_start[b]
+    // is the LFSR state after b*LFSR_BLOCK iterations. This depends only on
+    // initial_seed and count, so it is invariant across repeats and is reused by
+    // the Phase 4 backward march (avoids rebuilding an O(count) table every repeat).
+    std::vector<uint64_t> seed_at_block_start;
+    {
+        size_t num_blocks = (count + LFSR_BLOCK - 1) / LFSR_BLOCK;
+        seed_at_block_start.resize(num_blocks);
+        uint64_t s = initial_seed;
+        for (size_t b = 0; b < num_blocks; ++b) {
+            seed_at_block_start[b] = s;
+            size_t n = std::min(LFSR_BLOCK, count - b * LFSR_BLOCK);
+            for (size_t j = 0; j < n; ++j) {
+                s = lfsr_next(s);
+            }
+        }
+    }
+
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop() && !early_stop; ++r) {
         // Phase 1: Fill with LFSR pattern using NT stores to bypass cache
-        uint64_t seed = initial_seed;
-#if defined(__AVX2__)
-        {
-            simd::SimdCapabilities caps = simd::getCapabilities();
-            size_t i = 0;
-            if (caps.has_avx2) {
-                for (; i + 4 <= count; i += 4) {
-                    if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
-                    uint64_t v0 = seed; seed = lfsr_next(seed);
-                    uint64_t v1 = seed; seed = lfsr_next(seed);
-                    uint64_t v2 = seed; seed = lfsr_next(seed);
-                    uint64_t v3 = seed; seed = lfsr_next(seed);
-                    __m256i vec = _mm256_set_epi64x((long long)v3, (long long)v2, (long long)v1, (long long)v0);
-                    if (caps.has_nt_stores) {
-                        _mm256_stream_si256((__m256i*)&ptr[i], vec);
-                    } else {
-                        _mm256_storeu_si256((__m256i*)&ptr[i], vec);
-                    }
-                }
-            }
-            for (; i < count; ++i) {
-                if (caps.has_nt_stores) {
-                    _mm_stream_si64((long long*)&ptr[i], (long long)seed);
-                } else {
-                    ptr[i] = seed;
-                }
-                seed = lfsr_next(seed);
-            }
-        }
-#elif defined(__x86_64__) || defined(_M_X64)
-        for (size_t i = 0; i < count; ++i) {
-            if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
-            _mm_stream_si64((long long*)&ptr[i], (long long)seed);
-            seed = lfsr_next(seed);
-        }
-#else
-        for (size_t i = 0; i < count; ++i) {
-            if ((i & 0xFFFF) == 0 && ctx.shouldStop()) break;
-            ptr[i] = seed;
-            seed = lfsr_next(seed);
-        }
-#endif
-        sfence();
+        (void)lfsr_write_pattern(ptr, count, initial_seed, ctx);
         simd::flush_cache_region(ptr, region.size);
         
-        // Phase 2: Verify pattern
-        seed = initial_seed;
-        for (size_t i = 0; i < count && !ctx.shouldStop() && !early_stop; i += 512) {
-            size_t n = std::min((size_t)512, count - i);
+        // Phase 2: Verify pattern (forward march)
+        uint64_t seed = initial_seed;
+        for (size_t i = 0; i < count && !ctx.shouldStop() && !early_stop; i += LFSR_BLOCK) {
+            size_t n = std::min(LFSR_BLOCK, count - i);
             
-            uint64_t expected[512];
+            // Compute expected values
+            uint64_t block_seed = seed;
             for (size_t j = 0; j < n; ++j) {
-                expected[j] = seed;
-                seed = lfsr_next(seed);
+                expected[j] = block_seed;
+                block_seed = lfsr_next(block_seed);
             }
             
-            for (size_t j = 0; j < n; ++j) {
-                uint64_t first_observed = ptr[i+j];
-                if (first_observed != expected[j]) {
-                    uint64_t actual = simd::safe_read_u64(&ptr[i+j]);
-                    if (actual != expected[j]) {
-                        res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Hard)", reportAddress(region, &ptr[i + j]), expected[j], actual);
-                    } else {
-                        res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Soft)", reportAddress(region, &ptr[i + j]), expected[j], first_observed);
-                    }
-                    if (stop && res.total_errors() > 0) {
-                        ctx.requestStop();
-                        early_stop = true;
-                        break;
+            // Fast path: memcmp whole block before per-element scan
+            if (std::memcmp(ptr + i, expected.data(), n * sizeof(uint64_t)) != 0) {
+                for (size_t j = 0; j < n; ++j) {
+                    if (ptr[i+j] != expected[j]) {
+                        uint64_t actual = simd::safe_read_u64(&ptr[i+j]);
+                        if (actual != expected[j]) {
+                            res.hard_errors++;
+                            LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Hard)", reportAddress(region, &ptr[i + j]), expected[j], actual);
+                        } else {
+                            res.soft_errors++;
+                            LOG_ERROR_DETAIL("MovInvLFSR (Fwd - Soft)", reportAddress(region, &ptr[i + j]), expected[j], ptr[i + j]);
+                        }
+                        if (stop && res.total_errors() > 0) {
+                            ctx.requestStop();
+                            early_stop = true;
+                            break;
+                        }
                     }
                 }
             }
+            seed = block_seed;
         }
         
         if (ctx.shouldStop() || early_stop) break;
@@ -1103,32 +1131,42 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
         sfence();
         simd::flush_cache_region(ptr, region.size);
         
-        // Phase 4: Verify Inverted
-        seed = initial_seed;
-        for (size_t i = 0; i < count && !ctx.shouldStop() && !early_stop; i += 512) {
-            size_t n = std::min((size_t)512, count - i);
-            
-            uint64_t expected[512];
-            for (size_t j = 0; j < n; ++j) {
-                expected[j] = ~seed;
-                seed = lfsr_next(seed);
-            }
-            
-            for (size_t j = 0; j < n; ++j) {
-                uint64_t first_observed = ptr[i+j];
-                if (first_observed != expected[j]) {
-                    uint64_t actual = simd::safe_read_u64(&ptr[i+j]);
-                    if (actual != expected[j]) {
-                        res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovInvLFSR (Inv - Hard)", reportAddress(region, &ptr[i + j]), expected[j], actual);
-                    } else {
-                        res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvLFSR (Inv - Soft)", reportAddress(region, &ptr[i + j]), expected[j], first_observed);
-                    }
-                    if (stop && res.total_errors() > 0) {
-                        ctx.requestStop();
-                        early_stop = true;
-                        break;
+        // Phase 4: Verify Inverted (backward march for better address-line coverage)
+        // Uses the precomputed seed_at_block_start table to generate expected
+        // values at each backward block start.
+        {
+            for (size_t i = count; i > 0 && !ctx.shouldStop() && !early_stop; ) {
+                size_t chunk_end = i;
+                size_t chunk_start = (i > LFSR_BLOCK) ? (i - LFSR_BLOCK) : 0;
+                size_t n = chunk_end - chunk_start;
+                i = chunk_start;
+
+                // Compute inverted expected values for this block
+                size_t block_idx = chunk_start / LFSR_BLOCK;
+                uint64_t block_seed = seed_at_block_start[block_idx];
+                for (size_t j = 0; j < n; ++j) {
+                    expected[j] = ~block_seed;
+                    block_seed = lfsr_next(block_seed);
+                }
+
+                // Fast path: memcmp whole block before per-element scan
+                if (std::memcmp(ptr + chunk_start, expected.data(), n * sizeof(uint64_t)) != 0) {
+                    for (size_t j = 0; j < n; ++j) {
+                        if (ptr[chunk_start + j] != expected[j]) {
+                            uint64_t actual = simd::safe_read_u64(&ptr[chunk_start + j]);
+                            if (actual != expected[j]) {
+                                res.hard_errors++;
+                                LOG_ERROR_DETAIL("MovInvLFSR (Inv - Hard)", reportAddress(region, &ptr[chunk_start + j]), expected[j], actual);
+                            } else {
+                                res.soft_errors++;
+                                LOG_ERROR_DETAIL("MovInvLFSR (Inv - Soft)", reportAddress(region, &ptr[chunk_start + j]), expected[j], ptr[chunk_start + j]);
+                            }
+                            if (stop && res.total_errors() > 0) {
+                                ctx.requestStop();
+                                early_stop = true;
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -1554,6 +1592,7 @@ RunResult TestEngine::runTests(const Config& config) {
 RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& region,
                                    const std::vector<uint32_t>& seq,
                                    const std::map<uint32_t, TestConfig>& configs) {
+    Platform::confirmNormalProcessPriority();
     RunResult result = {};
     TestContext ctx;
     
@@ -1573,8 +1612,58 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     std::vector<WorkerAssignment> assignments = buildWorkerAssignments(region, threads);
     threads = static_cast<uint32_t>(assignments.size());
 
+    {
+        // Report the ISA this binary was compiled to emit (i.e. which variant is
+        // running) alongside the CPU's detected capabilities. This makes it easy
+        // to confirm that the -v3 (AVX2) / -v4 (AVX-512) optimized binary was
+        // actually selected by the auto-relaunch on capable hardware.
+#if defined(__AVX512F__)
+        const char* built_isa = "AVX-512 (v4)";
+#elif defined(__AVX2__)
+        const char* built_isa = "AVX2 (v3)";
+#else
+        const char* built_isa = "SSE2 baseline";
+#endif
+        const simd::SimdCapabilities caps = simd::getCapabilities();
+        LOG_INFO("SIMD: built for %s; CPU supports AVX2=%s AVX-512=%s; worker threads = %u",
+                 built_isa,
+                 caps.has_avx2 ? "yes" : "no",
+                 caps.has_avx512 ? "yes" : "no", threads);
+    }
+
+    // Warn if estimated runtime from preset configuration is excessive
+    {
+        uint64_t total_loop_estimate = 0;
+        for (uint32_t test_id : seq) {
+            auto it = configs.find(test_id);
+            if (it == configs.end()) continue;
+            const TestConfig& tc = it->second;
+            if (!tc.enabled) continue;
+            uint64_t loops = (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100;
+            if (loops == 0) loops = 1;
+            uint64_t internal_reps = tc.parameter > 0 ? tc.parameter : 1;
+            total_loop_estimate += loops * internal_reps;
+        }
+        uint64_t total_cycles = config.cycles == 0 ? 1 : config.cycles;
+        total_loop_estimate *= total_cycles;
+        constexpr uint64_t kMaxRecommendedLoops = 100000;
+        if (total_loop_estimate > kMaxRecommendedLoops) {
+            LOG_WARN("Estimated total loops (%llu) exceeds recommended maximum (%llu). "
+                     "The preset configuration may produce an extremely long run. "
+                     "Consider reducing Time(%%), Parameter, or Cycles values.",
+                     (unsigned long long)total_loop_estimate,
+                     (unsigned long long)kMaxRecommendedLoops);
+        }
+    }
+
     std::vector<std::thread> workers;
     ThreadBarrier barrier(threads);
+    // Stop decision latched once per barrier epoch by the leader (t==0) and read
+    // by every worker after the barrier, so all workers always perform the same
+    // number of barrier arrivals even when an async stop (Ctrl+C) flips the flag
+    // mid-loop. Without this, divergent per-thread shouldStop() checks around a
+    // barrier could leave some workers waiting on a barrier the others already left.
+    std::atomic<bool> epoch_stop{false};
 
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -1627,7 +1716,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             my_region.base_offset_bytes += assignment.offset;
 
             uint32_t cycle = 0;
-            while ((config.cycles == 0 || cycle < config.cycles) && !ctx.shouldStop()) {
+            while (config.cycles == 0 || cycle < config.cycles) {
                 if (t == 0) {
                     // Verify memory is still resident before each cycle
                     if (!Platform::checkMemoryResident(region.base, region.size)) {
@@ -1639,15 +1728,17 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         ctx.current_cycle.store(cycle + 1, std::memory_order_release);
                         LOG_INFO("=== Cycle %u Started ===", cycle + 1);
                     }
+                    epoch_stop.store(ctx.shouldStop(), std::memory_order_relaxed);
                 }
                 barrier.arriveAndWait();
-                if (ctx.shouldStop()) break;
+                if (epoch_stop.load(std::memory_order_relaxed)) break;
 
                 uint32_t seq_idx = 0;
                 for (uint32_t test_id : seq) {
+                    if (t == 0) epoch_stop.store(ctx.shouldStop(), std::memory_order_relaxed);
                     barrier.arriveAndWait();
 
-                    if (ctx.shouldStop()) break;
+                    if (epoch_stop.load(std::memory_order_relaxed)) break;
                     auto it = configs.find(test_id);
                     if (it == configs.end()) {
                         if (t == 0) {
@@ -1676,10 +1767,10 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                     }
                     barrier.arriveAndWait();
 
-                    uint32_t loops = (config.preset.time_percent * tc.time_percent) / 100;
+                    uint64_t loops = (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100;
                     if (loops == 0) loops = 1;
 
-                    for (uint32_t L = 0; L < loops; ++L) {
+                    for (uint64_t L = 0; L < loops; ++L) {
                         if (ctx.shouldStop()) break;
                         TestResult tr = runRegionWork(ctx, my_region, tc, config.halt_on_error);
 

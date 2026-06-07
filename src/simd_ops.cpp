@@ -52,58 +52,78 @@ static SimdCapabilities detect_x86_capabilities() {
     const bool cpu_has_osxsave = (info[2] & (1 << 27)) != 0;
     caps.has_clflush = (info[3] & (1 << 19)) != 0;
 
+    // Detect XSAVE-enabled OS state support. AVX-512 state is probed
+    // unconditionally (not behind __AVX512F__) so the baseline binary can detect
+    // AVX-512-capable hardware and relaunch the -v4 sibling.
     bool os_has_avx_state = false;
-#if defined(__AVX512F__)
     bool os_has_avx512_state = false;
-#endif
     if (cpu_has_osxsave) {
         const uint64_t xcr0 = read_xcr0();
         os_has_avx_state = (xcr0 & 0x6ULL) == 0x6ULL;        // XMM + YMM state
-#if defined(__AVX512F__)
         os_has_avx512_state = os_has_avx_state && ((xcr0 & 0xE0ULL) == 0xE0ULL); // Opmask + ZMM_Hi256 + Hi16_ZMM
-#endif
     }
 
     bool cpu_has_avx2 = false;
-#if defined(__AVX512F__)
     bool cpu_has_avx512f = false;
-#endif
     if (max_leaf >= 7) {
         __cpuidex(info, 7, 0);
         caps.has_clflushopt = (info[1] & (1 << 23)) != 0;
         cpu_has_avx2 = (info[1] & (1 << 5)) != 0;
-#if defined(__AVX512F__)
         cpu_has_avx512f = (info[1] & (1 << 16)) != 0;
-#endif
     }
 
+    // Report true CPU+OS AVX-512 support regardless of the instruction set this
+    // binary was compiled for. This flag drives the -v4 relaunch decision; it is
+    // only acted on for code generation where guarded by __AVX512F__, so the
+    // baseline/v3 binaries never emit AVX-512 instructions even when it is true.
+    caps.has_avx512 = cpu_has_avx512f && cpu_has_avx && os_has_avx512_state;
+
 #if defined(__AVX512F__)
-    if (cpu_has_avx512f && cpu_has_avx && os_has_avx512_state) {
+    if (caps.has_avx512) {
         caps.level = SimdLevel::AVX512;
-        caps.has_avx512 = true;
         caps.has_avx2 = true;
         caps.has_sse4_1 = true;
         caps.has_nt_stores = true;
         caps.vector_width = 64;
     } else
 #endif
-    {
-        if (cpu_has_avx2 && cpu_has_avx && os_has_avx_state) {
-            caps.level = SimdLevel::AVX2;
-            caps.has_avx2 = true;
-            caps.has_sse4_1 = true;
-            caps.has_nt_stores = true;
-            caps.vector_width = 32;
-        } else {
-            if (cpu_has_sse41) {
-                caps.level = SimdLevel::SSE4_1;
-                caps.has_sse4_1 = true;
-                caps.has_nt_stores = true;
-                caps.vector_width = 16;
+    if (cpu_has_avx2 && cpu_has_avx && os_has_avx_state) {
+        caps.level = SimdLevel::AVX2;
+        caps.has_avx2 = true;
+        caps.has_sse4_1 = true;
+        caps.has_nt_stores = true;
+        caps.vector_width = 32;
+    } else if (cpu_has_sse41) {
+        caps.level = SimdLevel::SSE4_1;
+        caps.has_sse4_1 = true;
+        caps.has_nt_stores = true;
+        caps.vector_width = 16;
+    }
+    // Detect cache line size
+    caps.cache_line_size = 64; // Safe default
+    // AMD method: CPUID leaf 0x80000005, EBX[15:8] = L1 data cache line size
+    if (static_cast<unsigned int>(max_leaf) >= 0x80000006U) {
+        int ext_info[4] = {0, 0, 0, 0};
+        __cpuidex(ext_info, 0x80000005, 0);
+        unsigned int amd_line = (static_cast<unsigned int>(ext_info[1]) >> 8) & 0xFFU;
+        if (amd_line >= 16 && amd_line <= 256) {
+            caps.cache_line_size = amd_line;
+        }
+    }
+    // Intel method: CPUID leaf 0x04 subleaf 0 returns line size in EAX[11:0]
+    // bits 11:0 = (line size / 8) - 1
+    if (max_leaf >= 4) {
+        int cache_info[4] = {0, 0, 0, 0};
+        __cpuidex(cache_info, 4, 0);
+        unsigned int raw = static_cast<unsigned int>(cache_info[0]) & 0xFFFU;
+        if (raw > 0) {
+            unsigned int detected = (raw + 1) * 8;
+            if (detected >= 16 && detected <= 256) {
+                caps.cache_line_size = detected;
             }
         }
     }
-    caps.nt_store_width = caps.vector_width;
+
     return caps;
 }
 
@@ -139,13 +159,14 @@ void flush_cache_line(void* ptr) {
 }
 
 void flush_cache_region(void* ptr, size_t bytes) {
-    // Cache line size is typically 64 bytes on modern x86
-    constexpr size_t CACHE_LINE_SIZE = 64;
+    // Cache capabilities once to avoid repeated function call overhead
+    const SimdCapabilities caps = getCapabilities();
+    const size_t cache_line_size = caps.cache_line_size;
+    const bool use_opt = caps.has_clflushopt;
     uint8_t* p = static_cast<uint8_t*>(ptr);
     uint8_t* end = p + bytes;
     
-    const bool use_opt = getCapabilities().has_clflushopt;
-    for (; p < end; p += CACHE_LINE_SIZE) {
+    for (; p < end; p += cache_line_size) {
         if (use_opt) {
             do_clflushopt(p);
         } else {
@@ -161,8 +182,9 @@ static SimdCapabilities detect_arm_capabilities() {
     SimdCapabilities caps;
     caps.has_neon = true;
     caps.vector_width = 16;
-    caps.nt_store_width = 16;
     caps.level = SimdLevel::NEON;
+    // ARM64 cache line size is typically 64 bytes (could also be 128 on some CPUs)
+    caps.cache_line_size = 64;
     return caps;
 }
 
@@ -173,12 +195,12 @@ void flush_cache_line(void* ptr) {
 }
 
 void flush_cache_region(void* ptr, size_t bytes) {
-    // Cache line size is typically 64 bytes on ARM64
-    constexpr size_t CACHE_LINE_SIZE = 64;
+    const SimdCapabilities caps = getCapabilities();
+    const size_t cache_line_size = caps.cache_line_size;
     uint8_t* p = static_cast<uint8_t*>(ptr);
     uint8_t* end = p + bytes;
     
-    for (; p < end; p += CACHE_LINE_SIZE) {
+    for (; p < end; p += cache_line_size) {
 #if defined(__GNUC__) || defined(__clang__)
         __asm__ __volatile__("dc civac, %0" :: "r" (p) : "memory");
 #endif
@@ -204,6 +226,7 @@ void flush_cache_region(void* ptr, size_t bytes) {
     (void)ptr;
     (void)bytes;
     // No cache flush available on this platform
+    // cache_line_size detection is irrelevant here
 }
 
 #endif
@@ -219,17 +242,6 @@ SimdCapabilities getCapabilities() {
 #endif
     }();
     return caps;
-}
-
-const char* getSimdLevelName(SimdLevel level) {
-    switch (level) {
-        case SimdLevel::NONE: return "Scalar";
-        case SimdLevel::SSE4_1: return "SSE4.1";
-        case SimdLevel::AVX2: return "AVX2";
-        case SimdLevel::AVX512: return "AVX-512";
-        case SimdLevel::NEON: return "NEON";
-        default: return "Unknown";
-    }
 }
 
 void memory_fence() {
@@ -248,19 +260,9 @@ void sfence() {
 #endif
 }
 
-void lfence() {
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-    _mm_lfence();
-#else
-    std::atomic_thread_fence(std::memory_order_acquire);
-#endif
-}
-
 template<>
-void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, size_t start_idx) {
-    SimdCapabilities caps = getCapabilities();
-    (void)caps;
-    (void)use_nt;
+void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, [[maybe_unused]] bool use_nt, size_t start_idx) {
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -336,11 +338,10 @@ static inline __m256i mul64_avx2(__m256i a, __m256i b) {
 #endif
 
 template<>
-void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, size_t start_idx) {
-    (void)use_nt;
+void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, [[maybe_unused]] bool use_nt, size_t start_idx) {
     size_t i = 0;
 #if defined(__AVX512F__) || defined(__AVX2__)
-    SimdCapabilities caps = getCapabilities();
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
 #endif
 
 #if defined(__AVX512F__)
@@ -409,10 +410,8 @@ void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0
 }
 
 template<>
-void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t val, bool use_nt) {
-    SimdCapabilities caps = getCapabilities();
-    (void)caps;
-    (void)use_nt;
+void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t val, [[maybe_unused]] bool use_nt) {
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -438,8 +437,9 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
                 _mm256_storeu_si256((__m256i*)(dst + i), v);
             }
         }
-    }
-#elif defined(__SSE2__)
+    } else
+#endif
+#if defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
     if (caps.has_sse4_1) {
         __m128i v = _mm_set1_epi64x(val);
         for (; i + 2 <= count; i += 2) {
@@ -457,10 +457,8 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
 }
 
 template<>
-void generate_pattern_increment<uint64_t>(uint64_t* dst, size_t count, uint64_t start, bool use_nt) {
-    SimdCapabilities caps = getCapabilities();
-    (void)caps;
-    (void)use_nt;
+void generate_pattern_increment<uint64_t>(uint64_t* dst, size_t count, uint64_t start, [[maybe_unused]] bool use_nt) {
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -522,7 +520,7 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
     };
 
 #if defined(__AVX512F__) || defined(__AVX2__)
-    SimdCapabilities caps = getCapabilities();
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
 #endif
 
 #if defined(__AVX512F__)
@@ -603,7 +601,7 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
     // Hoist caps outside the preprocessor blocks to avoid duplicate declaration when
     // both __AVX512F__ and __AVX2__ are defined simultaneously (e.g. v4 builds).
 #if defined(__AVX512F__) || defined(__AVX2__)
-    SimdCapabilities caps = getCapabilities();
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
 #endif
 
 #if defined(__AVX512F__)
@@ -686,7 +684,7 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
         }
     };
 #if defined(__AVX512F__) || defined(__AVX2__)
-    SimdCapabilities caps = getCapabilities();
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
 #endif
 
 #if defined(__AVX512F__)
@@ -734,10 +732,8 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
 }
 
 template<>
-void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
-    SimdCapabilities caps = getCapabilities();
-    (void)caps;
-    (void)use_nt;
+void invert_array<uint64_t>(uint64_t* dst, size_t count, [[maybe_unused]] bool use_nt) {
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;
 
 #if defined(__AVX512F__)
@@ -767,8 +763,9 @@ void invert_array<uint64_t>(uint64_t* dst, size_t count, bool use_nt) {
                 _mm256_storeu_si256((__m256i*)(dst + i), v);
             }
         }
-    }
-#elif defined(__SSE2__)
+    } else
+#endif
+#if defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
     if (caps.has_sse4_1) {
         __m128i ones = _mm_set1_epi64x(~0ULL);
         for (; i + 2 <= count; i += 2) {
@@ -832,47 +829,6 @@ uint64_t safe_read_u64(const uint64_t* ptr) {
 #else
     // Fallback for other architectures
     return *(volatile uint64_t*)ptr;
-#endif
-}
-
-uint32_t safe_read_u32(const uint32_t* ptr) {
-    flush_cache_line((void*)ptr);
-    memory_fence();
-    
-#if defined(__aarch64__) || defined(_M_ARM64)
-    // ARM64 implementation
-    uint32_t val;
-#if defined(__GNUC__) || defined(__clang__)
-    __asm__ volatile(
-        "ldr %w0, [%1]"
-        : "=r" (val)
-        : "r" (ptr)
-        : "memory"
-    );
-#else // MSVC ARM64
-    val = *(volatile uint32_t*)ptr;
-#endif
-    return val;
-#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-    // x86/x64 implementation
-#if defined(__GNUC__) || defined(__clang__)
-    uint32_t val;
-    __asm__ volatile(
-        "movl (%1), %0"
-        : "=r" (val)
-        : "r" (ptr)
-        : "memory"
-    );
-    return val;
-#else // MSVC
-    _ReadWriteBarrier();
-    uint32_t val = *ptr;
-    _ReadWriteBarrier();
-    return val;
-#endif
-#else
-    // Fallback
-    return *(volatile uint32_t*)ptr;
 #endif
 }
 

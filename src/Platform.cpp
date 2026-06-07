@@ -60,17 +60,16 @@ static void InitLsaString(PLSA_UNICODE_STRING LsaString, LPWSTR String) {
 
 namespace testsmem4u {
 
-static void (*g_shutdown_callback)() = nullptr;
+static std::atomic<void (*)()> g_shutdown_callback{nullptr};
 static std::atomic<bool> g_shutdown_initiated{false};
-#ifdef _WIN32
-static HANDLE g_shutdown_event = nullptr;
-#else
+#ifndef _WIN32
 // Original hugepage count to restore on exit (-1 = not modified)
 static int g_original_hugepages = -1;
 #endif
 
 namespace {
 
+std::atomic<bool> g_aggressive_defrag{false};
 std::atomic<bool> g_cpu_targets_ready{false};
 std::vector<CpuTarget> g_cached_cpu_targets;
 PlatformInfo g_cached_platform_info{};
@@ -89,10 +88,9 @@ using SetThreadIdealProcessorEx_t = BOOL (WINAPI*)(HANDLE, PPROCESSOR_NUMBER, PP
 template <typename Fn>
 static Fn loadKernel32Proc(const char* name) {
     FARPROC raw = GetProcAddress(GetModuleHandleA("kernel32.dll"), name);
-    Fn fn = nullptr;
-    static_assert(sizeof(fn) == sizeof(raw), "Unexpected function pointer size mismatch");
-    std::memcpy(&fn, &raw, sizeof(fn));
-    return fn;
+    static_assert(sizeof(Fn) == sizeof(raw), "Unexpected function pointer size mismatch");
+    void* p = reinterpret_cast<void*>(raw);
+    return reinterpret_cast<Fn>(p);
 }
 
 static GetSystemCpuSetInformation_t getGetSystemCpuSetInformationFn() {
@@ -229,8 +227,8 @@ static std::vector<CpuTarget> detectWindowsCpuTargets() {
 
     std::sort(targets.begin(), targets.end(), [](const CpuTarget& lhs, const CpuTarget& rhs) {
         if (lhs.parked != rhs.parked) return !lhs.parked && rhs.parked;
-        if (lhs.efficiency_class != rhs.efficiency_class) return lhs.efficiency_class > rhs.efficiency_class;
         if (lhs.smt_secondary != rhs.smt_secondary) return !lhs.smt_secondary && rhs.smt_secondary;
+        if (lhs.efficiency_class != rhs.efficiency_class) return lhs.efficiency_class > rhs.efficiency_class;
         if (lhs.scheduling_class != rhs.scheduling_class) return lhs.scheduling_class > rhs.scheduling_class;
         if (lhs.numa_node != rhs.numa_node) return lhs.numa_node < rhs.numa_node;
         if (lhs.group != rhs.group) return lhs.group < rhs.group;
@@ -407,8 +405,8 @@ static std::vector<CpuTarget> detectLinuxCpuTargets() {
     }
 
     std::sort(targets.begin(), targets.end(), [](const CpuTarget& lhs, const CpuTarget& rhs) {
-        if (lhs.raw_performance != rhs.raw_performance) return lhs.raw_performance > rhs.raw_performance;
         if (lhs.smt_secondary != rhs.smt_secondary) return !lhs.smt_secondary && rhs.smt_secondary;
+        if (lhs.raw_performance != rhs.raw_performance) return lhs.raw_performance > rhs.raw_performance;
         if (lhs.numa_node != rhs.numa_node) return lhs.numa_node < rhs.numa_node;
         return lhs.logical_index < rhs.logical_index;
     });
@@ -524,14 +522,11 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
 
     g_shutdown_initiated.store(true, std::memory_order_release);
 
-    if (g_shutdown_callback) {
-        g_shutdown_callback();
+    if (auto cb = g_shutdown_callback.load(std::memory_order_relaxed)) {
+        cb();
     }
     if (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_BREAK_EVENT ||
         dwCtrlType == CTRL_CLOSE_EVENT || dwCtrlType == CTRL_LOGOFF_EVENT || dwCtrlType == CTRL_SHUTDOWN_EVENT) {
-        if (g_shutdown_event && g_shutdown_event != INVALID_HANDLE_VALUE) {
-            SetEvent(g_shutdown_event);
-        }
         return TRUE;
     }
     return FALSE;
@@ -580,16 +575,16 @@ static void restoreHugepages() {
 
 static void SignalHandlerWrapper(int signum) {
     // Second signal: force immediate exit.
-    if (g_shutdown_initiated) {
+    if (g_shutdown_initiated.load(std::memory_order_acquire)) {
         _exit(128 + signum);
     }
 
-    // Mark as shutting down (atomic write is async-signal-safe)
-    g_shutdown_initiated = true;
+    // Mark as shutting down (release ensures stop flag is visible to workers)
+    g_shutdown_initiated.store(true, std::memory_order_release);
 
     // Callback should only set atomic stop flags.
-    if (g_shutdown_callback) {
-        g_shutdown_callback();
+    if (auto cb = g_shutdown_callback.load(std::memory_order_relaxed)) {
+        cb();
     }
 
     // SIGBUS indicates potentially unsafe memory access state.
@@ -803,11 +798,16 @@ uint64_t Platform::getMaxTestableMemory(uint64_t total_ram, uint32_t percent_req
 bool Platform::enablePrivilege(const char* privilege_name) {
     HANDLE hToken;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+        LOG_WARN("enablePrivilege(%s): OpenProcessToken failed (error %lu)", 
+                 privilege_name, GetLastError());
         return false;
     }
 
     LUID luid;
     if (!LookupPrivilegeValue(NULL, privilege_name, &luid)) {
+        DWORD err = GetLastError();
+        LOG_WARN("enablePrivilege(%s): LookupPrivilegeValue failed (error %lu)",
+                 privilege_name, err);
         CloseHandle(hToken);
         return false;
     }
@@ -819,7 +819,12 @@ bool Platform::enablePrivilege(const char* privilege_name) {
 
     bool result = AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL);
     if (result && GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
+        LOG_WARN("enablePrivilege(%s): AdjustTokenPrivileges returned ERROR_NOT_ALL_ASSIGNED. "
+                 "The privilege may not be held by this process.", privilege_name);
         result = false;
+    }
+    if (!result) {
+        LOG_WARN("enablePrivilege(%s): failed (error %lu)", privilege_name, GetLastError());
     }
     CloseHandle(hToken);
     return result;
@@ -945,6 +950,16 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
 // The standby list holds cached pages that fragment 2MB regions.
 // This is the same mechanism used by Sysinternals RAMMap.
 // Requires SE_PROF_SINGLE_PROCESS_NAME privilege.
+//
+// NOTE: Uses undocumented system-information class 80 (SystemMemoryListInformation)
+// which is not part of the public Windows API and may change or be removed in
+// future versions. A before/after memory probe verifies the operation had an effect
+// and logs a warning if the syscall succeeded but memory did not increase.
+//
+// Last verified: Windows 10 22H2, Windows 11 24H2 (2026-06-04).
+// If this breaks on a future Windows version, the code gracefully falls back:
+// purgeStandbyList returns void, defragPhysicalMemory continues, and
+// allocateMemory retries with chunked large pages and VirtualLock.
 static void purgeStandbyList() {
     // NtSetSystemInformation is not in public headers, load dynamically
     typedef LONG (NTAPI *NtSetSystemInformation_t)(ULONG, PVOID, ULONG);
@@ -956,11 +971,18 @@ static void purgeStandbyList() {
 
     NtSetSystemInformation_t NtSetSystemInfo = nullptr;
     static_assert(sizeof(NtSetSystemInfo) == sizeof(raw_proc), "Unexpected function pointer size mismatch");
-    std::memcpy(&NtSetSystemInfo, &raw_proc, sizeof(NtSetSystemInfo));
+    void* p = reinterpret_cast<void*>(raw_proc);
+    NtSetSystemInfo = reinterpret_cast<NtSetSystemInformation_t>(p);
     if (!NtSetSystemInfo) return;
 
     // Enable required privilege
     Platform::enablePrivilege(SE_PROF_SINGLE_PROCESS_NAME);
+
+    // Probe available memory before the operation to verify effectiveness
+    MEMORYSTATUSEX mem_before{};
+    mem_before.dwLength = sizeof(mem_before);
+    bool have_baseline = GlobalMemoryStatusEx(&mem_before) != 0;
+    ULONGLONG free_before = have_baseline ? mem_before.ullAvailPhys : 0;
 
     const ULONG SystemMemoryListInformation = 80;
 
@@ -982,11 +1004,56 @@ static void purgeStandbyList() {
     } else {
         LOG_DEBUG("Standby list purge returned status 0x%08lX (may require higher privileges)", status);
     }
+
+    // Verify the operation had a measurable effect on available memory
+    if (have_baseline) {
+        MEMORYSTATUSEX mem_after{};
+        mem_after.dwLength = sizeof(mem_after);
+        if (GlobalMemoryStatusEx(&mem_after)) {
+            ULONGLONG free_after = mem_after.ullAvailPhys;
+            if (status == 0 && free_after <= free_before) {
+                LOG_WARN("Standby list purge reported success but available memory did not increase "
+                         "(before=%llu MB, after=%llu MB). "
+                         "This Windows version may have changed or removed the SystemMemoryListInformation interface (syscall 80).",
+                         free_before / (1024 * 1024), free_after / (1024 * 1024));
+            }
+        }
+    }
 }
+
+// RAII guard that disables the system file cache once and re-enables it
+// on scope exit (normal return, exception, or early-exit). This eliminates
+// the crash-between-disable-and-restore gap that would leave the file cache
+// permanently disabled until reboot.
+class FileCacheGuard {
+    bool active_ = false;
+public:
+    void disable() {
+        if (Platform::enablePrivilege(SE_INCREASE_QUOTA_NAME)) {
+            if (SetSystemFileCacheSize(0, 0,
+                FILE_CACHE_MIN_HARD_DISABLE | FILE_CACHE_MAX_HARD_DISABLE)) {
+                active_ = true;
+                LOG_INFO("Disabled system file cache to free physical memory");
+            }
+        }
+    }
+    ~FileCacheGuard() {
+        if (active_) {
+            Platform::enablePrivilege(SE_INCREASE_QUOTA_NAME);
+            SetSystemFileCacheSize(0, 0,
+                FILE_CACHE_MIN_HARD_ENABLE | FILE_CACHE_MAX_HARD_ENABLE);
+            LOG_DEBUG("Restored system file cache");
+        }
+    }
+    FileCacheGuard() = default;
+    FileCacheGuard(const FileCacheGuard&) = delete;
+    FileCacheGuard& operator=(const FileCacheGuard&) = delete;
+};
 
 // Defragment physical memory by trimming working sets and purging caches.
 // This forces the OS to page out scattered 4KB allocations, freeing up
 // contiguous 2MB-aligned regions needed for large pages.
+// NOTE: File cache disable is now handled by FileCacheGuard in allocateMemory.
 static void defragPhysicalMemory() {
     DWORD pids[4096];
     DWORD bytes_returned = 0;
@@ -1013,16 +1080,6 @@ static void defragPhysicalMemory() {
         LOG_INFO("Trimmed working sets of %u processes", trimmed);
     }
 
-    // Shrink system file cache (requires SE_INCREASE_QUOTA_NAME)
-    if (Platform::enablePrivilege(SE_INCREASE_QUOTA_NAME)) {
-        // Setting min=0 max=0 with hard disable flags shrinks the cache
-        if (SetSystemFileCacheSize(0, 0, FILE_CACHE_MIN_HARD_DISABLE | FILE_CACHE_MAX_HARD_DISABLE)) {
-            LOG_INFO("Shrunk system file cache");
-            // Re-enable normal cache behavior immediately after allocation attempt
-            // (done in allocateMemory after large page success/failure)
-        }
-    }
-
     // Purge the standby list — this is the most impactful step
     purgeStandbyList();
 
@@ -1030,12 +1087,7 @@ static void defragPhysicalMemory() {
     Sleep(500);
 }
 
-// Restore normal file cache behavior after defrag
-static void restoreSystemFileCache() {
-    if (Platform::enablePrivilege(SE_INCREASE_QUOTA_NAME)) {
-        SetSystemFileCacheSize(0, 0, FILE_CACHE_MIN_HARD_ENABLE | FILE_CACHE_MAX_HARD_ENABLE);
-    }
-}
+
 
 bool Platform::tryAllocateLargePages(MemoryRegion& region, size_t size) {
     if (!enablePrivilege(SE_LOCK_MEMORY_NAME)) {
@@ -1337,6 +1389,7 @@ static bool reserveHugepages(size_t size_needed) {
     if (g_original_hugepages < 0) {
         g_original_hugepages = current_pages;
         std::atexit(restoreHugepages);
+        LOG_INFO("Registered hugepage restoration atexit handler (original count: %d)", current_pages);
     }
 
     // Calculate how many more pages we need
@@ -1344,6 +1397,13 @@ static bool reserveHugepages(size_t size_needed) {
     if (additional_pages <= 0) {
         // Already enough hugepages reserved
         return true;
+    }
+
+    // Cap additional pages to prevent writing hazardous values to kernel sysfs
+    if (additional_pages > 100000) {
+        LOG_WARN("Capping hugepage request from %d to 100000 pages to avoid system instability",
+                 additional_pages);
+        additional_pages = 100000;
     }
 
     // Try to reserve hugepages directly first
@@ -1460,47 +1520,65 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
 #endif
 
 #ifdef _WIN32
+    // RAII guard: disables system file cache once and re-enables on scope exit.
+    // This eliminates the crash-between-disable-and-restore window that would
+    // permanently disable the file cache until reboot.
+    FileCacheGuard cache_guard;
+
     if (try_large_pages) {
-        // Step 1: Pre-defrag to maximize contiguous 2MB regions before first attempt
-        LOG_INFO("Defragmenting physical memory before large page allocation...");
-        defragPhysicalMemory();
+        if (g_aggressive_defrag.load(std::memory_order_relaxed)) {
+            // Disable file cache once before the first defrag. The guard destructor
+            // will re-enable it on any exit path (success, failure, or exception).
+            cache_guard.disable();
 
-        if (tryAllocateLargePages(region, region.size)) {
-            restoreSystemFileCache();
-            return true;
-        }
-
-        // Step 2: More aggressive defrag — multiple rounds with longer pauses
-        LOG_INFO("Large page allocation failed at %zu MB, performing aggressive defragmentation...",
-                 region.size / (1024 * 1024));
-        for (uint32_t round = 1; round <= 3; ++round) {
+            // Step 1: Pre-defrag to maximize contiguous 2MB regions before first attempt
+            LOG_INFO("Defragmenting physical memory before large page allocation...");
             defragPhysicalMemory();
-            Sleep(500 * round); // Increasing delay: 500ms, 1s, 1.5s
 
             if (tryAllocateLargePages(region, region.size)) {
-                LOG_INFO("Large page allocation succeeded after defrag round %u", round);
-                restoreSystemFileCache();
                 return true;
             }
+
+            // Step 2: More aggressive defrag — multiple rounds with longer pauses
+            LOG_INFO("Large page allocation failed at %zu MB, performing aggressive defragmentation...",
+                     region.size / (1024 * 1024));
+            for (uint32_t round = 1; round <= 3; ++round) {
+                defragPhysicalMemory();
+                Sleep(500 * round); // Increasing delay: 500ms, 1s, 1.5s
+
+                if (tryAllocateLargePages(region, region.size)) {
+                    LOG_INFO("Large page allocation succeeded after defrag round %u", round);
+                    return true;
+                }
+            }
+
+            // Step 3: Single large-page allocation failed — try chunked allocation (1GB chunks)
+            // Each chunk independently finds contiguous 2MB physical regions
+            LOG_INFO("Attempting chunked large page allocation (%zu MB in 1GB chunks)...",
+                     region.size / (1024 * 1024));
+            defragPhysicalMemory();
+
+            if (tryAllocateLargePagesChunked(region, region.size)) {
+                return true;
+            }
+
+            // Large pages failed — fall through to VirtualLock which reliably locks memory
+            LOG_INFO("Large page allocation failed at %zu MB after all defrag attempts. "
+                     "Falling back to fully locked standard pages.",
+                     region.size / (1024 * 1024));
+        } else {
+            // Non-aggressive mode: try large pages directly without defrag
+            LOG_INFO("Attempting large page allocation (defrag disabled, use --aggressive-defrag to enable)...");
+            if (tryAllocateLargePages(region, region.size)) {
+                return true;
+            }
+            if (tryAllocateLargePagesChunked(region, region.size)) {
+                return true;
+            }
+            LOG_INFO("Large page allocation failed at %zu MB without defrag. "
+                     "Falling back to locked standard pages.",
+                     region.size / (1024 * 1024));
         }
-        restoreSystemFileCache();
-
-        // Step 3: Single large-page allocation failed — try chunked allocation (1GB chunks)
-        // Each chunk independently finds contiguous 2MB physical regions
-        LOG_INFO("Attempting chunked large page allocation (%zu MB in 1GB chunks)...",
-                 region.size / (1024 * 1024));
-        defragPhysicalMemory();
-
-        if (tryAllocateLargePagesChunked(region, region.size)) {
-            restoreSystemFileCache();
-            return true;
-        }
-        restoreSystemFileCache();
-
-        // Large pages failed — fall through to VirtualLock which reliably locks memory
-        LOG_INFO("Large page allocation failed at %zu MB after all defrag attempts. "
-                 "Falling back to fully locked standard pages.",
-                 region.size / (1024 * 1024));
     }
 
     if (try_lock) {
@@ -1525,11 +1603,33 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
 #else
     // Linux implementation with hugepages support
     if (try_large_pages) {
-        if (tryAllocateHugepages(region, region.size)) {
-            return true;
+        if (g_aggressive_defrag.load(std::memory_order_relaxed)) {
+            if (tryAllocateHugepages(region, region.size)) {
+                return true;
+            }
+            LOG_INFO("Hugepage allocation failed at %zu MB, falling back to locked standard pages",
+                     region.size / (1024 * 1024));
+        } else {
+            // Non-aggressive: try hugepages once, skip defrag and kernel sysfs writes
+            const size_t hugepage_size = 2ULL * 1024 * 1024;
+            size_t aligned_size = (region.size + hugepage_size - 1) & ~(hugepage_size - 1);
+            void* ptr = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+            if (ptr != MAP_FAILED) {
+                region.base = static_cast<uint8_t*>(ptr);
+                region.size = aligned_size;
+                region.is_large_pages = true;
+                region.large_page_bytes = aligned_size;
+                if (mlock(ptr, aligned_size) == 0) {
+                    region.is_locked = true;
+                }
+                LOG_INFO("Allocated %zu MB using hugepages (2MB pages) without defrag",
+                         aligned_size / 1024 / 1024);
+                return true;
+            }
+            LOG_INFO("Hugepage allocation failed at %zu MB (use --aggressive-defrag to enable auto-reservation)",
+                     region.size / (1024 * 1024));
         }
-        LOG_INFO("Hugepage allocation failed at %zu MB, falling back to locked standard pages",
-                 region.size / (1024 * 1024));
     }
     
     // Linux implementation check for strict locking
@@ -1669,28 +1769,36 @@ bool Platform::checkMemoryResident(const uint8_t* base, size_t size) {
 #endif
 }
 
-bool Platform::setThreadAffinity(uint32_t thread_id, uint32_t num_threads) {
-    std::vector<CpuTarget> targets = getPreferredCpuTargets(num_threads);
-    if (targets.empty()) return false;
-    const CpuTarget& target = targets[thread_id % targets.size()];
-    return bindCurrentThread(target);
+void Platform::setAggressiveDefrag(bool enabled) {
+    g_aggressive_defrag.store(enabled, std::memory_order_relaxed);
+}
+
+// The RAM tester is memory-bandwidth bound; elevating the process priority does
+// not help and HIGH_PRIORITY_CLASS can freeze Windows when every core is
+// saturated. This only confirms/normalizes the process to NORMAL priority.
+void Platform::confirmNormalProcessPriority() {
+#ifdef _WIN32
+    if (SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS)) {
+        LOG_INFO("Process priority class confirmed as NORMAL_PRIORITY_CLASS");
+    } else {
+        LOG_WARN("Failed to confirm process priority class: error %lu", GetLastError());
+    }
+#else
+    LOG_INFO("Process running at default priority (no nice adjustment)");
+#endif
 }
 
 void Platform::registerShutdownHandler(void (*callback)()) {
-    g_shutdown_callback = callback;
+    g_shutdown_callback.store(callback, std::memory_order_relaxed);
 
 #ifdef _WIN32
-    g_shutdown_event = CreateEvent(nullptr, TRUE, FALSE, nullptr);
-    if (!g_shutdown_event) {
-        g_shutdown_event = INVALID_HANDLE_VALUE;
-    }
-
     SetConsoleCtrlHandler(NULL, FALSE);
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 #else
     std::signal(SIGINT, SignalHandlerWrapper);
     std::signal(SIGTERM, SignalHandlerWrapper);
     std::signal(SIGBUS, SignalHandlerWrapper);  // Hugepage access fault
+    std::signal(SIGABRT, SignalHandlerWrapper); // Restore hugepages on abort
 #endif
 }
 
