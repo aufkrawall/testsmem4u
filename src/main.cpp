@@ -37,7 +37,7 @@
 namespace testsmem4u {
 
 static constexpr const char* kProgramName = "testsmem4u";
-static constexpr const char* kProgramVersion = "0.2.0";
+static constexpr const char* kProgramVersion = "1.5";
 static constexpr const char* kDefaultConfigPath = "config.ini";
 static constexpr const char* kDefaultPresetPath = "default.cfg";
 static constexpr const char* kOptimizedExecEnv = "TESTSMEM4U_OPTIMIZED_REEXEC";
@@ -453,7 +453,10 @@ static bool isPrivileged() {
 #endif
 }
 
-static bool relaunchAsPrivileged(int argc, char* argv[]) {
+// Relaunches this binary with elevated privileges. On success returns true and
+// stores the elevated child's exit code in exit_code so scripted runs see the
+// real memory-test result instead of an unconditional success from the parent.
+static bool relaunchAsPrivileged(int argc, char* argv[], int& exit_code) {
 #ifdef _WIN32
     // Re-launch with ShellExecute and "runas" verb
     std::string args = buildArgsString(argc, argv);
@@ -465,8 +468,9 @@ static bool relaunchAsPrivileged(int argc, char* argv[]) {
         return false;
     }
 
-    SHELLEXECUTEINFOA sei = {}; 
+    SHELLEXECUTEINFOA sei = {};
     sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
     sei.lpVerb = "runas";
     sei.lpFile = exePath;
     sei.lpParameters = args.c_str();
@@ -482,8 +486,30 @@ static bool relaunchAsPrivileged(int argc, char* argv[]) {
         }
         return false;
     }
+    if (!sei.hProcess) {
+        // Launched but no process handle to wait on; cannot observe the result.
+        exit_code = 0;
+        return true;
+    }
+    DWORD wait_result = WaitForSingleObject(sei.hProcess, INFINITE);
+    if (wait_result != WAIT_OBJECT_0) {
+        std::cerr << "Failed to wait for elevated process: error " << GetLastError() << std::endl;
+        CloseHandle(sei.hProcess);
+        exit_code = 2;
+        return true;
+    }
+    DWORD child_exit_code = 0;
+    if (!GetExitCodeProcess(sei.hProcess, &child_exit_code)) {
+        std::cerr << "Failed to read elevated process exit code: error " << GetLastError() << std::endl;
+        CloseHandle(sei.hProcess);
+        exit_code = 2;
+        return true;
+    }
+    CloseHandle(sei.hProcess);
+    exit_code = static_cast<int>(child_exit_code);
     return true;
 #else
+    (void)exit_code;
     // Re-launch with sudo
     std::vector<char*> new_argv;
     new_argv.push_back((char*)"sudo");
@@ -1445,8 +1471,9 @@ int main(int argc, char* argv[]) {
         // Close the log before the elevated child re-creates it; both processes
         // writing the same file would interleave/truncate each other's output.
         log.deinit();
-        if (relaunchAsPrivileged(argc, argv)) {
-            return 0;
+        int elevated_exit_code = 0;
+        if (relaunchAsPrivileged(argc, argv, elevated_exit_code)) {
+            return elevated_exit_code;
         }
         log.init("testsmem4u.log", cli.debug ? LogLevel::DEBUG : LogLevel::INFO, false);
         ConsoleDisplay::get().printLine("[!] Elevation unavailable. Continuing without elevation.");

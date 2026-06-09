@@ -21,7 +21,6 @@ struct StatusInfo {
     size_t total_tests = 0;
     std::string test_name;
     uint64_t bytes_tested = 0;
-    uint64_t total_bytes = 0;
     uint64_t errors = 0;
     uint64_t elapsed_seconds = 0;
 };

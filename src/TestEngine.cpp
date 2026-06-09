@@ -492,8 +492,7 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
         if (stop && ctx.shouldStop()) break;
 
         invert_array(ptr, count, use_nt);
-        sfence();
-        
+
         simd::flush_cache_region(ptr, region.size);
 
         // Inverted value: ~(param0 ^ (idx * param1)) = (~param0) ^ (idx * param1)
@@ -1136,7 +1135,6 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
         
         // Phase 3: Invert
         simd::invert_array(ptr, count, true);
-        sfence();
         simd::flush_cache_region(ptr, region.size);
         
         // Phase 4: Verify Inverted (backward march for better address-line coverage)
@@ -1231,7 +1229,6 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     // Phase 1: Fill memory with linear pattern (address = value)
     // Use increment pattern: 0, 1, 2, ...
     simd::generate_pattern_increment(ptr, count, word_start, true);
-    sfence();
     simd::flush_cache_region(ptr, region.size);
 
     // Phase 2: Verify initial pattern before random access
@@ -1697,7 +1694,6 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             info.total_tests = seq.size();
             info.test_name = ctx.getActiveTestName();
             info.bytes_tested = ctx.total_bytes.load(std::memory_order_relaxed);
-            info.total_bytes = region.size;
             info.errors = ctx.total_hard_errors.load(std::memory_order_relaxed) +
                           ctx.total_soft_errors.load(std::memory_order_relaxed) +
                           ctx.total_unverified_errors.load(std::memory_order_relaxed);

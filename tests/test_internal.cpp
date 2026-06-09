@@ -661,13 +661,11 @@ void testRunResultMerge() {
     a.soft_errors = 3;
     a.unverified_errors = 2;
     a.bytes_tested = 1000;
-    a.cycles_completed = 1;
 
     b.hard_errors = 2;
     b.soft_errors = 7;
     b.unverified_errors = 1;
     b.bytes_tested = 2000;
-    b.cycles_completed = 1;
 
     a.merge(b);
 
