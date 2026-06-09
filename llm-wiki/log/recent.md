@@ -1,5 +1,64 @@
 # Recent Log
 
+## Full-Codebase Review Fix Pass: 2026-06-10 (v1.5)
+
+User requested a thorough full-codebase review (bugs, race conditions, error
+detection/reporting reliability, RAM-test effectiveness, dead code, logging,
+build flags, production readiness). Review verdict: architecture, threading,
+allocation, parsers, P/E-core handling and compiler flags are sound; the pass
+fixed the findings below. File splitting stays deferred (user decision);
+default.cfg assessed as well-balanced and left unchanged.
+
+### Error-detection reliability (the critical fix)
+- **SIMD verifiers could drop transient errors**: AVX2/AVX-512 verify paths
+  re-read memory scalar-wise after a SIMD compare flagged a mismatch; a
+  self-correcting transient flip was then silently lost. All paths now spill
+  the loaded vector register to a stack buffer and record count + observed
+  value from it; scalar fallbacks read once into a local.
+  `testVerifierObservedValues` pins this behavior.
+- **MirrorMove128 verification** was fully scalar with separate even/odd scans
+  (every cache line touched twice), unbounded logging, and no unverified
+  accounting. Now a single SIMD pass via new `simd::verify_pattern_pair`
+  (AVX-512/AVX2/SSE2/scalar) with bounded sampling, consistent with all tests.
+
+### Logging
+- Console error rate limiting was bypassed exactly while testing was active
+  (error storms made runs IO-bound); the limiter now applies in all states.
+- Logger wrote to stdout/stderr under its own mutex while ConsoleDisplay owned
+  the status line under another — garbled progress line. All logger console
+  output now goes through ConsoleDisplay (single mutex, status-line aware).
+- Logger now initializes before config/preset resolution (their diagnostics
+  reached only the console before, never the log file); the log is closed
+  before elevation relaunch and reopened (append) if elevation fails.
+
+### Other fixes
+- SIGABRT handler now restores the Linux hugepage reservation (was registered
+  for that purpose but only SIGBUS did the restore; abort skipped atexit).
+- Windows elevation relaunch waits for the elevated child and propagates its
+  exit code (was unconditional success for scripted non-admin runs).
+- Version string 0.2.0 -> 1.5.
+- x86_64 scalar fill fallbacks (linear/xor/increment) now use `_mm_stream_si64`
+  NT stores, preserving DRAM write stress on baseline (pre-AVX2) binaries.
+- Removed 3 leftover redundant `sfence()` calls after self-fencing generators.
+
+### Dead code / dedup / hygiene
+- Duplicated ~25-line classification loops (WalkingBit, MovingInversion,
+  MovingInversionWalking, BlockMove, MirrorMove128) unified into
+  `classifyAndLogErrors`. Log contexts changed slightly, e.g.
+  "MovingInv (Fwd - Hard)" -> "MovingInv (Fwd) (Hard)".
+- Removed: `Utils::parseHex/parseUint` (non-strict), `Logger::emergencyFlush/
+  setLevel/getLogPath`, `TestResult::cycles_completed`, `StatusInfo::total_bytes`.
+- `Platform::allocateMemory` is private; `allocateMemoryRAII` is the public API.
+- build.py: `*.cfg` -> dist copy moved out of parallel `build_target` (race);
+  `--tests` now builds+runs baseline AND v3 (AVX2) runners, `--tests-v4` opt-in.
+- Stale `audit/code-audit-report.md` + `cli-report.md` removals committed;
+  .gitignore covers release packaging artifacts.
+
+### Verification
+Baseline+v3 internal tests pass, ASan+UBSan pass (both runners), clang-tidy
+clean, all 9 release targets build warning-free, E2E smoke run on Windows
+(baseline auto-relaunch to -v3, clean status line, exit code checked).
+
 ## Audit-Driven Fix Pass: 2026-06-07
 
 User requested implementation of the highest-value audit-style fixes, not a new

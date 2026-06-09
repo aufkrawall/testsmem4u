@@ -32,7 +32,24 @@ It automatically attempts to relaunch itself using AVX2 (-v3) or AVX-512 (-v4) s
 - Preset/config path validation rejects empty paths and control characters, but allows explicit absolute and parent-relative paths after filesystem canonicalization. Unsafe paths are hex-escaped in diagnostics.
 - Config loading parses into a temporary copy and only commits on full success; malformed config files must not leave partially-applied settings behind.
 - Preset sequence parsing is strict: malformed, empty, or trailing-comma tokens invalidate the sequence instead of silently dropping bad entries. `Enable` is limited to 0/1 and `Pattern Mode` to 0/1/2.
-- On Windows, optimized sibling relaunch waits for the v3/v4 child and returns the child exit code, preserving script-visible failures from the optimized binary.
+- On Windows, optimized sibling relaunch AND elevation relaunch wait for the child and return the child exit code, preserving script-visible failures.
+- SIMD verifiers record mismatches from the already-loaded vector register
+  (spilled to a stack buffer), never from a second memory read — a transient
+  flip seen by the SIMD compare is always counted even if the cell reads back
+  correct afterwards. Scalar fallbacks read each element exactly once.
+- Per-test mismatch classification (DRAM re-read via `safe_read_u64`, hard/soft
+  logging, unverified-overflow accounting, halt-on-error) is centralized in
+  `classifyAndLogErrors` (TestEngine.cpp); tests pass an expected-value lambda.
+- MirrorMove128 verifies its alternating {param0, param1} pattern via
+  `simd::verify_pattern_pair` (AVX-512/AVX2/SSE2/scalar) in a single pass with
+  bounded sampling.
+- Logger console output is always rate-limited (also during active testing) and
+  routed through `ConsoleDisplay::printLine/printError` so it coordinates with
+  the status line under a single mutex. The log file never drops ERR lines
+  until queue backpressure (counted + reported). Logger initializes before
+  config/preset resolution and is closed/reopened around elevation relaunch.
+- x86_64 scalar fill fallbacks (linear/xor/increment) use `_mm_stream_si64` NT
+  stores when requested, so baseline (SSE2) binaries keep DRAM write stress.
 
 ## Build Toolchain Split (important)
 - **x86_64 Windows** targets (`windows-x86_64`, `-v3`, `-v4`) build with **mingw**
@@ -47,11 +64,13 @@ It automatically attempts to relaunch itself using AVX2 (-v3) or AVX-512 (-v4) s
 ## Build Tools
 - `python build.py --lint`: Runs clang-tidy static analysis (requires `--compile-commands` or generates automatically).
 - `python build.py --fuzz`: Builds fuzzing harness for preset/config parsers (requires Linux or MSVC/Clang-cl; libFuzzer unavailable on Windows MinGW). The harness uses unique temporary files, including absolute temp paths.
-- `python build.py --tests`: Builds and runs 33 internal tests (Utils, strict sequence parsing, Preset, Config, SIMD, LFSR, Concurrency, E2E).
-- `python build.py --run-sanitizers`: Runs ASan + UBSan builds and tests.
+- `python build.py --tests`: Builds and runs the internal tests twice — an SSE2
+  baseline runner and an AVX2 (`-v3`) runner so the AVX2 generate/verify paths
+  are exercised. `--tests-v4` adds an AVX-512 runner (requires AVX-512 host).
+- `python build.py --run-sanitizers`: Runs ASan + UBSan builds and tests (both ISA runners each).
 
 ## Test Coverage
-- 33 internal tests covering: Utils parsing, strict Test Sequence parsing, Preset loading/validation, explicit absolute preset paths, Config save/load round-trip and invalid-load rollback, SIMD pattern generation/verification, LFSR vectors, Thread barrier, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess.
+- Internal tests covering: Utils parsing, strict Test Sequence parsing, Preset loading/validation, explicit absolute preset paths, Config save/load round-trip and invalid-load rollback, SIMD pattern generation/verification (including recorded-observed-value pinning and verify_pattern_pair), LFSR vectors, Thread barrier, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess.
 
-Last verified: 2026-06-07
+Last verified: 2026-06-10
 Stale risk: Low
