@@ -308,6 +308,15 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
     }
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
+    // NT-store scalar fallback keeps DRAM write stress on baseline binaries,
+    // where no wider SIMD path for this pattern was compiled in.
+    if (use_nt && caps.has_nt_stores) {
+        for (; i < count; ++i) {
+            _mm_stream_si64((long long*)(dst + i), (long long)(param0 + ((start_idx + i) * param1)));
+        }
+    }
+#endif
     for (; i < count; ++i) {
         dst[i] = param0 + ((start_idx + i) * param1);
     }
@@ -340,7 +349,7 @@ static inline __m256i mul64_avx2(__m256i a, __m256i b) {
 template<>
 void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, [[maybe_unused]] bool use_nt, size_t start_idx) {
     size_t i = 0;
-#if defined(__AVX512F__) || defined(__AVX2__)
+#if defined(__AVX512F__) || defined(__AVX2__) || defined(__x86_64__) || defined(_M_X64)
     [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
 #endif
 
@@ -402,6 +411,15 @@ void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0
     }
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
+    // NT-store scalar fallback keeps DRAM write stress on baseline binaries,
+    // where no wider SIMD path for this pattern was compiled in.
+    if (use_nt && caps.has_nt_stores) {
+        for (; i < count; ++i) {
+            _mm_stream_si64((long long*)(dst + i), (long long)(param0 ^ ((start_idx + i) * param1)));
+        }
+    }
+#endif
     // Scalar fallback - guaranteed correct
     for (; i < count; ++i) {
         dst[i] = param0 ^ ((start_idx + i) * param1);
@@ -500,6 +518,15 @@ void generate_pattern_increment<uint64_t>(uint64_t* dst, size_t count, uint64_t 
     }
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
+    // NT-store scalar fallback keeps DRAM write stress on baseline binaries,
+    // where no wider SIMD path for this pattern was compiled in.
+    if (use_nt && caps.has_nt_stores) {
+        for (; i < count; ++i) {
+            _mm_stream_si64((long long*)(dst + i), (long long)(start + i));
+        }
+    }
+#endif
     // Scalar fallback
     for (; i < count; ++i) {
         dst[i] = start + i;
