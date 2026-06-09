@@ -45,9 +45,12 @@ struct MemoryRegion {
 };
 
 class Platform {
-public:
-    // Memory Allocation Strategy - Legacy (returns raw region, caller must free)
+private:
+    // Internal allocation path used by allocateMemoryRAII (returns raw region).
     static bool allocateMemory(MemoryRegion& region, size_t size, bool try_large_pages, bool try_lock, bool allow_swappable = false);
+
+public:
+    // Used by MemoryGuard for cleanup.
     static void freeMemory(MemoryRegion& region);
 
     // Memory Allocation Strategy - RAII (returns MemoryGuard, auto-cleans)

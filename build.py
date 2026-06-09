@@ -556,12 +556,17 @@ def build_target(name: str) -> bool:
         size = output_path.stat().st_size
         print(f"[*] OK: {size:,} bytes ({size / 1024:.1f} KB)")
 
-    # Copy config files to dist
+    return True
+
+
+def copy_configs_to_dist() -> None:
+    """Copy preset/config files to dist once, after all parallel target builds.
+
+    Doing this inside build_target would race when targets build concurrently."""
+    DIST_DIR.mkdir(parents=True, exist_ok=True)
     for cfg in PROJECT_ROOT.glob("*.cfg"):
         shutil.copy2(cfg, DIST_DIR / cfg.name)
         print(f"[*] Copied {cfg.name}")
-
-    return True
 
 
 def build_tests(run_tests: bool = True) -> bool:
@@ -1135,6 +1140,7 @@ def main() -> int:
             overall_ok = False
 
     if overall_ok:
+        copy_configs_to_dist()
         print("\nBuild complete.")
         print(f"Outputs: {DIST_DIR}")
         return 0

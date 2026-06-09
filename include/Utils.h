@@ -29,18 +29,6 @@ public:
         return !key.empty();
     }
 
-    static uint64_t parseHex(const std::string& str) {
-        std::string s = trim(str);
-        if (s.empty()) return 0;
-
-        if (s.size() > 2 && (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))) {
-            s = s.substr(2);
-        }
-
-        char* endptr = nullptr;
-        return std::strtoull(s.c_str(), &endptr, 16);
-    }
-
     static bool parseHexStrict(const std::string& str, uint64_t& value) {
         std::string s = trim(str);
         if (s.empty()) return false;
@@ -62,15 +50,6 @@ public:
 
         value = static_cast<uint64_t>(parsed);
         return true;
-    }
-
-    static uint32_t parseUint(const std::string& str) {
-        std::string s = trim(str);
-        if (s.empty()) return 0;
-
-        char* endptr = nullptr;
-        unsigned long val = std::strtoul(s.c_str(), &endptr, 10);
-        return static_cast<uint32_t>(val);
     }
 
     static bool parseUintStrict(const std::string& str, uint32_t& value) {

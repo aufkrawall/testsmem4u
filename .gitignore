@@ -22,3 +22,8 @@ compile_commands.json
 # OS metadata
 Thumbs.db
 .DS_Store
+
+# Release packaging artifacts (created in the repo root when packing releases)
+*.7z
+/testsmem4u/
+/1.png

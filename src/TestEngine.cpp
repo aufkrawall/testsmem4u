@@ -657,6 +657,7 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
     std::vector<std::pair<uint64_t, uint64_t>> errors;
     errors.reserve(128);
     size_t block = 256 * 1024;
+    const char* name = invert ? "WalkingZeros" : "WalkingOnes";
 
     // Test each bit position
     for (int bit = 0; bit < 64 && !ctx.shouldStop(); ++bit) {
@@ -672,29 +673,8 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
             size_t n = std::min(block, count - i);
             errors.clear();
             size_t found = simd::verify_uniform(ptr + i, n, pattern, errors);
-            
-            if (found > 0) {
-                for (size_t k = 0; k < errors.size(); ++k) {
-                    uint64_t offset = i + errors[k].first;
-                    uint64_t first_observed = errors[k].second;
-                    uint64_t actual = simd::safe_read_u64(&ptr[offset]);
-
-                    const char* name = invert ? "WalkingZeros" : "WalkingOnes";
-                    if (actual != pattern) {
-                        res.hard_errors++;
-                        LOG_ERROR_DETAIL((std::string(name) + " (Hard)").c_str(), reportAddress(region, &ptr[offset]), pattern, actual);
-                    } else {
-                        res.soft_errors++;
-                        LOG_ERROR_DETAIL((std::string(name) + " (Soft)").c_str(), reportAddress(region, &ptr[offset]), pattern, first_observed);
-                    }
-                }
-                addUnverifiedOverflow(res, found, errors.size());
-                 
-                if (stop) {
-                    ctx.requestStop();
-                    break;
-                }
-            }
+            classifyAndLogErrors(region, ptr, errors, found, i,
+                                 [&](size_t) { return pattern; }, res, ctx, name, stop);
         }
     }
 
@@ -876,27 +856,8 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
             size_t n = std::min(block, count - i);
             errors.clear();
             size_t found = simd::verify_uniform(ptr + i, n, pattern, errors);
-             
-            if (found > 0) {
-                for (size_t k = 0; k < errors.size(); ++k) {
-                    uint64_t offset = i + errors[k].first;
-                    uint64_t first_observed = errors[k].second;
-                    uint64_t actual = simd::safe_read_u64(&ptr[offset]);
-                    if (actual != pattern) {
-                        res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Fwd - Hard)", reportAddress(region, &ptr[offset]), pattern, actual);
-                    } else {
-                        res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Fwd - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
-                    }
-                }
-                addUnverifiedOverflow(res, found, errors.size());
-
-                if (stop) {
-                    ctx.requestStop();
-                    break;
-                }
-            }
+            classifyAndLogErrors(region, ptr, errors, found, i,
+                                 [&](size_t) { return pattern; }, res, ctx, "MovingInv (Fwd)", stop);
         }
 
         if (ctx.shouldStop()) break;
@@ -916,27 +877,8 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
 
             errors.clear();
             size_t found = simd::verify_uniform(ptr + chunk_start, n, inverted, errors);
-
-            if (found > 0) {
-                for (size_t k = 0; k < errors.size(); ++k) {
-                    uint64_t offset = chunk_start + errors[k].first;
-                    uint64_t first_observed = errors[k].second;
-                    uint64_t actual = simd::safe_read_u64(&ptr[offset]);
-                    if (actual != inverted) {
-                        res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Bwd - Hard)", reportAddress(region, &ptr[offset]), inverted, actual);
-                    } else {
-                        res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovingInv (Bwd - Soft)", reportAddress(region, &ptr[offset]), inverted, first_observed);
-                    }
-                }
-                addUnverifiedOverflow(res, found, errors.size());
-                 
-                if (stop) {
-                    ctx.requestStop();
-                    break;
-                }
-            }
+            classifyAndLogErrors(region, ptr, errors, found, chunk_start,
+                                 [&](size_t) { return inverted; }, res, ctx, "MovingInv (Bwd)", stop);
         }
         
         // Alternate pattern for next iteration
@@ -971,27 +913,8 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
             size_t n = std::min(block, count - i);
             errors.clear();
             size_t found = simd::verify_uniform(ptr + i, n, pattern, errors);
-             
-            if (found > 0) {
-                for (size_t k = 0; k < errors.size(); ++k) {
-                    uint64_t offset = i + errors[k].first;
-                    uint64_t first_observed = errors[k].second;
-                    uint64_t actual = simd::safe_read_u64(&ptr[offset]);
-                    if (actual != pattern) {
-                        res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Fwd - Hard)", reportAddress(region, &ptr[offset]), pattern, actual);
-                    } else {
-                        res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Fwd - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
-                    }
-                }
-                addUnverifiedOverflow(res, found, errors.size());
-
-                if (stop) {
-                    ctx.requestStop();
-                    break;
-                }
-            }
+            classifyAndLogErrors(region, ptr, errors, found, i,
+                                 [&](size_t) { return pattern; }, res, ctx, "MovInvWalk (Fwd)", stop);
         }
 
         if (ctx.shouldStop()) break;
@@ -1011,27 +934,8 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
 
             errors.clear();
             size_t found = simd::verify_uniform(ptr + chunk_start, n, inverted, errors);
-
-            if (found > 0) {
-                for (size_t k = 0; k < errors.size(); ++k) {
-                    uint64_t offset = chunk_start + errors[k].first;
-                    uint64_t first_observed = errors[k].second;
-                    uint64_t actual = simd::safe_read_u64(&ptr[offset]);
-                    if (actual != inverted) {
-                        res.hard_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Bwd - Hard)", reportAddress(region, &ptr[offset]), inverted, actual);
-                    } else {
-                        res.soft_errors++;
-                        LOG_ERROR_DETAIL("MovInvWalk (Bwd - Soft)", reportAddress(region, &ptr[offset]), inverted, first_observed);
-                    }
-                }
-                addUnverifiedOverflow(res, found, errors.size());
-                 
-                if (stop) {
-                    ctx.requestStop();
-                    break;
-                }
-            }
+            classifyAndLogErrors(region, ptr, errors, found, chunk_start,
+                                 [&](size_t) { return inverted; }, res, ctx, "MovInvWalk (Bwd)", stop);
         }
     }
     }
@@ -1382,55 +1286,17 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
             size_t n = std::min(block, half_count - i);
             errors.clear();
             size_t found = simd::verify_uniform(dst + i, n, pattern, errors);
-
-            if (found > 0) {
-                for (size_t k = 0; k < errors.size(); ++k) {
-                    uint64_t offset = half_count + i + errors[k].first;
-                    uint64_t first_observed = errors[k].second;
-                    uint64_t actual = simd::safe_read_u64(&ptr[offset]);
-                    if (actual != pattern) {
-                        res.hard_errors++;
-                        LOG_ERROR_DETAIL("BlockMove (Dst - Hard)", reportAddress(region, &ptr[offset]), pattern, actual);
-                    } else {
-                        res.soft_errors++;
-                        LOG_ERROR_DETAIL("BlockMove (Dst - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
-                    }
-                }
-                addUnverifiedOverflow(res, found, errors.size());
-                if (stop) {
-                    ctx.requestStop();
-                    break;
-                }
-            }
+            classifyAndLogErrors(region, ptr, errors, found, half_count + i,
+                                 [&](size_t) { return pattern; }, res, ctx, "BlockMove (Dst)", stop);
         }
 
         // Verify Src (should still be intact)
-        if (!ctx.shouldStop()) {
-            for (size_t i = 0; i < half_count && !ctx.shouldStop(); i += block) {
-                size_t n = std::min(block, half_count - i);
-                errors.clear();
-                size_t found = simd::verify_uniform(src + i, n, pattern, errors);
-
-                if (found > 0) {
-                    for (size_t k = 0; k < errors.size(); ++k) {
-                        uint64_t offset = i + errors[k].first;
-                        uint64_t first_observed = errors[k].second;
-                        uint64_t actual = simd::safe_read_u64(&ptr[offset]);
-                        if (actual != pattern) {
-                            res.hard_errors++;
-                            LOG_ERROR_DETAIL("BlockMove (Src - Hard)", reportAddress(region, &ptr[offset]), pattern, actual);
-                        } else {
-                            res.soft_errors++;
-                            LOG_ERROR_DETAIL("BlockMove (Src - Soft)", reportAddress(region, &ptr[offset]), pattern, first_observed);
-                        }
-                    }
-                    addUnverifiedOverflow(res, found, errors.size());
-                    if (stop) {
-                        ctx.requestStop();
-                        break;
-                    }
-                }
-            }
+        for (size_t i = 0; i < half_count && !ctx.shouldStop(); i += block) {
+            size_t n = std::min(block, half_count - i);
+            errors.clear();
+            size_t found = simd::verify_uniform(src + i, n, pattern, errors);
+            classifyAndLogErrors(region, ptr, errors, found, i,
+                                 [&](size_t) { return pattern; }, res, ctx, "BlockMove (Src)", stop);
         }
     }
 

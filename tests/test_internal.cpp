@@ -81,14 +81,6 @@ void testUtilsParseUintStrict() {
     expect(Utils::parseUintStrict("255", val) && val == 255, "parseUintStrict 255");
 }
 
-void testUtilsParseHex() {
-    expect(Utils::parseHex("") == 0, "parseHex empty is 0");
-    expect(Utils::parseHex("0xFF") == 0xFF, "parseHex 0xFF");
-    expect(Utils::parseHex("ABCD") == 0xABCD, "parseHex ABCD");
-    expect(Utils::parseHex("0xBAD") == 0xBAD, "parseHex 0xBAD");
-    expect(Utils::parseHex(" 0x10 ") == 0x10, "parseHex with spaces");
-}
-
 void testUtilsParseKeyValue() {
     std::string key, value;
     expect(Utils::parseKeyValue("", key, value) == false, "parseKeyValue empty");
@@ -1039,7 +1031,6 @@ int main() {
     testUtilsTrim();
     testUtilsParseHexStrict();
     testUtilsParseUintStrict();
-    testUtilsParseHex();
     testUtilsParseKeyValue();
     testParseTestSequenceStrict();
 
