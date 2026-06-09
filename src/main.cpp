@@ -1415,10 +1415,18 @@ int main(int argc, char* argv[]) {
     bool automation_mode = cli.non_interactive || !input_interactive || cli.requestsDirectRun();
     bool should_pause_on_exit = !cli.no_pause && input_interactive && output_interactive && !automation_mode;
 
+    // Initialize the logger before configuration/preset resolution so their
+    // diagnostics reach the log file (pre-init messages are dropped).
+    auto& log = Logger::get();
+    log.init("testsmem4u.log", cli.debug ? LogLevel::DEBUG : LogLevel::INFO, true);
+    log.setErrorRateLimit(100);
+    log.info("%s %s starting...", kProgramName, kProgramVersion);
+
     ConfigResolution resolution;
     std::string resolution_error;
     if (!resolveConfiguration(cli, automation_mode, resolution, resolution_error)) {
         ConsoleDisplay::get().printError(std::string("[!] ") + resolution_error);
+        log.deinit();
         return 2;
     }
 
@@ -1428,22 +1436,23 @@ int main(int argc, char* argv[]) {
     if (cli.dry_run) {
         ConsoleDisplay::get().printLine("");
         ConsoleDisplay::get().printLine("Dry run complete. No tests executed.");
+        log.deinit();
         return 0;
     }
 
     if (!cli.no_elevation && !isPrivileged()) {
         ConsoleDisplay::get().printLine("Requesting elevation... (Use --no-elevation to skip)");
+        // Close the log before the elevated child re-creates it; both processes
+        // writing the same file would interleave/truncate each other's output.
+        log.deinit();
         if (relaunchAsPrivileged(argc, argv)) {
             return 0;
         }
+        log.init("testsmem4u.log", cli.debug ? LogLevel::DEBUG : LogLevel::INFO, false);
         ConsoleDisplay::get().printLine("[!] Elevation unavailable. Continuing without elevation.");
     }
 
     Config config = resolution.config;
-    Logger::get().init("testsmem4u.log", cli.debug ? LogLevel::DEBUG : LogLevel::INFO, true);
-    auto& log = Logger::get();
-    log.setErrorRateLimit(100);
-    log.info("%s %s starting...", kProgramName, kProgramVersion);
 
     if (automation_mode) {
         ConsoleDisplay::get().printLine("Non-interactive mode enabled; skipping prompts.");

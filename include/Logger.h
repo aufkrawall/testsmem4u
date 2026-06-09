@@ -23,8 +23,6 @@ enum class LogLevel {
     ERR
 };
 
-extern std::atomic<bool> g_testing_active;
-
 class Logger {
 public:
     static Logger& get() {
@@ -35,9 +33,6 @@ public:
     void init(const std::string& filename, LogLevel level = LogLevel::DEBUG, bool purge = true);
     void deinit();
     void setErrorRateLimit(uint32_t errors_per_second);
-    void setLevel(LogLevel level);
-
-    static void emergencyFlush();
 
     // Use format attribute to enable compile-time format string checking
     #ifdef __GNUC__
@@ -59,8 +54,6 @@ public:
         auto now = std::chrono::high_resolution_clock::now();
         return std::chrono::duration<double>(now - start_time_).count();
     }
-
-    std::string getLogPath() const { return log_filename_; }
 
 private:
     Logger() : running_(false), file_handle_(nullptr), log_filename_(), log_level_(LogLevel::DEBUG),
@@ -84,7 +77,6 @@ private:
 
     std::mutex init_mutex_;
     std::mutex rate_limit_mutex_;
-    std::mutex console_mutex_;
 
     std::mutex queue_mutex_;
     std::condition_variable writer_cv_;
