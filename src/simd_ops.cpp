@@ -538,9 +538,14 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
 
             __mmask8 mask = _mm512_cmpneq_epi64_mask(actual, v_expect);
             if (mask) {
+                // Record from the already-loaded register, never from a second
+                // memory read: a transient flip seen by the SIMD compare must be
+                // counted even if the memory cell reads back correct by now.
+                alignas(64) uint64_t lanes[8];
+                _mm512_store_si512((void*)lanes, actual);
                 for (int k = 0; k < 8; ++k) {
                     if ((mask >> k) & 1) {
-                         record_error(i + k, src[i + k]);
+                         record_error(i + k, lanes[k]);
                     }
                 }
             }
@@ -565,9 +570,14 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
             __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
             int mask = _mm256_movemask_epi8(eq);
             if ((uint32_t)mask != 0xFFFFFFFF) {
+                // Compare register lanes, never re-read memory (see AVX-512 note).
+                alignas(32) uint64_t lanes[4];
+                alignas(32) uint64_t expect_lanes[4];
+                _mm256_store_si256((__m256i*)lanes, actual);
+                _mm256_store_si256((__m256i*)expect_lanes, v_expect);
                 for (size_t k = 0; k < 4; ++k) {
-                    if (src[i+k] != (param0 + (start_idx + i + k) * param1)) {
-                       record_error(i + k, src[i + k]);
+                    if (lanes[k] != expect_lanes[k]) {
+                       record_error(i + k, lanes[k]);
                     }
                 }
             }
@@ -577,8 +587,9 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
 #endif
 
     for (; i < count; ++i) {
-        if (src[i] != (param0 + (start_idx + i) * param1)) {
-            record_error(i, src[i]);
+        const uint64_t observed = src[i];
+        if (observed != (param0 + (start_idx + i) * param1)) {
+            record_error(i, observed);
         }
     }
     return mismatches;
@@ -617,13 +628,16 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
             __m512i actual = load_verify_u512(src + i);
             __m512i v_mul = _mm512_mullo_epi64(v_idx, v_param1);
             __m512i v_expect = _mm512_xor_si512(v_param0, v_mul);
-            __mmask8 mask = _mm512_cmpeq_epi64_mask(actual, v_expect);
-            if (mask != 0xFF) {
-                for (size_t k = 0; k < 8; ++k) {
-                    if (!(mask & (1 << k))) {
-                        if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                            record_error(i + k, src[i + k]);
-                        }
+            __mmask8 mask = _mm512_cmpneq_epi64_mask(actual, v_expect);
+            if (mask) {
+                // Record from the already-loaded register, never from a second
+                // memory read: a transient flip seen by the SIMD compare must be
+                // counted even if the memory cell reads back correct by now.
+                alignas(64) uint64_t lanes[8];
+                _mm512_store_si512((void*)lanes, actual);
+                for (int k = 0; k < 8; ++k) {
+                    if ((mask >> k) & 1) {
+                        record_error(i + k, lanes[k]);
                     }
                 }
             }
@@ -652,9 +666,14 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
             int mask = _mm256_movemask_epi8(eq);
 
             if ((uint32_t)mask != 0xFFFFFFFF) {
+                // Compare register lanes, never re-read memory (see AVX-512 note).
+                alignas(32) uint64_t lanes[4];
+                alignas(32) uint64_t expect_lanes[4];
+                _mm256_store_si256((__m256i*)lanes, actual);
+                _mm256_store_si256((__m256i*)expect_lanes, v_expect);
                 for (size_t k = 0; k < 4; ++k) {
-                    if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                        record_error(i + k, src[i + k]);
+                    if (lanes[k] != expect_lanes[k]) {
+                        record_error(i + k, lanes[k]);
                     }
                 }
             }
@@ -665,8 +684,9 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
 
     // Scalar fallback - guaranteed correct
     for (; i < count; ++i) {
-        if (src[i] != (param0 ^ ((start_idx + i) * param1))) {
-            record_error(i, src[i]);
+        const uint64_t observed = src[i];
+        if (observed != (param0 ^ ((start_idx + i) * param1))) {
+            record_error(i, observed);
         }
     }
     return mismatches;
@@ -695,9 +715,14 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
 
              __mmask8 mask = _mm512_cmpneq_epi64_mask(actual, v_expect);
              if (mask) {
+                 // Record from the already-loaded register, never from a second
+                 // memory read: a transient flip seen by the SIMD compare must be
+                 // counted even if the memory cell reads back correct by now.
+                 alignas(64) uint64_t lanes[8];
+                 _mm512_store_si512((void*)lanes, actual);
                  for (int k = 0; k < 8; ++k) {
                      if ((mask >> k) & 1) {
-                         record_error(i + k, src[i + k]);
+                         record_error(i + k, lanes[k]);
                      }
                  }
              }
@@ -714,9 +739,12 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
             __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
             int mask = _mm256_movemask_epi8(eq);
             if ((uint32_t)mask != 0xFFFFFFFF) {
+                // Compare register lanes, never re-read memory (see AVX-512 note).
+                alignas(32) uint64_t lanes[4];
+                _mm256_store_si256((__m256i*)lanes, actual);
                 for (size_t k = 0; k < 4; ++k) {
-                    if (src[i+k] != val) {
-                        record_error(i + k, src[i + k]);
+                    if (lanes[k] != val) {
+                        record_error(i + k, lanes[k]);
                     }
                 }
             }
@@ -724,8 +752,9 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
     }
 #endif
     for (; i < count; ++i) {
-        if (src[i] != val) {
-            record_error(i, src[i]);
+        const uint64_t observed = src[i];
+        if (observed != val) {
+            record_error(i, observed);
         }
     }
     return mismatches;

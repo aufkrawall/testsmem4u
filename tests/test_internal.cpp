@@ -485,6 +485,62 @@ void testDeliberateLinearBitFlip() {
     expect(errors.size() == 1 && errors[0].first == 9, "linear verifier reports the flipped offset");
 }
 
+// The verifiers must report the corrupted value they actually loaded, at every
+// offset class (SIMD main loop lanes and the scalar tail). This pins the
+// register-spill behavior: a mismatch seen by the SIMD compare is recorded from
+// the loaded register, never from a second memory read.
+void testVerifierObservedValues() {
+    constexpr size_t kCount = 67; // odd, not a multiple of 4/8 -> exercises tails
+    constexpr uint64_t p0 = 0x0123456789ABCDEFULL;
+    constexpr uint64_t p1 = 0x00000000DEADBEEFULL;
+    const std::vector<size_t> flip_offsets = {0, 3, 8, 33, 64, 66};
+
+    // verify_uniform
+    {
+        std::vector<uint64_t> buffer(kCount, p0);
+        std::vector<std::pair<uint64_t, uint64_t>> errors;
+        for (size_t off : flip_offsets) buffer[off] ^= (1ULL << (off % 64));
+        const size_t found = simd::verify_uniform(buffer.data(), buffer.size(), p0, errors);
+        expect(found == flip_offsets.size(), "verify_uniform counts all injected flips");
+        expect(errors.size() == flip_offsets.size(), "verify_uniform samples all injected flips");
+        for (size_t k = 0; k < errors.size() && k < flip_offsets.size(); ++k) {
+            expect(errors[k].first == flip_offsets[k], "verify_uniform reports flipped offset");
+            expect(errors[k].second == buffer[flip_offsets[k]],
+                   "verify_uniform records the observed corrupted value");
+        }
+    }
+
+    // verify_pattern_linear
+    {
+        std::vector<uint64_t> buffer(kCount, 0);
+        std::vector<std::pair<uint64_t, uint64_t>> errors;
+        simd::generate_pattern_linear(buffer.data(), buffer.size(), p0, p1, false, 0);
+        for (size_t off : flip_offsets) buffer[off] ^= (1ULL << (off % 64));
+        const size_t found = simd::verify_pattern_linear(buffer.data(), buffer.size(), 0, p0, p1, errors);
+        expect(found == flip_offsets.size(), "verify_pattern_linear counts all injected flips");
+        for (size_t k = 0; k < errors.size() && k < flip_offsets.size(); ++k) {
+            expect(errors[k].first == flip_offsets[k], "verify_pattern_linear reports flipped offset");
+            expect(errors[k].second == buffer[flip_offsets[k]],
+                   "verify_pattern_linear records the observed corrupted value");
+        }
+    }
+
+    // verify_pattern_xor
+    {
+        std::vector<uint64_t> buffer(kCount, 0);
+        std::vector<std::pair<uint64_t, uint64_t>> errors;
+        simd::generate_pattern_xor(buffer.data(), buffer.size(), p0, p1, false, 0);
+        for (size_t off : flip_offsets) buffer[off] ^= (1ULL << (off % 64));
+        const size_t found = simd::verify_pattern_xor(buffer.data(), buffer.size(), 0, p0, p1, errors);
+        expect(found == flip_offsets.size(), "verify_pattern_xor counts all injected flips");
+        for (size_t k = 0; k < errors.size() && k < flip_offsets.size(); ++k) {
+            expect(errors[k].first == flip_offsets[k], "verify_pattern_xor reports flipped offset");
+            expect(errors[k].second == buffer[flip_offsets[k]],
+                   "verify_pattern_xor records the observed corrupted value");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Concurrency tests (ThreadBarrier analog using std primitives)
 // ---------------------------------------------------------------------------
@@ -979,6 +1035,7 @@ int main() {
     testVerifyAndReportBoundedOverflow();
     testLfsrKnownVectors();
     testDeliberateLinearBitFlip();
+    testVerifierObservedValues();
 
     // Concurrency and infrastructure tests
     testThreadBarrierBasic();
