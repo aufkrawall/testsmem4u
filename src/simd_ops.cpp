@@ -761,6 +761,93 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
 }
 
 template<>
+size_t verify_pattern_pair<uint64_t>(const uint64_t* src, size_t count, uint64_t even_val, uint64_t odd_val,
+                                     std::vector<std::pair<uint64_t, uint64_t>>& errors, size_t max_error_samples) {
+    size_t i = 0;
+    size_t mismatches = 0;
+    auto record_error = [&](size_t offset, uint64_t observed) {
+        ++mismatches;
+        if (errors.size() < max_error_samples) {
+            errors.push_back({offset, observed});
+        }
+    };
+    // All SIMD strides below are even, so i keeps even parity and lane 0 always
+    // expects even_val. Mismatches are recorded from the loaded register, never
+    // from a second memory read (see verify_uniform).
+#if defined(__AVX512F__) || defined(__AVX2__) || defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
+#endif
+
+#if defined(__AVX512F__)
+    if (caps.has_avx512) {
+        __m512i v_expect = _mm512_set_epi64(
+            (long long)odd_val, (long long)even_val, (long long)odd_val, (long long)even_val,
+            (long long)odd_val, (long long)even_val, (long long)odd_val, (long long)even_val);
+        for (; i + 8 <= count; i += 8) {
+            __m512i actual = load_verify_u512(src + i);
+            __mmask8 mask = _mm512_cmpneq_epi64_mask(actual, v_expect);
+            if (mask) {
+                alignas(64) uint64_t lanes[8];
+                _mm512_store_si512((void*)lanes, actual);
+                for (int k = 0; k < 8; ++k) {
+                    if ((mask >> k) & 1) {
+                        record_error(i + k, lanes[k]);
+                    }
+                }
+            }
+        }
+    }
+#endif
+
+#if defined(__AVX2__)
+    if (caps.has_avx2) {
+        __m256i v_expect = _mm256_set_epi64x(
+            (long long)odd_val, (long long)even_val, (long long)odd_val, (long long)even_val);
+        for (; i + 4 <= count; i += 4) {
+            __m256i actual = load_verify_u256(src + i);
+            __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
+            int mask = _mm256_movemask_epi8(eq);
+            if ((uint32_t)mask != 0xFFFFFFFF) {
+                alignas(32) uint64_t lanes[4];
+                _mm256_store_si256((__m256i*)lanes, actual);
+                if (lanes[0] != even_val) record_error(i + 0, lanes[0]);
+                if (lanes[1] != odd_val)  record_error(i + 1, lanes[1]);
+                if (lanes[2] != even_val) record_error(i + 2, lanes[2]);
+                if (lanes[3] != odd_val)  record_error(i + 3, lanes[3]);
+            }
+        }
+    } else
+#endif
+#if defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
+    if (caps.has_sse4_1) {
+        __m128i v_expect = _mm_set_epi64x((long long)odd_val, (long long)even_val);
+        for (; i + 2 <= count; i += 2) {
+            __m128i actual = _mm_loadu_si128((const __m128i*)(src + i));
+            // SSE2-compatible 64-bit compare: both 32-bit halves of a lane must
+            // match, so all-bytes-equal in the movemask means both lanes match.
+            __m128i eq = _mm_cmpeq_epi32(actual, v_expect);
+            int mask = _mm_movemask_epi8(eq);
+            if (mask != 0xFFFF) {
+                alignas(16) uint64_t lanes[2];
+                _mm_store_si128((__m128i*)lanes, actual);
+                if (lanes[0] != even_val) record_error(i + 0, lanes[0]);
+                if (lanes[1] != odd_val)  record_error(i + 1, lanes[1]);
+            }
+        }
+    }
+#endif
+
+    for (; i < count; ++i) {
+        const uint64_t observed = src[i];
+        const uint64_t expect = (i & 1) ? odd_val : even_val;
+        if (observed != expect) {
+            record_error(i, observed);
+        }
+    }
+    return mismatches;
+}
+
+template<>
 void invert_array<uint64_t>(uint64_t* dst, size_t count, [[maybe_unused]] bool use_nt) {
     [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;

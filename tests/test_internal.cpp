@@ -541,6 +541,41 @@ void testVerifierObservedValues() {
     }
 }
 
+void testVerifyPatternPair() {
+    constexpr uint64_t even_val = 0x5555555555555555ULL;
+    constexpr uint64_t odd_val = 0xAAAAAAAAAAAAAAAAULL;
+    constexpr size_t kCount = 67; // odd count -> exercises SIMD lanes and scalar tail
+
+    std::vector<uint64_t> buffer(kCount);
+    for (size_t i = 0; i < kCount; ++i) {
+        buffer[i] = (i & 1) ? odd_val : even_val;
+    }
+
+    std::vector<std::pair<uint64_t, uint64_t>> errors;
+    size_t found = simd::verify_pattern_pair(buffer.data(), buffer.size(), even_val, odd_val, errors);
+    expect(found == 0, "verify_pattern_pair passes a clean alternating pattern");
+
+    // Inject corruption at even and odd offsets across lane positions and tail.
+    const std::vector<size_t> flip_offsets = {0, 1, 7, 32, 33, 64, 66};
+    for (size_t off : flip_offsets) buffer[off] ^= (1ULL << (off % 64));
+
+    errors.clear();
+    found = simd::verify_pattern_pair(buffer.data(), buffer.size(), even_val, odd_val, errors);
+    expect(found == flip_offsets.size(), "verify_pattern_pair counts all injected flips");
+    expect(errors.size() == flip_offsets.size(), "verify_pattern_pair samples all injected flips");
+    for (size_t k = 0; k < errors.size() && k < flip_offsets.size(); ++k) {
+        expect(errors[k].first == flip_offsets[k], "verify_pattern_pair reports flipped offset");
+        expect(errors[k].second == buffer[flip_offsets[k]],
+               "verify_pattern_pair records the observed corrupted value");
+    }
+
+    // Bounded sampling still counts every mismatch.
+    errors.clear();
+    found = simd::verify_pattern_pair(buffer.data(), buffer.size(), even_val, odd_val, errors, 3);
+    expect(found == flip_offsets.size(), "verify_pattern_pair counts beyond the sample bound");
+    expect(errors.size() == 3, "verify_pattern_pair respects the sample bound");
+}
+
 // ---------------------------------------------------------------------------
 // Concurrency tests (ThreadBarrier analog using std primitives)
 // ---------------------------------------------------------------------------
@@ -1036,6 +1071,7 @@ int main() {
     testLfsrKnownVectors();
     testDeliberateLinearBitFlip();
     testVerifierObservedValues();
+    testVerifyPatternPair();
 
     // Concurrency and infrastructure tests
     testThreadBarrierBasic();

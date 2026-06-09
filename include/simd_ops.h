@@ -84,6 +84,14 @@ size_t verify_uniform(const T* src, size_t count, uint64_t val,
                       std::vector<std::pair<uint64_t, uint64_t>>& errors,
                       size_t max_error_samples = MAX_ERROR_SAMPLES_PER_BLOCK);
 
+// Verifies an alternating two-value pattern: src[k] must equal even_val for
+// even k and odd_val for odd k (k relative to src, so callers must pass
+// block pointers that start at an even pattern index).
+template<typename T>
+size_t verify_pattern_pair(const T* src, size_t count, uint64_t even_val, uint64_t odd_val,
+                           std::vector<std::pair<uint64_t, uint64_t>>& errors,
+                           size_t max_error_samples = MAX_ERROR_SAMPLES_PER_BLOCK);
+
 // Safe forced memory read after cache flush
 // Use this instead of volatile casts (which are UB in C++)
 // Performs: flush cache line, memory fence, read value
