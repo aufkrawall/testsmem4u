@@ -19,7 +19,6 @@
 #include <limits>
 #include <sstream>
 #include <thread>
-#include <filesystem>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -40,7 +39,6 @@ static constexpr const char* kProgramName = "testsmem4u";
 static constexpr const char* kProgramVersion = "1.5";
 static constexpr const char* kDefaultConfigPath = "config.ini";
 static constexpr const char* kDefaultPresetPath = "default.cfg";
-static constexpr const char* kOptimizedExecEnv = "TESTSMEM4U_OPTIMIZED_REEXEC";
 
 #ifdef _WIN32
 // Build a properly escaped command-line string from argv[1..argc) suitable for
@@ -84,130 +82,6 @@ static std::string buildArgsString(int argc, char* argv[]) {
     return result;
 }
 #endif
-
-static bool relaunchExecutablePath(const std::string& executable_path, int argc, char* argv[], int& exit_code) {
-#ifdef _WIN32
-    std::string args = buildArgsString(argc, argv);
-
-    SHELLEXECUTEINFOA sei = {};
-    sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-    sei.lpVerb = nullptr;
-    sei.lpFile = executable_path.c_str();
-    sei.lpParameters = args.empty() ? nullptr : args.c_str();
-    sei.nShow = SW_NORMAL;
-    if (!ShellExecuteExA(&sei)) {
-        return false;
-    }
-    if (!sei.hProcess) {
-        exit_code = 0;
-        return true;
-    }
-    DWORD wait_result = WaitForSingleObject(sei.hProcess, INFINITE);
-    if (wait_result != WAIT_OBJECT_0) {
-        std::cerr << "Failed to wait for optimized child process: error " << GetLastError() << std::endl;
-        CloseHandle(sei.hProcess);
-        exit_code = 2;
-        return true;
-    }
-    DWORD child_exit_code = 0;
-    if (!GetExitCodeProcess(sei.hProcess, &child_exit_code)) {
-        std::cerr << "Failed to read optimized child exit code: error " << GetLastError() << std::endl;
-        CloseHandle(sei.hProcess);
-        exit_code = 2;
-        return true;
-    }
-    CloseHandle(sei.hProcess);
-    exit_code = static_cast<int>(child_exit_code);
-    return true;
-#else
-    (void)exit_code;
-    std::vector<char*> new_argv;
-    new_argv.reserve(static_cast<size_t>(argc) + 1);
-    new_argv.push_back(const_cast<char*>(executable_path.c_str()));
-    for (int i = 1; i < argc; ++i) {
-        new_argv.push_back(argv[i]);
-    }
-    new_argv.push_back(nullptr);
-    execv(executable_path.c_str(), new_argv.data());
-    return false;
-#endif
-}
-
-static bool maybeRelaunchOptimizedBinary(int argc, char* argv[], int& exit_code) {
-    const char* marker = std::getenv(kOptimizedExecEnv);
-    if (marker != nullptr && std::strcmp(marker, "1") == 0) {
-        return false;
-    }
-
-    const simd::SimdCapabilities caps = simd::getCapabilities();
-    std::filesystem::path current_path;
-    std::error_code ec;
-
-#ifdef _WIN32
-    char exe_path[MAX_PATH];
-    DWORD length = GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) {
-        return false;
-    }
-    current_path = std::filesystem::path(exe_path);
-#else
-    current_path = std::filesystem::canonical(argv[0], ec);
-    if (ec) {
-        current_path = std::filesystem::path(argv[0]);
-    }
-#endif
-
-    if (current_path.empty()) {
-        return false;
-    }
-
-    std::filesystem::path candidate = current_path;
-    std::string filename = current_path.filename().string();
-
-    auto pickSibling = [&](const char* suffix) -> std::filesystem::path {
-        std::filesystem::path sibling = current_path.parent_path();
-        sibling /= filename;
-        const std::string stem = sibling.stem().string();
-        const std::string ext = sibling.extension().string();
-        sibling.replace_filename(stem + suffix + ext);
-        return sibling;
-    };
-
-    if (caps.has_avx512) {
-        candidate = pickSibling("-v4");
-    } else if (caps.has_avx2) {
-        candidate = pickSibling("-v3");
-    } else {
-        return false;
-    }
-
-    if (candidate == current_path) {
-        return false;
-    }
-
-    ec.clear();
-    if (!std::filesystem::exists(candidate, ec) || ec) {
-        return false;
-    }
-
-#ifdef _WIN32
-    _putenv_s(kOptimizedExecEnv, "1");
-#else
-    setenv(kOptimizedExecEnv, "1", 1);
-#endif
-
-    if (relaunchExecutablePath(candidate.string(), argc, argv, exit_code)) {
-        return true;
-    }
-
-#ifdef _WIN32
-    _putenv_s(kOptimizedExecEnv, "");
-#else
-    unsetenv(kOptimizedExecEnv);
-#endif
-    return false;
-}
 
 #ifdef _WIN32
 static bool isInputAvailable() {
@@ -1407,11 +1281,6 @@ int main(int argc, char* argv[]) {
         // If relaunch failed, continue anyway
     }
 #endif
-
-    int relaunch_exit_code = 0;
-    if (maybeRelaunchOptimizedBinary(argc, argv, relaunch_exit_code)) {
-        return relaunch_exit_code;
-    }
 
     ConsoleDisplay::get().init();
     Platform::registerShutdownHandler(onShutdown);

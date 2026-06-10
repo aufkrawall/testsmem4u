@@ -25,7 +25,7 @@ Recent reliability work in this revision includes:
 - Direct, scriptable CLI execution for unattended runs.
 - Automatic privilege elevation attempt unless disabled.
 - Locked-memory and large-page / hugepage allocation support when the platform allows it.
-- Automatic relaunch into a bundled `-v3` or `-v4` binary on capable x86-64 systems when those optimized siblings are present.
+- Separate `-v3` (AVX2) and `-v4` (AVX-512) binary variants; start the one matching your CPU. The program logs a hint if a faster variant would fit.
 - Detailed console progress and a persistent testsmem4u.log file.
 
 ## Build
@@ -112,7 +112,7 @@ See cli-report.md for the full option reference, mode rules, exit codes, and exa
 - If launched with run-specific CLI overrides, --yes, or non-interactive stdin, it skips prompts and runs in direct CLI mode.
 - On Windows, the program can offer to grant SeLockMemoryPrivilege when interactive and elevated.
 - On Linux, the program warns when memory-lock or hugepage capability appears limited, but it does not attempt privilege changes automatically.
-- On capable x86-64 systems, the generic launcher now prefers a sibling `-v3` or `-v4` binary automatically when one is present next to the current executable.
+- Binary variant selection is manual: run the `-v3` (AVX2) or `-v4` (AVX-512) binary that matches your CPU; the baseline binary works everywhere. A startup warning points out when a faster variant would fit your CPU.
 - If the run falls back from full large pages to locked standard pages, the console now explains that the test remains valid and how to improve large-page coverage for future runs.
 
 ## Files

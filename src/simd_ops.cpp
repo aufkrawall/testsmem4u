@@ -53,8 +53,8 @@ static SimdCapabilities detect_x86_capabilities() {
     caps.has_clflush = (info[3] & (1 << 19)) != 0;
 
     // Detect XSAVE-enabled OS state support. AVX-512 state is probed
-    // unconditionally (not behind __AVX512F__) so the baseline binary can detect
-    // AVX-512-capable hardware and relaunch the -v4 sibling.
+    // unconditionally (not behind __AVX512F__) so baseline/v3 binaries can tell
+    // the user when the -v4 sibling variant would match their hardware.
     bool os_has_avx_state = false;
     bool os_has_avx512_state = false;
     if (cpu_has_osxsave) {
@@ -73,7 +73,7 @@ static SimdCapabilities detect_x86_capabilities() {
     }
 
     // Report true CPU+OS AVX-512 support regardless of the instruction set this
-    // binary was compiled for. This flag drives the -v4 relaunch decision; it is
+    // binary was compiled for. This flag drives the use-the-v4-binary hint; it is
     // only acted on for code generation where guarded by __AVX512F__, so the
     // baseline/v3 binaries never emit AVX-512 instructions even when it is true.
     caps.has_avx512 = cpu_has_avx512f && cpu_has_avx && os_has_avx512_state;

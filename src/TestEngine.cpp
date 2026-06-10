@@ -1485,9 +1485,9 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 
     {
         // Report the ISA this binary was compiled to emit (i.e. which variant is
-        // running) alongside the CPU's detected capabilities. This makes it easy
-        // to confirm that the -v3 (AVX2) / -v4 (AVX-512) optimized binary was
-        // actually selected by the auto-relaunch on capable hardware.
+        // running) alongside the CPU's detected capabilities. Picking the binary
+        // variant that matches the CPU is the user's responsibility (there is no
+        // auto-relaunch); warn when a faster sibling variant would fit.
 #if defined(__AVX512F__)
         const char* built_isa = "AVX-512 (v4)";
 #elif defined(__AVX2__)
@@ -1500,6 +1500,16 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                  built_isa,
                  caps.has_avx2 ? "yes" : "no",
                  caps.has_avx512 ? "yes" : "no", threads);
+#if !defined(__AVX512F__)
+        if (caps.has_avx512) {
+            LOG_WARN("This CPU supports AVX-512: use the -v4 binary variant for maximum RAM-test throughput.");
+        }
+#if !defined(__AVX2__)
+        else if (caps.has_avx2) {
+            LOG_WARN("This CPU supports AVX2: use the -v3 binary variant for maximum RAM-test throughput.");
+        }
+#endif
+#endif
     }
 
     // Warn if estimated runtime from preset configuration is excessive

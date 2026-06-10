@@ -3,7 +3,9 @@
 ## Architecture
 testsmem4u is a cross-platform RAM testing utility for Windows and Linux.
 It supports locked memory, large pages, and dynamic CPU core affinity targeting.
-It automatically attempts to relaunch itself using AVX2 (-v3) or AVX-512 (-v4) sibling binaries for performance if present.
+Binary variant selection (baseline / -v3 AVX2 / -v4 AVX-512) is manual — the user
+starts the binary matching their CPU; a startup warning points out when a faster
+sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision).
 
 ## Key Files
 - `src/main.cpp`: CLI argument parsing, interactive/non-interactive configuration, and process management.
@@ -21,8 +23,8 @@ It automatically attempts to relaunch itself using AVX2 (-v3) or AVX-512 (-v4) s
 - `flush_cache_region` caches `getCapabilities()` once per call to avoid repeated function call overhead in hot loops.
 - SIMD dispatch uses `#if`/`else`/`#if` chains (not `#elif`) so SSE2 NT-store path is available as runtime fallback in AVX2-compiled builds.
 - AVX-512 capability (`caps.has_avx512`) is detected unconditionally (not behind
-  `#if __AVX512F__`) so the baseline binary can detect AVX-512 HW and relaunch the
-  -v4 sibling; AVX-512 *instruction emission* stays `#if __AVX512F__`-guarded.
+  `#if __AVX512F__`) so baseline/v3 binaries can warn that the -v4 variant would
+  fit the CPU; AVX-512 *instruction emission* stays `#if __AVX512F__`-guarded.
 - MovingInversionLFSR uses a pre-computed LFSR seed table (built once, invariant of
   repeats) for the Phase 4 backward march address-line coverage.
 - Worker stop decisions at `ThreadBarrier` boundaries are latched once by thread 0
@@ -32,7 +34,7 @@ It automatically attempts to relaunch itself using AVX2 (-v3) or AVX-512 (-v4) s
 - Preset/config path validation rejects empty paths and control characters, but allows explicit absolute and parent-relative paths after filesystem canonicalization. Unsafe paths are hex-escaped in diagnostics.
 - Config loading parses into a temporary copy and only commits on full success; malformed config files must not leave partially-applied settings behind.
 - Preset sequence parsing is strict: malformed, empty, or trailing-comma tokens invalidate the sequence instead of silently dropping bad entries. `Enable` is limited to 0/1 and `Pattern Mode` to 0/1/2.
-- On Windows, optimized sibling relaunch AND elevation relaunch wait for the child and return the child exit code, preserving script-visible failures.
+- On Windows, the elevation relaunch waits for the elevated child and returns the child exit code, preserving script-visible failures.
 - SIMD verifiers record mismatches from the already-loaded vector register
   (spilled to a stack buffer), never from a second memory read — a transient
   flip seen by the SIMD compare is always counted even if the cell reads back

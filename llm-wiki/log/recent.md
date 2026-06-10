@@ -1,5 +1,23 @@
 # Recent Log
 
+## Removed optimized-binary auto-relaunch: 2026-06-10 (v1.5)
+
+User decision: drop the arch auto-detect relaunch feature entirely — the user is
+responsible for starting the binary variant that matches their CPU. Trigger was
+a UX nit: the relaunch child got its own console window (ShellExecuteEx without
+SEE_MASK_NO_CONSOLE) which, since exit-code propagation made parents wait, now
+lingered for the whole run showing "Requesting elevation...".
+
+- Removed from main.cpp: `maybeRelaunchOptimizedBinary`, `relaunchExecutablePath`,
+  the `TESTSMEM4U_OPTIMIZED_REEXEC` env marker, and the `<filesystem>` include.
+  The elevation relaunch (`relaunchAsPrivileged`) is unchanged and still waits +
+  propagates the child exit code.
+- Replacement UX: executeSuite's SIMD diagnostic now also emits a console-visible
+  LOG_WARN when the CPU supports a faster sibling variant than the running binary
+  (baseline -> -v3/-v4 hint, v3 -> -v4 hint). Unconditional AVX-512 CPUID
+  detection is retained for this hint.
+- README + wiki updated: binary variant selection is manual.
+
 ## Full-Codebase Review Fix Pass: 2026-06-10 (v1.5)
 
 User requested a thorough full-codebase review (bugs, race conditions, error
