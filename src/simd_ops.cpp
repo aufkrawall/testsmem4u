@@ -53,8 +53,8 @@ static SimdCapabilities detect_x86_capabilities() {
     caps.has_clflush = (info[3] & (1 << 19)) != 0;
 
     // Detect XSAVE-enabled OS state support. AVX-512 state is probed
-    // unconditionally (not behind __AVX512F__) so the baseline binary can detect
-    // AVX-512-capable hardware and relaunch the -v4 sibling.
+    // unconditionally (not behind __AVX512F__) so baseline/v3 binaries can tell
+    // the user when the -v4 sibling variant would match their hardware.
     bool os_has_avx_state = false;
     bool os_has_avx512_state = false;
     if (cpu_has_osxsave) {
@@ -73,7 +73,7 @@ static SimdCapabilities detect_x86_capabilities() {
     }
 
     // Report true CPU+OS AVX-512 support regardless of the instruction set this
-    // binary was compiled for. This flag drives the -v4 relaunch decision; it is
+    // binary was compiled for. This flag drives the use-the-v4-binary hint; it is
     // only acted on for code generation where guarded by __AVX512F__, so the
     // baseline/v3 binaries never emit AVX-512 instructions even when it is true.
     caps.has_avx512 = cpu_has_avx512f && cpu_has_avx && os_has_avx512_state;
@@ -308,6 +308,15 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
     }
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
+    // NT-store scalar fallback keeps DRAM write stress on baseline binaries,
+    // where no wider SIMD path for this pattern was compiled in.
+    if (use_nt && caps.has_nt_stores) {
+        for (; i < count; ++i) {
+            _mm_stream_si64((long long*)(dst + i), (long long)(param0 + ((start_idx + i) * param1)));
+        }
+    }
+#endif
     for (; i < count; ++i) {
         dst[i] = param0 + ((start_idx + i) * param1);
     }
@@ -340,7 +349,7 @@ static inline __m256i mul64_avx2(__m256i a, __m256i b) {
 template<>
 void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, [[maybe_unused]] bool use_nt, size_t start_idx) {
     size_t i = 0;
-#if defined(__AVX512F__) || defined(__AVX2__)
+#if defined(__AVX512F__) || defined(__AVX2__) || defined(__x86_64__) || defined(_M_X64)
     [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
 #endif
 
@@ -402,6 +411,15 @@ void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0
     }
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
+    // NT-store scalar fallback keeps DRAM write stress on baseline binaries,
+    // where no wider SIMD path for this pattern was compiled in.
+    if (use_nt && caps.has_nt_stores) {
+        for (; i < count; ++i) {
+            _mm_stream_si64((long long*)(dst + i), (long long)(param0 ^ ((start_idx + i) * param1)));
+        }
+    }
+#endif
     // Scalar fallback - guaranteed correct
     for (; i < count; ++i) {
         dst[i] = param0 ^ ((start_idx + i) * param1);
@@ -500,6 +518,15 @@ void generate_pattern_increment<uint64_t>(uint64_t* dst, size_t count, uint64_t 
     }
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
+    // NT-store scalar fallback keeps DRAM write stress on baseline binaries,
+    // where no wider SIMD path for this pattern was compiled in.
+    if (use_nt && caps.has_nt_stores) {
+        for (; i < count; ++i) {
+            _mm_stream_si64((long long*)(dst + i), (long long)(start + i));
+        }
+    }
+#endif
     // Scalar fallback
     for (; i < count; ++i) {
         dst[i] = start + i;
@@ -538,9 +565,14 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
 
             __mmask8 mask = _mm512_cmpneq_epi64_mask(actual, v_expect);
             if (mask) {
+                // Record from the already-loaded register, never from a second
+                // memory read: a transient flip seen by the SIMD compare must be
+                // counted even if the memory cell reads back correct by now.
+                alignas(64) uint64_t lanes[8];
+                _mm512_store_si512((void*)lanes, actual);
                 for (int k = 0; k < 8; ++k) {
                     if ((mask >> k) & 1) {
-                         record_error(i + k, src[i + k]);
+                         record_error(i + k, lanes[k]);
                     }
                 }
             }
@@ -565,9 +597,14 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
             __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
             int mask = _mm256_movemask_epi8(eq);
             if ((uint32_t)mask != 0xFFFFFFFF) {
+                // Compare register lanes, never re-read memory (see AVX-512 note).
+                alignas(32) uint64_t lanes[4];
+                alignas(32) uint64_t expect_lanes[4];
+                _mm256_store_si256((__m256i*)lanes, actual);
+                _mm256_store_si256((__m256i*)expect_lanes, v_expect);
                 for (size_t k = 0; k < 4; ++k) {
-                    if (src[i+k] != (param0 + (start_idx + i + k) * param1)) {
-                       record_error(i + k, src[i + k]);
+                    if (lanes[k] != expect_lanes[k]) {
+                       record_error(i + k, lanes[k]);
                     }
                 }
             }
@@ -577,8 +614,9 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
 #endif
 
     for (; i < count; ++i) {
-        if (src[i] != (param0 + (start_idx + i) * param1)) {
-            record_error(i, src[i]);
+        const uint64_t observed = src[i];
+        if (observed != (param0 + (start_idx + i) * param1)) {
+            record_error(i, observed);
         }
     }
     return mismatches;
@@ -617,13 +655,16 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
             __m512i actual = load_verify_u512(src + i);
             __m512i v_mul = _mm512_mullo_epi64(v_idx, v_param1);
             __m512i v_expect = _mm512_xor_si512(v_param0, v_mul);
-            __mmask8 mask = _mm512_cmpeq_epi64_mask(actual, v_expect);
-            if (mask != 0xFF) {
-                for (size_t k = 0; k < 8; ++k) {
-                    if (!(mask & (1 << k))) {
-                        if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                            record_error(i + k, src[i + k]);
-                        }
+            __mmask8 mask = _mm512_cmpneq_epi64_mask(actual, v_expect);
+            if (mask) {
+                // Record from the already-loaded register, never from a second
+                // memory read: a transient flip seen by the SIMD compare must be
+                // counted even if the memory cell reads back correct by now.
+                alignas(64) uint64_t lanes[8];
+                _mm512_store_si512((void*)lanes, actual);
+                for (int k = 0; k < 8; ++k) {
+                    if ((mask >> k) & 1) {
+                        record_error(i + k, lanes[k]);
                     }
                 }
             }
@@ -652,9 +693,14 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
             int mask = _mm256_movemask_epi8(eq);
 
             if ((uint32_t)mask != 0xFFFFFFFF) {
+                // Compare register lanes, never re-read memory (see AVX-512 note).
+                alignas(32) uint64_t lanes[4];
+                alignas(32) uint64_t expect_lanes[4];
+                _mm256_store_si256((__m256i*)lanes, actual);
+                _mm256_store_si256((__m256i*)expect_lanes, v_expect);
                 for (size_t k = 0; k < 4; ++k) {
-                    if (src[i+k] != (param0 ^ ((start_idx + i + k) * param1))) {
-                        record_error(i + k, src[i + k]);
+                    if (lanes[k] != expect_lanes[k]) {
+                        record_error(i + k, lanes[k]);
                     }
                 }
             }
@@ -665,8 +711,9 @@ size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t st
 
     // Scalar fallback - guaranteed correct
     for (; i < count; ++i) {
-        if (src[i] != (param0 ^ ((start_idx + i) * param1))) {
-            record_error(i, src[i]);
+        const uint64_t observed = src[i];
+        if (observed != (param0 ^ ((start_idx + i) * param1))) {
+            record_error(i, observed);
         }
     }
     return mismatches;
@@ -695,9 +742,14 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
 
              __mmask8 mask = _mm512_cmpneq_epi64_mask(actual, v_expect);
              if (mask) {
+                 // Record from the already-loaded register, never from a second
+                 // memory read: a transient flip seen by the SIMD compare must be
+                 // counted even if the memory cell reads back correct by now.
+                 alignas(64) uint64_t lanes[8];
+                 _mm512_store_si512((void*)lanes, actual);
                  for (int k = 0; k < 8; ++k) {
                      if ((mask >> k) & 1) {
-                         record_error(i + k, src[i + k]);
+                         record_error(i + k, lanes[k]);
                      }
                  }
              }
@@ -714,9 +766,12 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
             __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
             int mask = _mm256_movemask_epi8(eq);
             if ((uint32_t)mask != 0xFFFFFFFF) {
+                // Compare register lanes, never re-read memory (see AVX-512 note).
+                alignas(32) uint64_t lanes[4];
+                _mm256_store_si256((__m256i*)lanes, actual);
                 for (size_t k = 0; k < 4; ++k) {
-                    if (src[i+k] != val) {
-                        record_error(i + k, src[i + k]);
+                    if (lanes[k] != val) {
+                        record_error(i + k, lanes[k]);
                     }
                 }
             }
@@ -724,8 +779,96 @@ size_t verify_uniform<uint64_t>(const uint64_t* src, size_t count, uint64_t val,
     }
 #endif
     for (; i < count; ++i) {
-        if (src[i] != val) {
-            record_error(i, src[i]);
+        const uint64_t observed = src[i];
+        if (observed != val) {
+            record_error(i, observed);
+        }
+    }
+    return mismatches;
+}
+
+template<>
+size_t verify_pattern_pair<uint64_t>(const uint64_t* src, size_t count, uint64_t even_val, uint64_t odd_val,
+                                     std::vector<std::pair<uint64_t, uint64_t>>& errors, size_t max_error_samples) {
+    size_t i = 0;
+    size_t mismatches = 0;
+    auto record_error = [&](size_t offset, uint64_t observed) {
+        ++mismatches;
+        if (errors.size() < max_error_samples) {
+            errors.push_back({offset, observed});
+        }
+    };
+    // All SIMD strides below are even, so i keeps even parity and lane 0 always
+    // expects even_val. Mismatches are recorded from the loaded register, never
+    // from a second memory read (see verify_uniform).
+#if defined(__AVX512F__) || defined(__AVX2__) || defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
+    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
+#endif
+
+#if defined(__AVX512F__)
+    if (caps.has_avx512) {
+        __m512i v_expect = _mm512_set_epi64(
+            (long long)odd_val, (long long)even_val, (long long)odd_val, (long long)even_val,
+            (long long)odd_val, (long long)even_val, (long long)odd_val, (long long)even_val);
+        for (; i + 8 <= count; i += 8) {
+            __m512i actual = load_verify_u512(src + i);
+            __mmask8 mask = _mm512_cmpneq_epi64_mask(actual, v_expect);
+            if (mask) {
+                alignas(64) uint64_t lanes[8];
+                _mm512_store_si512((void*)lanes, actual);
+                for (int k = 0; k < 8; ++k) {
+                    if ((mask >> k) & 1) {
+                        record_error(i + k, lanes[k]);
+                    }
+                }
+            }
+        }
+    }
+#endif
+
+#if defined(__AVX2__)
+    if (caps.has_avx2) {
+        __m256i v_expect = _mm256_set_epi64x(
+            (long long)odd_val, (long long)even_val, (long long)odd_val, (long long)even_val);
+        for (; i + 4 <= count; i += 4) {
+            __m256i actual = load_verify_u256(src + i);
+            __m256i eq = _mm256_cmpeq_epi64(actual, v_expect);
+            int mask = _mm256_movemask_epi8(eq);
+            if ((uint32_t)mask != 0xFFFFFFFF) {
+                alignas(32) uint64_t lanes[4];
+                _mm256_store_si256((__m256i*)lanes, actual);
+                if (lanes[0] != even_val) record_error(i + 0, lanes[0]);
+                if (lanes[1] != odd_val)  record_error(i + 1, lanes[1]);
+                if (lanes[2] != even_val) record_error(i + 2, lanes[2]);
+                if (lanes[3] != odd_val)  record_error(i + 3, lanes[3]);
+            }
+        }
+    } else
+#endif
+#if defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
+    if (caps.has_sse4_1) {
+        __m128i v_expect = _mm_set_epi64x((long long)odd_val, (long long)even_val);
+        for (; i + 2 <= count; i += 2) {
+            __m128i actual = _mm_loadu_si128((const __m128i*)(src + i));
+            // SSE2-compatible 64-bit compare: both 32-bit halves of a lane must
+            // match, so all-bytes-equal in the movemask means both lanes match.
+            __m128i eq = _mm_cmpeq_epi32(actual, v_expect);
+            int mask = _mm_movemask_epi8(eq);
+            if (mask != 0xFFFF) {
+                alignas(16) uint64_t lanes[2];
+                _mm_store_si128((__m128i*)lanes, actual);
+                if (lanes[0] != even_val) record_error(i + 0, lanes[0]);
+                if (lanes[1] != odd_val)  record_error(i + 1, lanes[1]);
+            }
+        }
+    }
+#endif
+
+    for (; i < count; ++i) {
+        const uint64_t observed = src[i];
+        const uint64_t expect = (i & 1) ? odd_val : even_val;
+        if (observed != expect) {
+            record_error(i, observed);
         }
     }
     return mismatches;

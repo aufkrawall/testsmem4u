@@ -1,4 +1,5 @@
 #include "Logger.h"
+#include "ConsoleDisplay.h"
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -64,15 +65,6 @@ void Logger::deinit() {
     }
 }
 
-void Logger::setLevel(LogLevel level) {
-    log_level_ = level;
-}
-
-void Logger::emergencyFlush() {
-    fflush(stdout);
-    fflush(stderr);
-}
-
 void Logger::debug(const char* format, ...) {
     if (log_level_.load(std::memory_order_relaxed) > LogLevel::DEBUG) return;
     va_list args;
@@ -115,37 +107,36 @@ void Logger::logError(const std::string& context, uint64_t address, uint64_t exp
     handleConsoleOutput(std::string(error_msg));
 }
 
+// Console output for detected memory errors. Always rate-limited: during an
+// error storm on faulty hardware, unthrottled per-error console writes would
+// make the run IO-bound. Every error is still counted in the result totals and
+// queued for the log file regardless of console suppression. All console
+// writes go through ConsoleDisplay so they coordinate with the status line.
 void Logger::handleConsoleOutput(const std::string& message) {
-    if (g_testing_active.load(std::memory_order_relaxed)) {
-        std::lock_guard<std::mutex> console_lock(console_mutex_);
-        std::cerr << formatLogLine(LogLevel::ERR, message) << "\n" << std::flush;
-        return;
-    }
+    {
+        std::lock_guard<std::mutex> lock(rate_limit_mutex_);
+        auto now = std::chrono::high_resolution_clock::now();
 
-    std::lock_guard<std::mutex> lock(rate_limit_mutex_);
-    auto now = std::chrono::high_resolution_clock::now();
-
-    auto seconds_since_summary = std::chrono::duration_cast<std::chrono::seconds>(now - last_summary_time_).count();
-    if (seconds_since_summary >= 1) {
-        if (suppressed_count_ > 0) {
-            char buf[128];
-            snprintf(buf, sizeof(buf), "ERROR RATE: %u additional errors suppressed (see log file)", suppressed_count_);
-            std::lock_guard<std::mutex> console_lock(console_mutex_);
-            std::cout << formatLogLine(LogLevel::WARN, buf) << "\n" << std::flush;
-            suppressed_count_ = 0;
+        auto seconds_since_summary = std::chrono::duration_cast<std::chrono::seconds>(now - last_summary_time_).count();
+        if (seconds_since_summary >= 1) {
+            if (suppressed_count_ > 0) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "ERROR RATE: %u additional errors suppressed (see log file)", suppressed_count_);
+                ConsoleDisplay::get().printLine(formatLogLine(LogLevel::WARN, buf));
+                suppressed_count_ = 0;
+            }
+            error_count_ = 0;
+            last_summary_time_ = now;
         }
-        error_count_ = 0;
-        last_summary_time_ = now;
+
+        if (error_count_ >= error_rate_limit_.load(std::memory_order_relaxed)) {
+            suppressed_count_++;
+            return;
+        }
+        error_count_++;
     }
 
-    if (error_count_ >= error_rate_limit_.load(std::memory_order_relaxed)) {
-        suppressed_count_++;
-        return;
-    }
-
-    error_count_++;
-    std::lock_guard<std::mutex> console_lock(console_mutex_);
-    std::cout << formatLogLine(LogLevel::ERR, message) << "\n" << std::flush;
+    ConsoleDisplay::get().printError(formatLogLine(LogLevel::ERR, message));
 }
 
 void Logger::pushMessage(LogLevel level, const std::string& formatted_message) {
@@ -185,9 +176,14 @@ void Logger::logv(LogLevel level, const char* format, va_list args) {
 
     std::string line = formatLogLine(level, message);
 
-    if (level >= LogLevel::WARN) {
-        std::lock_guard<std::mutex> console_lock(console_mutex_);
-        std::cout << line << "\n";
+    // WARN and infrastructure ERR lines are rare and must be visible; route
+    // them through ConsoleDisplay so they do not clobber the status line.
+    // (Per-error reporting goes through logError -> handleConsoleOutput,
+    // which is rate-limited.)
+    if (level >= LogLevel::ERR) {
+        ConsoleDisplay::get().printError(line);
+    } else if (level >= LogLevel::WARN) {
+        ConsoleDisplay::get().printLine(line);
     }
 
     pushMessage(level, line);

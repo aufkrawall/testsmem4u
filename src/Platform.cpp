@@ -587,9 +587,11 @@ static void SignalHandlerWrapper(int signum) {
         cb();
     }
 
-    // SIGBUS indicates potentially unsafe memory access state.
-    // Exit immediately after signal-safe cleanup.
-    if (signum == SIGBUS) {
+    // SIGBUS indicates potentially unsafe memory access state. SIGABRT will
+    // re-raise with the default handler after we return, skipping atexit, so
+    // the hugepage reservation must be restored here. Exit immediately after
+    // signal-safe cleanup in both cases.
+    if (signum == SIGBUS || signum == SIGABRT) {
         restoreHugepagesSignalSafe();
         _exit(128 + signum);
     }

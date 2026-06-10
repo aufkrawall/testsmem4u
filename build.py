@@ -556,15 +556,39 @@ def build_target(name: str) -> bool:
         size = output_path.stat().st_size
         print(f"[*] OK: {size:,} bytes ({size / 1024:.1f} KB)")
 
-    # Copy config files to dist
+    return True
+
+
+def copy_configs_to_dist() -> None:
+    """Copy preset/config files to dist once, after all parallel target builds.
+
+    Doing this inside build_target would race when targets build concurrently."""
+    DIST_DIR.mkdir(parents=True, exist_ok=True)
     for cfg in PROJECT_ROOT.glob("*.cfg"):
         shutil.copy2(cfg, DIST_DIR / cfg.name)
         print(f"[*] Copied {cfg.name}")
 
+
+# Test ISA variants: the baseline runner exercises the SSE2/scalar paths, the
+# v3 runner exercises the AVX2 generate/verify paths on AVX2-capable hosts, and
+# the opt-in v4 runner exercises AVX-512 paths (only on AVX-512 hosts).
+TEST_ISA_FLAGS = {
+    "baseline": {"zig": [], "mingw": []},
+    "v3": {"zig": HOST_V3_FLAGS, "mingw": HOST_V3_FLAGS_MINGW},
+    "v4": {"zig": HOST_V4_FLAGS, "mingw": HOST_V4_FLAGS_MINGW},
+}
+
+
+def build_tests(run_tests: bool = True, isa_variants: list[str] | None = None) -> bool:
+    if isa_variants is None:
+        isa_variants = ["baseline", "v3"]
+    for isa in isa_variants:
+        if not build_tests_variant(isa, run_tests):
+            return False
     return True
 
 
-def build_tests(run_tests: bool = True) -> bool:
+def build_tests_variant(isa: str, run_tests: bool) -> bool:
     compiler = get_compiler()
     if not Path(compiler).exists():
         print(f"[!] Compiler not found: {compiler}")
@@ -575,13 +599,19 @@ def build_tests(run_tests: bool = True) -> bool:
         return False
 
     target = TARGETS["windows-x86_64"]
-    obj_dir = BUILD_DIR / "obj" / _current_toolchain / _current_build_mode / "tests"
+    variant_dir = "tests" if isa == "baseline" else f"tests-{isa}"
+    obj_dir = BUILD_DIR / "obj" / _current_toolchain / _current_build_mode / variant_dir
     obj_dir.mkdir(parents=True, exist_ok=True)
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
 
+    isa_flags = TEST_ISA_FLAGS[isa]["mingw" if _current_toolchain == "mingw" else "zig"]
     compile_flags, link_flags = split_compile_link_flags(target, for_test=True)
-    compile_flags = compile_flags + ["-DTESTSMEM4U_TESTING"]
+    compile_flags = compile_flags + ["-DTESTSMEM4U_TESTING"] + isa_flags
+    # ISA flags must also reach the link step: with -flto=thin the linker does
+    # the final code generation from bitcode.
+    link_flags = link_flags + isa_flags
 
+    print(f"[*] Building internal tests ({isa})...")
     base_compile_cmd = get_cxx_command(target, compile_flags)
 
     test_sources = [TEST_SRC_FILE, *TEST_SUPPORT_SRC_FILES]
@@ -609,7 +639,8 @@ def build_tests(run_tests: bool = True) -> bool:
         if not success:
             return False
 
-    test_exe = BUILD_DIR / "testsmem4u-tests.exe"
+    exe_name = "testsmem4u-tests.exe" if isa == "baseline" else f"testsmem4u-tests-{isa}.exe"
+    test_exe = BUILD_DIR / exe_name
     if _current_toolchain == "mingw":
         link_filtered = [f for f in link_flags
                          if f not in ("-fno-ident", "-fno-asynchronous-unwind-tables", "-fno-strict-aliasing")
@@ -643,7 +674,7 @@ def build_tests(run_tests: bool = True) -> bool:
     if not run_tests:
         return True
 
-    print("[*] Running internal tests...")
+    print(f"[*] Running internal tests ({isa})...")
     test_env = os.environ.copy()
     if _current_toolchain == "mingw" and MINGW_CXX.exists():
         mingw_bin = str(MINGW_CXX.parent)
@@ -654,7 +685,10 @@ def build_tests(run_tests: bool = True) -> bool:
     if result.stderr.strip():
         print(result.stderr)
     if result.returncode != 0:
-        print(f"[!] Internal tests failed with exit code {result.returncode}")
+        print(f"[!] Internal tests ({isa}) failed with exit code {result.returncode}")
+        if isa != "baseline":
+            print(f"    Note: the {isa} runner requires a CPU supporting the corresponding ISA "
+                  f"(AVX2 for v3, AVX-512 for v4).")
         return False
     return True
 
@@ -977,6 +1011,12 @@ def main() -> int:
         help="With --tests, compile and link the test runner without executing it.",
     )
     parser.add_argument(
+        "--tests-v4",
+        action="store_true",
+        help="With --tests, additionally build and run an AVX-512 (x86-64-v4) test runner. "
+             "Requires an AVX-512-capable host CPU.",
+    )
+    parser.add_argument(
         "--run-sanitizers",
         action="store_true",
         help="Build and run tests with ASan and UBSan modes (MinGW only). Catches memory safety and UB bugs not visible in release builds.",
@@ -1082,7 +1122,8 @@ def main() -> int:
         # Tests use the first available toolchain; prefer mingw for native host.
         if args.toolchain == "all":
             _current_toolchain = "mingw"
-        return 0 if build_tests(run_tests=not args.no_run_tests) else 1
+        isa_variants = ["baseline", "v3"] + (["v4"] if args.tests_v4 else [])
+        return 0 if build_tests(run_tests=not args.no_run_tests, isa_variants=isa_variants) else 1
 
     # Partition targets by their required toolchain, then build each group with
     # the correct one. This prevents silently emitting mislabeled/broken binaries
@@ -1135,6 +1176,7 @@ def main() -> int:
             overall_ok = False
 
     if overall_ok:
+        copy_configs_to_dist()
         print("\nBuild complete.")
         print(f"Outputs: {DIST_DIR}")
         return 0
