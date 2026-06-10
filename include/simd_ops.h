@@ -28,7 +28,7 @@ struct SimdCapabilities {
     bool has_clflush = false;
     bool has_clflushopt = false;
     size_t vector_width = 16;
-    size_t nt_store_width = 16;
+    size_t cache_line_size = 64; // Default 64 bytes; detected via CPUID on x86
 };
 
 // Maximum mismatch samples retained per verification block. The verifier still
@@ -37,12 +37,10 @@ struct SimdCapabilities {
 constexpr size_t MAX_ERROR_SAMPLES_PER_BLOCK = 4096;
 
 SimdCapabilities getCapabilities();
-const char* getSimdLevelName(SimdLevel level);
 
 // Memory Fences
 void memory_fence();
 void sfence();
-void lfence();
 
 // Cache Management
 void flush_cache_line(void* ptr);
@@ -86,10 +84,17 @@ size_t verify_uniform(const T* src, size_t count, uint64_t val,
                       std::vector<std::pair<uint64_t, uint64_t>>& errors,
                       size_t max_error_samples = MAX_ERROR_SAMPLES_PER_BLOCK);
 
+// Verifies an alternating two-value pattern: src[k] must equal even_val for
+// even k and odd_val for odd k (k relative to src, so callers must pass
+// block pointers that start at an even pattern index).
+template<typename T>
+size_t verify_pattern_pair(const T* src, size_t count, uint64_t even_val, uint64_t odd_val,
+                           std::vector<std::pair<uint64_t, uint64_t>>& errors,
+                           size_t max_error_samples = MAX_ERROR_SAMPLES_PER_BLOCK);
+
 // Safe forced memory read after cache flush
 // Use this instead of volatile casts (which are UB in C++)
 // Performs: flush cache line, memory fence, read value
 uint64_t safe_read_u64(const uint64_t* ptr);
-uint32_t safe_read_u32(const uint32_t* ptr);
 
 }} // namespace testsmem4u::simd

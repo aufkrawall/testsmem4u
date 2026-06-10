@@ -12,9 +12,8 @@ struct TestResult {
     uint64_t hard_errors = 0;
     uint64_t soft_errors = 0;
     uint64_t unverified_errors = 0;  // Counted mismatches that were not re-read because sample logging is bounded.
-    
+
     uint64_t bytes_tested = 0;
-    uint64_t cycles_completed = 0;
 
     uint64_t total_errors() const { return hard_errors + soft_errors + unverified_errors; }
     uint64_t verified_errors() const { return hard_errors + soft_errors; }
@@ -24,7 +23,6 @@ struct TestResult {
         soft_errors += other.soft_errors;
         unverified_errors += other.unverified_errors;
         bytes_tested += other.bytes_tested;
-        cycles_completed += other.cycles_completed;
     }
 };
 
@@ -99,7 +97,8 @@ public:
         return *this;
     }
 
-    // Self-move assignment safety - do nothing if self-assigned
+    // Prevent accidental copy-assignment (non-const lvalue ref).
+    // Move assignment (MemoryGuard&&) already handles self-assignment via this != &other check.
     MemoryGuard& operator=(MemoryGuard& other) = delete;
 
     uint8_t* base() const { return base_; }

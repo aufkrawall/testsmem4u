@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cerrno>
+#include <cctype>
+#include <cstdio>
 #include <limits>
 
 namespace testsmem4u {
@@ -27,21 +29,12 @@ public:
         return !key.empty();
     }
 
-    static uint64_t parseHex(const std::string& str) {
-        std::string s = trim(str);
-        if (s.empty()) return 0;
-
-        if (s.size() > 2 && (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))) {
-            s = s.substr(2);
-        }
-
-        char* endptr = nullptr;
-        return std::strtoull(s.c_str(), &endptr, 16);
-    }
-
     static bool parseHexStrict(const std::string& str, uint64_t& value) {
         std::string s = trim(str);
         if (s.empty()) return false;
+
+        // Reject leading minus — strtoull wraps negatives silently
+        if (s[0] == '-') return false;
 
         if (s.size() > 2 && (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))) {
             s = s.substr(2);
@@ -59,18 +52,12 @@ public:
         return true;
     }
 
-    static uint32_t parseUint(const std::string& str) {
-        std::string s = trim(str);
-        if (s.empty()) return 0;
-
-        char* endptr = nullptr;
-        unsigned long val = std::strtoul(s.c_str(), &endptr, 10);
-        return static_cast<uint32_t>(val);
-    }
-
     static bool parseUintStrict(const std::string& str, uint32_t& value) {
         std::string s = trim(str);
         if (s.empty()) return false;
+
+        // Reject leading minus — strtoul wraps negatives silently
+        if (s[0] == '-') return false;
 
         errno = 0;
         char* endptr = nullptr;
@@ -82,6 +69,31 @@ public:
 
         value = static_cast<uint32_t>(parsed);
         return true;
+    }
+
+    static bool hasUnsafePathControlCharacters(const std::string& path) {
+        if (path.empty()) return true;
+        for (unsigned char ch : path) {
+            if (ch == '\0' || std::iscntrl(ch)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static std::string sanitizeForLog(const std::string& value) {
+        std::string out;
+        out.reserve(value.size());
+        for (unsigned char ch : value) {
+            if (ch >= 0x20 && ch != 0x7F) {
+                out.push_back(static_cast<char>(ch));
+            } else {
+                char escaped[5];
+                std::snprintf(escaped, sizeof(escaped), "\\x%02X", ch);
+                out += escaped;
+            }
+        }
+        return out;
     }
 };
 

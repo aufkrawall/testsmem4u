@@ -45,9 +45,12 @@ struct MemoryRegion {
 };
 
 class Platform {
-public:
-    // Memory Allocation Strategy - Legacy (returns raw region, caller must free)
+private:
+    // Internal allocation path used by allocateMemoryRAII (returns raw region).
     static bool allocateMemory(MemoryRegion& region, size_t size, bool try_large_pages, bool try_lock, bool allow_swappable = false);
+
+public:
+    // Used by MemoryGuard for cleanup.
     static void freeMemory(MemoryRegion& region);
 
     // Memory Allocation Strategy - RAII (returns MemoryGuard, auto-cleans)
@@ -61,8 +64,9 @@ public:
     // Process Management
     static std::vector<CpuTarget> getPreferredCpuTargets(uint32_t max_threads = 0);
     static bool bindCurrentThread(const CpuTarget& target);
-    static bool setThreadAffinity(uint32_t thread_id, uint32_t num_threads);
     static void registerShutdownHandler(void (*callback)());
+    // Confirms the process runs at NORMAL priority (never elevates it).
+    static void confirmNormalProcessPriority();
 
     // Verify memory is still resident in physical RAM (not swapped/reclaimed)
     static bool checkMemoryResident(const uint8_t* base, size_t size);
@@ -70,6 +74,9 @@ public:
     // Safe memory allocation with bounds checking
     static uint64_t getMaxTestableMemory(uint64_t total_ram, uint32_t percent_requested);
     
+    // Control system-wide memory defragmentation (standby list purge, working set trim, etc.)
+    static void setAggressiveDefrag(bool enabled);
+
     // Capability Check
     static bool hasMemoryLockPrivilege();
     
