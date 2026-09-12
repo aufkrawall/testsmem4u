@@ -132,24 +132,22 @@ std::string ConsoleDisplay::formatStatus(const StatusInfo& info) {
     
     double gb = info.bytes_tested / (1024.0 * 1024.0 * 1024.0);
     
-    ss << "[Cycle " << info.cycle;
-    if (info.total_cycles > 0) {
-        ss << "/" << info.total_cycles;
-    } else {
-        ss << "/inf";
-    }
-    ss << "] Test " << info.test_idx << "/" << info.total_tests;
-    ss << " (" << info.test_name << "): ";
-    ss << std::fixed << std::setprecision(2) << gb << " GB";
-    ss << " | Err: " << info.errors;
+    // Keep the error count and elapsed time visible even for long test names.
+    ss << "Err: " << info.errors << " | Min C" << info.cycle << "/";
+    if (info.total_cycles > 0) ss << info.total_cycles;
+    else ss << "inf";
+    ss << " T" << info.test_idx << "/" << info.total_tests;
     ss << " | " << formatTime(info.elapsed_seconds);
-    
+    ss << " | " << std::fixed << std::setprecision(2) << gb << " GiB";
     std::string result = ss.str();
-    
-    if (static_cast<int>(result.size()) > console_width_ - 2) {
-        result = result.substr(0, console_width_ - 2);
+    const size_t width = static_cast<size_t>(console_width_ - 2);
+    if (result.size() + 3 < width) {
+        result += " | ";
+        const size_t available = width - result.size();
+        result += info.test_name.substr(0, available);
     }
-    
+    if (result.size() > width) result.resize(width);
+
     return result;
 }
 

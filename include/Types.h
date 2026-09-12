@@ -11,7 +11,7 @@ namespace testsmem4u {
 struct TestResult {
     uint64_t hard_errors = 0;
     uint64_t soft_errors = 0;
-    uint64_t unverified_errors = 0;  // Counted mismatches that were not re-read because sample logging is bounded.
+    uint64_t unverified_errors = 0;  // Counted mismatches without re-read classification (bounded sampling or destructive march).
 
     uint64_t bytes_tested = 0;
 

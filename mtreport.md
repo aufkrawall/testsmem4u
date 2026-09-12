@@ -1,5 +1,10 @@
 # testsmem4u Multithreading, Concurrency, and Parallelism Audit Report
 
+> Historical review, superseded by the September 2026 implementation and measurements
+> in [memory-testing.md](llm-wiki/memory-testing.md). In particular, fixed CPU weights
+> do not prove barrier-free utilization, and ASan/UBSan do not establish race freedom.
+> Workers now retain static regions while progressing independently.
+
 **Date:** 2026-08-19  
 **Target:** `testsmem4u` (C++17 Cross-Platform RAM Testing Utility)  
 **Document:** `mtreport.md`  

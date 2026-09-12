@@ -9,7 +9,9 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 
 ## Key Files
 - `src/main.cpp`: CLI argument parsing, interactive/non-interactive configuration, and process management.
-- `src/TestEngine.cpp`: Test execution orchestration, thread spawning, and verification logic.
+- `src/TestEngine.cpp`: allocation, dispatch, independent worker scheduling, and monitoring.
+- `src/TestPatterns.cpp`, `src/TestMarch.cpp`, `src/TestMemoryTraffic.cpp`, `src/TestModulo.cpp`,
+  `src/TestRowHammer.cpp`: algorithm units; `src/simd_verify.cpp` owns first-observation march kernels.
 - `src/Platform.cpp`: Platform-specific API integration (CPU topology detection, memory locking, memory allocation, privilege escalation).
 - `src/simd_ops.cpp`: SSE/AVX/NEON optimized pattern writing and verification loops.
 - `src/PresetLoader.cpp` and `src/ConfigManager.cpp`: preset/config parsing, validation, and fail-closed load/save behavior.
@@ -25,11 +27,13 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - AVX-512 capability (`caps.has_avx512`) is detected unconditionally (not behind
   `#if __AVX512F__`) so baseline/v3 binaries can warn that the -v4 variant would
   fit the CPU; AVX-512 *instruction emission* stays `#if __AVX512F__`-guarded.
-- MovingInversionLFSR uses a pre-computed LFSR seed table (built once, invariant of
-  repeats) for the Phase 4 backward march address-line coverage.
-- Worker stop decisions at `ThreadBarrier` boundaries are latched once by thread 0
-  into `epoch_stop` BEFORE the barrier and read by all workers AFTER it, so barrier
-  arrival counts stay symmetric under async (Ctrl+C) stop — prevents deadlock.
+- MovingInversionLFSR uses the inverse LFSR recurrence for backward traversal;
+  no seed-table precomputation is needed, and partial blocks are supported.
+- Workers keep fixed page-aligned regions but advance independently; minimum completed
+  sequence position defines progress and cycle coverage. No per-test barriers.
+- RefreshStable tests disjoint active memory during each held-half retention dwell.
+- See [memory-testing.md](memory-testing.md) for algorithms, invariants, measurements,
+  fault injection, error classification, and validation limits.
 - Signal handler uses `memory_order_release` for `g_shutdown_initiated` to ensure stop flag visibility to workers.
 - Preset/config path validation rejects empty paths and control characters, but allows explicit absolute and parent-relative paths after filesystem canonicalization. Unsafe paths are hex-escaped in diagnostics.
 - Config loading parses into a temporary copy and only commits on full success; malformed config files must not leave partially-applied settings behind.
@@ -41,10 +45,10 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   correct afterwards. Scalar fallbacks read each element exactly once.
 - Per-test mismatch classification (DRAM re-read via `safe_read_u64`, hard/soft
   logging, unverified-overflow accounting, halt-on-error) is centralized in
-  `classifyAndLogErrors` (TestEngine.cpp); tests pass an expected-value lambda.
-- MirrorMove128 verifies its alternating {param0, param1} pattern via
-  `simd::verify_pattern_pair` (AVX-512/AVX2/SSE2/scalar) in a single pass with
-  bounded sampling.
+  `classifyAndLogErrors` (TestEngineInternal.h); tests pass an expected-value lambda.
+  Destructive march observations use unverified accounting because the cell was intentionally replaced.
+- MirrorMove128 verifies its alternating {param0, param1} pattern before a move,
+  after an overlapping one-word rotation, and after restoration with bounded SIMD sampling.
 - Logger console output is always rate-limited (also during active testing) and
   routed through `ConsoleDisplay::printLine/printError` so it coordinates with
   the status line under a single mutex. The log file never drops ERR lines
@@ -59,7 +63,7 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - **Linux (all arches) + Windows-ARM** build with **zig** (cross-compiler). The mingw
   wrapper always targets `x86_64-w64-mingw32`, so it cannot produce these.
 - `compatible_toolchains()` enforces this: each target is built with its correct toolchain.
-  Default `python build.py` (or `--toolchain all`) builds the full 10-target matrix
+  Default `python build.py` (or `--toolchain all`) builds the full 9-target matrix
   automatically by partitioning targets into mingw and zig groups.
 - Toolchain downloads are pinned with SHA-256 checks and ZIP members are validated before extraction to prevent path traversal. Object files live under toolchain/build-mode-specific directories and rebuild when `build.py` changes.
 
@@ -72,7 +76,9 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `python build.py --run-sanitizers`: Runs ASan + UBSan builds and tests (both ISA runners each).
 
 ## Test Coverage
-- Internal tests covering: Utils parsing, strict Test Sequence parsing, Preset loading/validation, explicit absolute preset paths, Config save/load round-trip and invalid-load rollback, SIMD pattern generation/verification (including recorded-observed-value pinning and verify_pattern_pair), LFSR vectors, Thread barrier, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess.
+- Internal tests covering: Utils parsing, strict Test Sequence parsing, Preset loading/validation, explicit absolute preset paths, Config save/load round-trip and invalid-load rollback, SIMD pattern generation/verification (including recorded-observed-value pinning and verify_pattern_pair), LFSR vectors, independent workers, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess, Modulo20, active retention, and RowHammer.
+- Fault hooks test positive error detection, destructive observation retention, partial blocks,
+  cancellation and failed workers; virtual time tests retention without sleeping.
 
-Last verified: 2026-06-10
-Stale risk: Low
+Last verified: 2026-09-12
+Stale risk: Medium for hardware effectiveness; see the memory-testing page.

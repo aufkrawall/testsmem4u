@@ -7,12 +7,21 @@
 #include <vector>
 #include <map>
 #include <atomic>
+#include <chrono>
 #include <mutex>
+#ifdef TESTSMEM4U_TESTING
+#include <functional>
+#endif
 
 namespace testsmem4u {
 
 struct TestContext {
     std::atomic<bool> stop_flag{false};
+    const std::atomic<bool>* external_stop = nullptr;
+#ifdef TESTSMEM4U_TESTING
+    std::function<void(const char*, const MemoryRegion&)> phase_hook;
+    std::function<std::chrono::steady_clock::time_point()> retention_clock;
+#endif
     std::atomic<uint64_t> total_hard_errors{0};
     std::atomic<uint64_t> total_soft_errors{0};
     std::atomic<uint64_t> total_unverified_errors{0};
@@ -43,7 +52,8 @@ struct TestContext {
     }
 
     bool shouldStop() {
-        return stop_flag.load(std::memory_order_acquire);
+        return stop_flag.load(std::memory_order_acquire) ||
+               (external_stop && external_stop->load(std::memory_order_acquire));
     }
 
     void setInfrastructureFailure(const std::string& message) {
@@ -85,6 +95,7 @@ public:
     static TestResult runMovingInversionLFSR(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
     static TestResult runMovingInversionWalking(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
     static TestResult runBlockMove(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
+    static TestResult runModulo20(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
     static TestResult runRandomAccess(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
 
     static size_t verifyAndReport(const MemoryRegion& region, const uint64_t* ptr, size_t count, size_t start_idx,
@@ -92,10 +103,16 @@ public:
                                    TestResult& res, TestContext& ctx, const std::string& test_name, bool halt_on_error,
                                    size_t max_error_samples = simd::MAX_ERROR_SAMPLES_PER_BLOCK);
 
+#ifndef TESTSMEM4U_TESTING
 private:
+#endif
     static RunResult executeSuite(const Config& config, const MemoryRegion& region,
                                   const std::vector<uint32_t>& seq,
-                                  const std::map<uint32_t, TestConfig>& configs);
+                                  const std::map<uint32_t, TestConfig>& configs
+#ifdef TESTSMEM4U_TESTING
+                                  , TestContext* instrumentation = nullptr
+#endif
+                                  );
 
     static TestResult runRegionWork(TestContext& ctx, const MemoryRegion& region, const TestConfig& test_config,
                                     bool halt_on_error);

@@ -47,6 +47,12 @@ SRC_FILES = [
     PROJECT_ROOT / "src" / "simd_ops.cpp",
     PROJECT_ROOT / "src" / "Platform.cpp",
     PROJECT_ROOT / "src" / "TestEngine.cpp",
+    PROJECT_ROOT / "src" / "TestPatterns.cpp",
+    PROJECT_ROOT / "src" / "TestRowHammer.cpp",
+    PROJECT_ROOT / "src" / "TestMarch.cpp",
+    PROJECT_ROOT / "src" / "TestModulo.cpp",
+    PROJECT_ROOT / "src" / "TestMemoryTraffic.cpp",
+    PROJECT_ROOT / "src" / "simd_verify.cpp",
     PROJECT_ROOT / "src" / "ConfigManager.cpp",
     PROJECT_ROOT / "src" / "ConsoleDisplay.cpp",
     PROJECT_ROOT / "src" / "Logger.cpp",
@@ -217,6 +223,9 @@ def source_needs_rebuild(src: Path, obj_file: Path) -> bool:
     newest_dependency = max(newest_dependency, (PROJECT_ROOT / "build.py").stat().st_mtime)
     for header in INCLUDE_DIR.glob("*.h"):
         newest_dependency = max(newest_dependency, header.stat().st_mtime)
+    if src == TEST_SRC_FILE:
+        for header in TEST_SRC_FILE.parent.glob("*.h"):
+            newest_dependency = max(newest_dependency, header.stat().st_mtime)
     return newest_dependency >= obj_file.stat().st_mtime
 
 

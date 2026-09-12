@@ -8,6 +8,12 @@ The current release is centered around `default.cfg` as the supported shipped pr
 
 Recent reliability work in this revision includes:
 
+- Independent workers with fixed, disjoint memory ownership and no per-test barriers.
+- Retention under genuine memory load: hold one half untouched while testing the other, then swap roles.
+- Forward/backward read-and-invert marches, a final restoration check, and lossless first-observation LFSR verification.
+- Address-sensitive bidirectional block copies, overlapping pair-pattern moves, and batched random-access verification.
+- A Modulo-20 test for coupling between protected words and repeatedly written neighbours.
+
 - Stricter preset validation so malformed or partially unsupported presets fail closed.
 - Bounded mismatch sampling with exact aggregate error counts, so failure storms cannot grow memory without limit.
 - Global address-pattern offsets across worker shards and sub-blocks.
@@ -133,3 +139,35 @@ See cli-report.md for the full option reference, mode rules, exit codes, and exa
 - For scheduled tasks, shortcuts, or service-style launchers, prefer explicit --config and --preset paths.
 - If large pages are enabled, the effective memory window may be reduced to match large-page granularity.
 - Full large-page coverage is beneficial for throughput and RowHammer fidelity, but a fully locked fallback run is still valid for the rest of the suite.
+
+## Coverage and workload
+
+Each worker follows the preset sequence on its own contiguous memory region.
+The displayed test/cycle represents the least advanced region; other workers can
+already be running later tests. A completed cycle means every region completed the
+whole sequence. Faster workers continue genuine tests until all regions finish the
+requested cycle count. Stop and infrastructure failures never count incomplete
+cycles. Debug logs identify each worker's region, test transitions, and duration.
+
+`RefreshStable` preserves the configured untouched dwell for each half and both
+polarities, with write/verify testing on the other half throughout the dwell.
+This takes at least four dwell intervals per invocation. It adds no compute-only
+heater, artificial spin loop, or unrelated synthetic workload. Tiny inputs smaller
+than two cache lines retain an idle fallback because no disjoint region exists.
+
+`MovingInversion*` performs ordered read/write transitions at SIMD-vector granularity,
+then flushes and checks the reverse transition and final restored pattern. A mismatch
+observed before an intentional overwrite is counted as **Unverified** because it can
+no longer be classified by re-reading the original cell. It is still a detected
+error, contributes to the error total, and triggers `--halt-on-error`.
+
+The suite reports verified bytes, including repeated checks; this is neither unique
+physical coverage nor a hardware DRAM-bandwidth counter. Dwell time, memory latency,
+cache flushes, and OS scheduling affect CPU utilization differently. No software
+change guarantees maximum DIMM temperature or detection of every instability.
+Virtual addresses and large pages do not prove physical DRAM row/bank adjacency;
+RowHammer remains a heuristic disturbance test. Firmware-reserved and OS-owned RAM
+is outside this user-space tester's allocation.
+
+Implementation details, regression coverage, and local performance measurements are
+recorded in [the memory-testing wiki](llm-wiki/memory-testing.md).

@@ -58,7 +58,7 @@ struct Config {
 struct RunResult {
     uint64_t hard_errors = 0;
     uint64_t soft_errors = 0;
-    uint64_t unverified_errors = 0;  // Counted mismatches not re-read because sample logging is bounded.
+    uint64_t unverified_errors = 0;  // Counted mismatches without re-read classification (bounded sampling or destructive march).
     uint64_t bytes_tested = 0;
     uint64_t cycles_completed = 0;
     double duration_seconds = 0.0;
