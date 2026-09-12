@@ -1,6 +1,6 @@
 # Recent Log
 
-## 2026-09-12 - Continuous useful RAM testing and verification corrections
+## 2026-09-12 - Continuous useful RAM testing and verification corrections (v1.6)
 
 The August concurrency audit's claim that static core weights eliminate barrier
 stragglers was unsupported. Workers now keep their contiguous page-aligned slices
