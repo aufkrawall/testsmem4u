@@ -1,5 +1,12 @@
 # Recent Log
 
+## 2026-09-30 - Populate historical releases in CHANGELOG.md
+
+Populated root `CHANGELOG.md` with release entries for v1.6, v1.5, and v1.4, along with current unreleased improvements from the recent workload review pass, following `llm-wiki/changelog-guidelines.md`:
+- Documented observable behavior, memory stress characteristics, and SIMD verifier corrections first.
+- Formatted entries with concise bold lead-in anchors under standard Keep a Changelog categories (`New`, `Improved`, `Fixed`, `Security`, `Changed`).
+- Aligned unreleased items with recent test kernel review fixes and developer tool additions.
+
 ## 2026-09-30 - LLM Prompt Templates baseline integration
 
 Integrated missing prompt templates and developer tool guidelines from https://github.com/aufkrawall/llm-prompt-templates:
