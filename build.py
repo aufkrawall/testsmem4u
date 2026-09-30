@@ -16,10 +16,12 @@ import zipfile
 import json
 import concurrent.futures
 import hashlib
+import sys
 from pathlib import Path
+from tools.build_checks import compilation_entry, run_clang_tidy
 
 
-PROJECT_ROOT = Path(__file__).parent
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 # Zig toolchain (cross-compilation)
 ZIG_VERSION = "0.14.0"
@@ -594,6 +596,18 @@ def build_tests(run_tests: bool = True, isa_variants: list[str] | None = None) -
     for isa in isa_variants:
         if not build_tests_variant(isa, run_tests):
             return False
+    if run_tests:
+        # Exercise the real CLI as well as internal APIs; its main translation
+        # unit is deliberately excluded from the C++ runner.
+        if not build_target("windows-x86_64"):
+            return False
+        test_env = os.environ.copy()
+        test_env["PATH"] = f"{MINGW_CXX.parent};{test_env.get('PATH', '')}"
+        result = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+                                cwd=PROJECT_ROOT, env=test_env)
+        if result.returncode != 0:
+            print("[!] Build-tool/CLI regressions failed.")
+            return False
     return True
 
 
@@ -724,12 +738,7 @@ def write_compile_commands(names: list[str], include_tests: bool = False) -> boo
                 "-o",
                 str(obj_file),
             ]
-            entries.append({
-                "directory": ".",
-                "command": subprocess.list2cmdline(command),
-                "file": str(src.relative_to(PROJECT_ROOT)),
-                "output": str(obj_file.relative_to(PROJECT_ROOT)),
-            })
+            entries.append(compilation_entry(PROJECT_ROOT, command, src, obj_file))
 
     if include_tests:
         target = TARGETS["windows-x86_64"]
@@ -743,12 +752,7 @@ def write_compile_commands(names: list[str], include_tests: bool = False) -> boo
             "-o",
             str(obj_file),
         ]
-        entries.append({
-            "directory": ".",
-            "command": subprocess.list2cmdline(command),
-            "file": str(TEST_SRC_FILE.relative_to(PROJECT_ROOT)),
-            "output": str(obj_file.relative_to(PROJECT_ROOT)),
-        })
+        entries.append(compilation_entry(PROJECT_ROOT, command, TEST_SRC_FILE, obj_file))
 
     output_path = PROJECT_ROOT / "compile_commands.json"
     output_path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
@@ -775,36 +779,7 @@ def run_lint() -> bool:
         print("[!] compile_commands.json not found. Run with --compile-commands first.")
         return False
 
-    all_sources = [str(src.relative_to(PROJECT_ROOT)) for src in SRC_FILES]
-    all_sources.append(str(TEST_SRC_FILE.relative_to(PROJECT_ROOT)))
-
-    print(f"[*] Running clang-tidy on {len(all_sources)} files...")
-    ok = True
-    for src in all_sources:
-        cmd = [
-            str(clang_tidy),
-            f"-p={PROJECT_ROOT}",
-            "--system-headers=0",
-            src,
-        ]
-        print(f"  [*] {src}")
-        result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True, text=True)
-        if result.stdout.strip():
-            # Filter out notes from non-project headers
-            lines = result.stdout.strip().split("\n")
-            relevant = [l for l in lines if "warning:" in l or "error:" in l]
-            if relevant:
-                for line in relevant:
-                    print(f"    {line}")
-        if result.returncode != 0:
-            print(f"    [!] clang-tidy returned {result.returncode}")
-            ok = False
-
-    if ok:
-        print("[*] clang-tidy: no issues found.")
-    else:
-        print("[!] clang-tidy: issues found (see above).")
-    return ok
+    return run_clang_tidy(PROJECT_ROOT, clang_tidy, [*SRC_FILES, TEST_SRC_FILE])
 
 
 def build_fuzz() -> bool:
@@ -1096,8 +1071,28 @@ def main() -> int:
     _current_build_mode = args.build_mode
     _current_toolchain = args.toolchain
 
+    if args.lint:
+        if args.toolchain not in ("mingw", "all"):
+            print("[!] --lint requires the mingw toolchain.")
+            return 1
+        _current_toolchain = "mingw"
+        # Regenerate on every lint run: old databases can have stale paths,
+        # incompatible target flags, or omit TESTSMEM4U_TESTING for the runner.
+        lint_names = [name for name in names if "mingw" in compatible_toolchains(TARGETS[name])]
+        if not lint_names:
+            print("[!] No MinGW-compatible targets requested for lint.")
+            return 1
+        if not write_compile_commands(lint_names, include_tests=True):
+            return 1
+        return 0 if run_lint() else 1
+
     if args.compile_commands:
-        if not write_compile_commands(names, include_tests=args.tests):
+        cc_names = names
+        if args.toolchain == "all":
+            cc_names = [name for name in names if "mingw" in compatible_toolchains(TARGETS[name])]
+            _current_toolchain = "mingw" if cc_names else "zig"
+            cc_names = cc_names or names
+        if not write_compile_commands(cc_names, include_tests=args.tests):
             return 1
 
     if args.run_sanitizers:
@@ -1110,15 +1105,6 @@ def main() -> int:
             return 1
         print("[*] All sanitizer builds passed.")
         return 0
-
-    if args.lint:
-        if not args.compile_commands:
-            if not (PROJECT_ROOT / "compile_commands.json").exists():
-                print("[*] Generating compile_commands.json for lint...")
-                names_for_cc = expand_target_names(args.targets)
-                if not write_compile_commands(names_for_cc, include_tests=True):
-                    return 1
-        return 0 if run_lint() else 1
 
     if args.fuzz:
         if args.toolchain not in ("mingw", "all"):

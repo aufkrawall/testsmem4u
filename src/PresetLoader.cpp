@@ -196,7 +196,7 @@ PresetInfo loadPreset(const std::string& filepath) {
             } else if (key == "Test Block Size (Mb)" || key == "Block Size") {
                 uint32_t parsed = 0;
                 if (parseUintField(parsed)) {
-                    constexpr size_t bytes_per_mb = 1024ULL * 1024ULL;
+                    constexpr size_t bytes_per_mb = size_t{1024} * 1024;
                     constexpr size_t max_block_mb = std::numeric_limits<size_t>::max() / bytes_per_mb;
                     if (static_cast<size_t>(parsed) > max_block_mb) {
                         invalidate("Block Size is too large for this platform in [Test" + std::to_string(current_test) + "]");

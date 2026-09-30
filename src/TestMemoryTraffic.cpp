@@ -64,7 +64,7 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
                 if (active.size) {
                     // Bound cancellation and deadline overshoot without shrinking
                     // the retention region or adding compute-only work.
-                    constexpr size_t chunk_bytes = 2 * 1024 * 1024;
+                    constexpr size_t chunk_bytes = size_t{2} * 1024 * 1024;
                     const auto chunk = slice(active, active_cursor,
                                              std::min(chunk_bytes, active.size - active_cursor));
                     background.pattern_param0 = background_inverted ? pattern : ~pattern;
@@ -88,7 +88,7 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
             testPhase(ctx, "Retention verify", held);
             simd::flush_cache_region(ptr, held.size);
             const uint64_t errors_before = res.total_errors();
-            constexpr size_t block = 256 * 1024;
+            constexpr size_t block = size_t{256} * 1024;
             for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
                 const size_t n = std::min(block, count - i);
                 verifyAndReport(held, ptr + i, n, i, 0, pattern, 0, res, ctx, "RefreshStable", stop);
@@ -115,7 +115,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     simd::flush_cache_region(ptr, region.size);
     testPhase(ctx, "Random filled", region);
     auto verifyAll = [&]() {
-        constexpr size_t block = 256 * 1024;
+        constexpr size_t block = size_t{256} * 1024;
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             const size_t n = std::min(block, count - i);
             verifyAndReport(region, ptr + i, n, i, 2, 0, 1, res, ctx, "RandomAccess (Sweep)", stop);
@@ -186,7 +186,7 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
     const size_t start = globalWordStart(region);
     const uint64_t step = 0x9E3779B97F4A7C15ULL;
     const uint32_t repeats = config.parameter ? config.parameter : 1;
-    constexpr size_t block = 256 * 1024;
+    constexpr size_t block = size_t{256} * 1024;
     std::vector<std::pair<uint64_t, uint64_t>> errors;
     errors.reserve(128);
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {

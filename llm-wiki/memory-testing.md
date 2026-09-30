@@ -7,6 +7,8 @@ low for tested software invariants.
 
 - `src/TestEngine.cpp`: allocation, dispatch, page-aligned weighted worker regions,
   independent sequence execution, monitoring, termination, exception containment.
+- `src/Platform.cpp::allocateMemoryRAII` and `include/PreparationStatus.h`:
+  prefaulting and exception-safe preparation lifetime.
 - `include/WorkerProgress.h`: per-worker completed sequence position; the minimum
   defines whole-allocation progress and completed cycles.
 - `include/DisturbanceWindow.h`: flags test invocations that overlapped another
@@ -23,6 +25,8 @@ low for tested software invariants.
   bounded sample accounting, and compile-time-only fault injection hooks.
 - `tests/test_engine_regressions.h`: fault injection, partial blocks, virtual-time
   retention, actual worker independence, cancellation, and exception regressions.
+- `tests/test_runtime_regressions.h`: fresh unlocked residency/run and preparation
+  exception regressions, using condition-variable/promise synchronization.
 - `src/ConsoleDisplay.cpp`: compact status with error count/time before the variable-length test name.
 - `default.cfg`: 18 configured entries covering 14 distinct test functions.
 
@@ -54,6 +58,15 @@ atomic outlives every run. Worker exceptions and partial thread-start failures
 request stop and join all successfully started workers. ASan/UBSan do not establish
 race freedom; the independent-progress and cancellation tests exercise the actual
 worker implementation with deterministic condition-variable handshakes.
+
+Linux unlocked anonymous mappings are materialized with one volatile byte write
+per native page before `executeSuite` can check residency. Reading zeroes alone
+would not establish private backing. `MemoryGuard` owns the allocation during
+prefaulting, so later exceptions release it. This initializes pages once, without
+weakening runtime residency checks or guaranteeing against subsequent eviction.
+`PreparationStatus` always stops/joins its display worker during unwinding and
+rethrows callback failures on `finish()`. Its one-second condition-variable timeout
+refreshes the UI only; completion signals wake it immediately.
 
 Retention alternates two cache-line-disjoint halves. Each half receives both
 configured polarities and is untouched for at least the configured dwell interval.
@@ -120,6 +133,8 @@ is shared across available strides rather than silently expanded to one per stri
   unverified, time), Modulo20 (per polarity), RefreshStable (per dwell: actual dwell,
   active chunks, full sweeps, cursor), RandomAccess (access count), and BlockMove
   (per direction). `[stopped]` marks cancelled invocations.
+- Preparation debug logs record requested bytes/lock/large-page choices, the
+  resulting allocation, and Linux prefault byte/page counts and elapsed time.
 - WARN "... while RowHammer ran on another worker region" marks errors that may be
   cross-region disturbance rather than a failure specific to the named test.
 - Final `Coverage` is the number of complete cycles across every worker region.
@@ -160,14 +175,10 @@ live only under ignored `build/ram_review/`; generated binaries/logs are not com
 
 ## Open questions and limits
 
-Confirmed unresolved startup defect: Linux unlocked standard-page allocations are
-not prefaulted before `executeSuite` checks residency. The untouched mapping fails
-`mincore` before any worker can run a test. A 16 MiB baseline reproduction under
-WSL reported 4096 nonresident pages and zero coverage. Allocation exceptions also
-terminate `runTests` because its preparation thread is not joined during unwinding.
-See [the review log](log/recent.md) for sources and reproduction details. Historical
-clang-tidy-clean claims are unverified because the current lint workflow can skip
-files and accept reported warnings.
+The 2026-09-30 Linux unlocked startup and preparation-thread defects are fixed;
+see [the review/fix log](log/recent.md) for reproduction and validation. Historical
+clang-tidy-clean claims remain unverified because the old workflow skipped files
+and accepted warnings; current analysis uses the corrected fail-closed gate.
 
 No temperature sensor or unstable-memory experiment was performed. Higher useful
 load does not establish a universal optimum or a particular error-detection speedup.

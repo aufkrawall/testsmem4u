@@ -107,7 +107,7 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
         simd::flush_cache_region(ptr, region.size);
 
         // Verify in blocks (2MB chunks)
-        size_t block = 256 * 1024;
+        size_t block = size_t{256} * 1024;
 
         for (size_t i = 0; i < count; i += block) {
             if (ctx.shouldStop()) break;
@@ -131,7 +131,7 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
     size_t word_start = globalWordStart(region);
     bool use_nt = true;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
-    size_t block = 256 * 1024;
+    size_t block = size_t{256} * 1024;
 
     for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
@@ -233,7 +233,7 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
         // Flush the region before verification so reads come from DRAM, not CPU cache.
         simd::flush_cache_region(ptr, region.size);
 
-        constexpr size_t VERIFY_BLOCK = 256 * 1024;
+        constexpr size_t VERIFY_BLOCK = size_t{256} * 1024;
         std::vector<std::pair<uint64_t, uint64_t>> errors;
         errors.reserve(128);
         for (unsigned phase = 0; phase < 3 && !ctx.shouldStop(); ++phase) {
@@ -282,7 +282,7 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
 
     std::vector<std::pair<uint64_t, uint64_t>> errors;
     errors.reserve(128);
-    size_t block = 256 * 1024;
+    size_t block = size_t{256} * 1024;
     const char* name = invert ? "WalkingZeros" : "WalkingOnes";
 
     // Test each bit position

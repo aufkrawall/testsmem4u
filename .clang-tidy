@@ -17,18 +17,34 @@ Checks: >
   clang-analyzer-security.*,
   clang-analyzer-unix.*
 
-WarningsAsErrors: ''
+WarningsAsErrors: '*'
 
-HeaderFilterRegex: 'include/.*\.h$'
+HeaderFilterRegex: '(include|tests)[/\\].*\.h$'
 
 CheckOptions:
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
   - key: readability-identifier-naming.FunctionCase
     value: camelBack
+  # Preserve established snake_case SIMD/public APIs alongside camelCase methods.
+  - key: readability-identifier-naming.FunctionIgnoredRegexp
+    value: '^[a-z][a-z0-9]*(_[a-z0-9]+)+$'
   - key: readability-identifier-naming.VariableCase
-    value: camelBack
+    value: lower_case
+  - key: readability-identifier-naming.VariableIgnoredRegexp
+    value: '^[a-z][a-zA-Z0-9]*$'
   - key: readability-identifier-naming.ConstantCase
     value: UPPER_CASE
+  # Constants already use kCamelCase and lower_case as well as UPPER_CASE.
+  - key: readability-identifier-naming.ConstantIgnoredRegexp
+    value: '^(k[A-Z][a-zA-Z0-9]*|[a-z][a-z0-9]*(_[a-z0-9]+)*_?)$'
+  - key: readability-identifier-naming.MemberCase
+    value: lower_case
   - key: readability-identifier-naming.MemberPrefix
     value: ''
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: '_'
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberIgnoredRegexp
+    value: '^[a-z][a-z0-9]*(_[a-z0-9]+)*_$'

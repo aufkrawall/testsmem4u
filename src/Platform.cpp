@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include <iostream>
 #include <thread>
+#include <chrono>
 #include <cstring>
 #include <algorithm>
 #include <memory>
@@ -30,18 +31,18 @@
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 #endif
 
-static void InitLsaString(PLSA_UNICODE_STRING LsaString, LPWSTR String) {
-    DWORD StringLength;
-    if (String == NULL) {
-        LsaString->Buffer = NULL;
+static void initLsaString(PLSA_UNICODE_STRING LsaString, LPWSTR String) {
+    DWORD string_length;
+    if (String == nullptr) {
+        LsaString->Buffer = nullptr;
         LsaString->Length = 0;
         LsaString->MaximumLength = 0;
         return;
     }
-    StringLength = lstrlenW(String);
+    string_length = lstrlenW(String);
     LsaString->Buffer = String;
-    LsaString->Length = (USHORT)(StringLength * sizeof(WCHAR));
-    LsaString->MaximumLength = (USHORT)((StringLength + 1) * sizeof(WCHAR));
+    LsaString->Length = (USHORT)(string_length * sizeof(WCHAR));
+    LsaString->MaximumLength = (USHORT)((string_length + 1) * sizeof(WCHAR));
 }
 
 #else
@@ -120,7 +121,7 @@ static uint32_t bitCount64(uint64_t value) {
 static std::vector<CpuTarget> detectWindowsCpuTargets() {
     std::vector<CpuTarget> targets;
 
-    DWORD active_groups = GetActiveProcessorGroupCount();
+    WORD active_groups = GetActiveProcessorGroupCount();
     if (active_groups == 0) {
         return targets;
     }
@@ -483,11 +484,11 @@ static void initializeCpuTopologyCache() {
         fclose(fp);
     }
     if (!info.large_pages_available) {
-        void* test = mmap(NULL, 2 * 1024 * 1024, PROT_READ | PROT_WRITE,
+        void* test = mmap(nullptr, size_t{2} * 1024 * 1024, PROT_READ | PROT_WRITE,
                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
         if (test != MAP_FAILED) {
             info.large_pages_available = true;
-            munmap(test, 2 * 1024 * 1024);
+            munmap(test, size_t{2} * 1024 * 1024);
         }
     }
 #endif
@@ -514,7 +515,7 @@ static void initializeCpuTopologyCache() {
 #ifdef _WIN32
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
-static BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
+static BOOL WINAPI consoleCtrlHandler(DWORD dwCtrlType) {
     if (g_shutdown_initiated.load(std::memory_order_acquire)) {
         TerminateProcess(GetCurrentProcess(), 0);
         return TRUE;
@@ -647,13 +648,13 @@ bool Platform::bindCurrentThread(const CpuTarget& target) {
 
 bool Platform::hasMemoryLockPrivilege() {
 #ifdef _WIN32
-    HANDLE hToken = NULL;
+    HANDLE hToken = nullptr;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
         return false;
     }
 
     LUID lock_luid;
-    if (!LookupPrivilegeValue(NULL, SE_LOCK_MEMORY_NAME, &lock_luid)) {
+    if (!LookupPrivilegeValue(nullptr, SE_LOCK_MEMORY_NAME, &lock_luid)) {
         CloseHandle(hToken);
         return false;
     }
@@ -696,7 +697,7 @@ bool Platform::grantMemoryLockPrivilege() {
     NTSTATUS status;
 
     // Open LSA Policy
-    status = LsaOpenPolicy(NULL, &objAttr, 
+    status = LsaOpenPolicy(nullptr, &objAttr,
                            POLICY_CREATE_ACCOUNT | POLICY_LOOKUP_NAMES, 
                            &policyHandle);
     
@@ -710,7 +711,7 @@ bool Platform::grantMemoryLockPrivilege() {
     }
 
     DWORD dwSize = 0;
-    GetTokenInformation(hToken, TokenUser, NULL, 0, &dwSize);
+    GetTokenInformation(hToken, TokenUser, nullptr, 0, &dwSize);
     if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
         CloseHandle(hToken);
         LsaClose(policyHandle);
@@ -733,7 +734,7 @@ bool Platform::grantMemoryLockPrivilege() {
     // Add Right
     LSA_UNICODE_STRING userRights;
     WCHAR rightName[] = L"SeLockMemoryPrivilege"; 
-    InitLsaString(&userRights, rightName);
+    initLsaString(&userRights, rightName);
 
     status = LsaAddAccountRights(policyHandle, pTokenUser->User.Sid, &userRights, 1);
 
@@ -791,7 +792,7 @@ uint64_t Platform::getMaxTestableMemory(uint64_t total_ram, uint32_t percent_req
     // Reorder operations to prevent overflow: total_ram / 100 * percent
     // This is safe because total_ram / 100 <= 2^64 / 100 for any realistic RAM size
     uint64_t max_allowed = (total_ram / 100) * percent_requested;
-    uint64_t min_reserved = 256ULL * 1024 * 1024; // 256 MB minimum
+    uint64_t min_reserved = size_t{256} * 1024 * 1024; // 256 MB minimum
     if (max_allowed <= min_reserved) return 0;
     return max_allowed - min_reserved;
 }
@@ -806,7 +807,7 @@ bool Platform::enablePrivilege(const char* privilege_name) {
     }
 
     LUID luid;
-    if (!LookupPrivilegeValue(NULL, privilege_name, &luid)) {
+    if (!LookupPrivilegeValue(nullptr, privilege_name, &luid)) {
         DWORD err = GetLastError();
         LOG_WARN("enablePrivilege(%s): LookupPrivilegeValue failed (error %lu)",
                  privilege_name, err);
@@ -819,7 +820,7 @@ bool Platform::enablePrivilege(const char* privilege_name) {
     tp.Privileges[0].Luid = luid;
     tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 
-    bool result = AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL);
+    bool result = AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), nullptr, nullptr);
     if (result && GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
         LOG_WARN("enablePrivilege(%s): AdjustTokenPrivileges returned ERROR_NOT_ALL_ASSIGNED. "
                  "The privilege may not be held by this process.", privilege_name);
@@ -841,9 +842,9 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
 
     // Set working set size before allocating so VirtualLock can reserve enough pages.
     HANDLE hProcess = GetCurrentProcess();
-    SIZE_T overhead = 128 * 1024 * 1024;
+    SIZE_T overhead = size_t{128} * 1024 * 1024;
     SIZE_T min_ws = size + overhead;
-    SIZE_T max_ws = size + overhead + (512 * 1024 * 1024);
+    SIZE_T max_ws = size + overhead + (size_t{512} * 1024 * 1024);
     
     if (!SetProcessWorkingSetSize(hProcess, min_ws, max_ws)) {
         DWORD err = GetLastError();
@@ -867,14 +868,14 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
         region.locked_bytes = 0;
     }
 
-    region.base = static_cast<uint8_t*>(VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    region.base = static_cast<uint8_t*>(VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     if (!region.base) {
         LOG_ERROR("VirtualAlloc failed: error %lu", GetLastError());
         return false;
     }
 
     size_t locked = 0;
-    size_t chunk_sizes[] = {256 * 1024 * 1024, 128 * 1024 * 1024, 64 * 1024 * 1024};
+    size_t chunk_sizes[] = {size_t{256} * 1024 * 1024, size_t{128} * 1024 * 1024, size_t{64} * 1024 * 1024};
     
     for (size_t chunk : chunk_sizes) {
         while (locked < size) {
@@ -935,7 +936,7 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
         region.locked_bytes = 0;
     }
 
-    region.base = static_cast<uint8_t*>(VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    region.base = static_cast<uint8_t*>(VirtualAlloc(nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     if (region.base) {
         LOG_INFO("Allocated %zu MB (Standard)", size / 1024 / 1024);
         region.is_locked = false;
@@ -953,7 +954,7 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
 // This is the same mechanism used by Sysinternals RAMMap.
 // Requires SE_PROF_SINGLE_PROCESS_NAME privilege.
 //
-// NOTE: Uses undocumented system-information class 80 (SystemMemoryListInformation)
+// NOTE: Uses undocumented system-information class 80 (SYSTEM_MEMORY_LIST_INFORMATION)
 // which is not part of the public Windows API and may change or be removed in
 // future versions. A before/after memory probe verifies the operation had an effect
 // and logs a warning if the syscall succeeded but memory did not increase.
@@ -964,18 +965,18 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
 // allocateMemory retries with chunked large pages and VirtualLock.
 static void purgeStandbyList() {
     // NtSetSystemInformation is not in public headers, load dynamically
-    typedef LONG (NTAPI *NtSetSystemInformation_t)(ULONG, PVOID, ULONG);
+    using NtSetSystemInformation_t = LONG (NTAPI *)(ULONG, PVOID, ULONG);
     HMODULE ntdll = GetModuleHandleA("ntdll.dll");
     if (!ntdll) return;
 
     FARPROC raw_proc = GetProcAddress(ntdll, "NtSetSystemInformation");
     if (!raw_proc) return;
 
-    NtSetSystemInformation_t NtSetSystemInfo = nullptr;
-    static_assert(sizeof(NtSetSystemInfo) == sizeof(raw_proc), "Unexpected function pointer size mismatch");
+    NtSetSystemInformation_t nt_set_system_info = nullptr;
+    static_assert(sizeof(nt_set_system_info) == sizeof(raw_proc), "Unexpected function pointer size mismatch");
     void* p = reinterpret_cast<void*>(raw_proc);
-    NtSetSystemInfo = reinterpret_cast<NtSetSystemInformation_t>(p);
-    if (!NtSetSystemInfo) return;
+    nt_set_system_info = reinterpret_cast<NtSetSystemInformation_t>(p);
+    if (!nt_set_system_info) return;
 
     // Enable required privilege
     Platform::enablePrivilege(SE_PROF_SINGLE_PROCESS_NAME);
@@ -986,12 +987,12 @@ static void purgeStandbyList() {
     bool have_baseline = GlobalMemoryStatusEx(&mem_before) != 0;
     ULONGLONG free_before = have_baseline ? mem_before.ullAvailPhys : 0;
 
-    const ULONG SystemMemoryListInformation = 80;
+    const ULONG SYSTEM_MEMORY_LIST_INFORMATION = 80;
 
     // Flush modified pages to disk first — dirty pages cannot be reused for
     // large pages until written out. This converts modified → standby.
     ULONG flush_cmd = 3; // MemoryFlushModifiedList
-    LONG status = NtSetSystemInfo(SystemMemoryListInformation, &flush_cmd, sizeof(flush_cmd));
+    LONG status = nt_set_system_info(SYSTEM_MEMORY_LIST_INFORMATION, &flush_cmd, sizeof(flush_cmd));
     if (status == 0) {
         LOG_INFO("Flushed modified page list to disk");
     }
@@ -999,7 +1000,7 @@ static void purgeStandbyList() {
     // Now purge the standby list — frees both original standby pages and
     // the newly-flushed pages, maximizing free 2MB-aligned regions.
     ULONG purge_cmd = 4; // MemoryPurgeStandbyList
-    status = NtSetSystemInfo(SystemMemoryListInformation, &purge_cmd, sizeof(purge_cmd));
+    status = nt_set_system_info(SYSTEM_MEMORY_LIST_INFORMATION, &purge_cmd, sizeof(purge_cmd));
 
     if (status == 0) {
         LOG_INFO("Purged standby list to free physical memory for large pages");
@@ -1016,8 +1017,8 @@ static void purgeStandbyList() {
             if (status == 0 && free_after <= free_before) {
                 LOG_WARN("Standby list purge reported success but available memory did not increase "
                          "(before=%llu MB, after=%llu MB). "
-                         "This Windows version may have changed or removed the SystemMemoryListInformation interface (syscall 80).",
-                         free_before / (1024 * 1024), free_after / (1024 * 1024));
+                         "This Windows version may have changed or removed the SYSTEM_MEMORY_LIST_INFORMATION interface (syscall 80).",
+                         free_before / (size_t{1024} * 1024), free_after / (size_t{1024} * 1024));
             }
         }
     }
@@ -1103,7 +1104,7 @@ bool Platform::tryAllocateLargePages(MemoryRegion& region, size_t size) {
 
     size_t lp_size = (size + large_page_min - 1) & ~(large_page_min - 1);
 
-    void* ptr = VirtualAlloc(NULL, lp_size, MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES, PAGE_READWRITE);
+    void* ptr = VirtualAlloc(nullptr, lp_size, MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES, PAGE_READWRITE);
     if (ptr) {
         region.base = static_cast<uint8_t*>(ptr);
         region.size = lp_size;
@@ -1135,16 +1136,16 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
     // Try progressively smaller chunk sizes. Smaller chunks increase success
     // probability on fragmented systems while preserving contiguous VA layout.
     const size_t chunk_candidates[] = {
-        1ULL * 1024 * 1024 * 1024,  // 1GB
-        512ULL * 1024 * 1024,       // 512MB
-        256ULL * 1024 * 1024,       // 256MB
-        128ULL * 1024 * 1024,       // 128MB
-        64ULL * 1024 * 1024,        // 64MB
-        32ULL * 1024 * 1024,        // 32MB
-        16ULL * 1024 * 1024,        // 16MB
-        8ULL * 1024 * 1024,         // 8MB
-        4ULL * 1024 * 1024,         // 4MB
-        2ULL * 1024 * 1024          // 2MB (single large page)
+        size_t{1} * 1024 * 1024 * 1024,  // 1GB
+        size_t{512} * 1024 * 1024,       // 512MB
+        size_t{256} * 1024 * 1024,       // 256MB
+        size_t{128} * 1024 * 1024,       // 128MB
+        size_t{64} * 1024 * 1024,        // 64MB
+        size_t{32} * 1024 * 1024,        // 32MB
+        size_t{16} * 1024 * 1024,        // 16MB
+        size_t{8} * 1024 * 1024,         // 8MB
+        size_t{4} * 1024 * 1024,         // 4MB
+        size_t{2} * 1024 * 1024          // 2MB (single large page)
     };
 
     const size_t candidate_count = sizeof(chunk_candidates) / sizeof(chunk_candidates[0]);
@@ -1157,18 +1158,18 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
         size_t num_chunks = (size + aligned_chunk - 1) / aligned_chunk;
         size_t aligned_total = num_chunks * aligned_chunk;
         size_t reserve_size = aligned_total + large_page_min;
-        LOG_INFO("Chunked LP: trying %zu MB chunks (%zu chunks)", aligned_chunk / (1024 * 1024), num_chunks);
+        LOG_INFO("Chunked LP: trying %zu MB chunks (%zu chunks)", aligned_chunk / (size_t{1024} * 1024), num_chunks);
         const bool allow_hybrid_tail_lock = (candidate_index == candidate_count - 1); // only at smallest chunk size
 
         // Retry the whole reserve-free-reallocate sequence a few times.
         for (int attempt = 0; attempt < 3; attempt++) {
             // Step 1: Reserve slightly larger VA space so we can pick a base
             // aligned to large_page_min.
-            void* reserved = VirtualAlloc(NULL, reserve_size, MEM_RESERVE, PAGE_NOACCESS);
+            void* reserved = VirtualAlloc(nullptr, reserve_size, MEM_RESERVE, PAGE_NOACCESS);
             if (!reserved) {
                 DWORD err = GetLastError();
                 LOG_WARN("Chunked LP: failed to reserve %zu MB VA space (error %lu)",
-                         reserve_size / (1024 * 1024), err);
+                         reserve_size / (size_t{1024} * 1024), err);
                 break;
             }
 
@@ -1207,7 +1208,7 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                     region.lp_chunk_size = aligned_chunk;
 
                     LOG_INFO("Allocated %zu MB using chunked large pages (%zu x %zu MB chunks)",
-                             aligned_total / (1024 * 1024), num_chunks, aligned_chunk / (1024 * 1024));
+                             aligned_total / (size_t{1024} * 1024), num_chunks, aligned_chunk / (size_t{1024} * 1024));
                     return true;
                 }
 
@@ -1239,16 +1240,16 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                         }
 
                         SIZE_T remaining_bytes = (num_chunks - i) * aligned_chunk;
-                        SIZE_T overhead = 128 * 1024 * 1024;
+                        SIZE_T overhead = size_t{128} * 1024 * 1024;
                         SIZE_T min_ws = remaining_bytes + overhead;
-                        SIZE_T max_ws = remaining_bytes + overhead + (512 * 1024 * 1024);
+                        SIZE_T max_ws = remaining_bytes + overhead + (size_t{512} * 1024 * 1024);
                         if (!SetProcessWorkingSetSize(hProcess, min_ws, max_ws)) {
                             hybrid_ok = false;
                             break;
                         }
                         ws_set = true;
                         LOG_INFO("Chunked LP: full large-page coverage unavailable; locking the remaining %zu MB with VirtualLock",
-                                 remaining_bytes / (1024 * 1024));
+                                 remaining_bytes / (size_t{1024} * 1024));
                     }
 
                     void* std_ptr = VirtualAlloc(chunk_addr, aligned_chunk, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -1280,9 +1281,9 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size) {
                     region.lp_chunk_size = aligned_chunk;
 
                     LOG_INFO("Allocated %zu MB with hybrid pages (%zu MB large pages + %zu MB VirtualLock)",
-                             aligned_total / (1024 * 1024),
-                             (lp_chunks * aligned_chunk) / (1024 * 1024),
-                             (std_locked_chunks * aligned_chunk) / (1024 * 1024));
+                             aligned_total / (size_t{1024} * 1024),
+                             (lp_chunks * aligned_chunk) / (size_t{1024} * 1024),
+                             (std_locked_chunks * aligned_chunk) / (size_t{1024} * 1024));
                     return true;
                 }
 
@@ -1309,7 +1310,7 @@ bool Platform::tryAllocateMlock(MemoryRegion& region, size_t size) {
         region.base = nullptr;
     }
 
-    region.base = static_cast<uint8_t*>(mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    region.base = static_cast<uint8_t*>(mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
     if (region.base == MAP_FAILED) {
         region.base = nullptr;
         return false;
@@ -1334,7 +1335,7 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
         region.base = nullptr;
     }
 
-    region.base = static_cast<uint8_t*>(mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    region.base = static_cast<uint8_t*>(mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
     if (region.base == MAP_FAILED) {
         region.base = nullptr;
         return false;
@@ -1376,7 +1377,7 @@ static void defragLinuxMemory() {
 }
 
 static bool reserveHugepages(size_t size_needed) {
-    const size_t hugepage_size = 2ULL * 1024 * 1024;
+    const size_t hugepage_size = size_t{2} * 1024 * 1024;
     int pages_needed = static_cast<int>((size_needed + hugepage_size - 1) / hugepage_size);
 
     // Read current hugepage count
@@ -1457,13 +1458,13 @@ bool Platform::tryAllocateHugepages(MemoryRegion& region, size_t size) {
     }
 
     // Hugepage size is typically 2MB on x86_64 and ARM64
-    const size_t hugepage_size = 2ULL * 1024 * 1024;
+    const size_t hugepage_size = size_t{2} * 1024 * 1024;
     
     // Round up to hugepage boundary
     size_t aligned_size = (size + hugepage_size - 1) & ~(hugepage_size - 1);
     
     // Try to allocate with MAP_HUGETLB
-    void* ptr = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE,
+    void* ptr = mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE,
                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
     
     if (ptr == MAP_FAILED) {
@@ -1472,7 +1473,7 @@ bool Platform::tryAllocateHugepages(MemoryRegion& region, size_t size) {
             LOG_INFO("Attempting to reserve hugepages automatically...");
             if (reserveHugepages(aligned_size)) {
                 // Try allocation again after reserving
-                ptr = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE,
+                ptr = mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE,
                           MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
             }
         }
@@ -1543,7 +1544,7 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
 
             // Step 2: More aggressive defrag — multiple rounds with longer pauses
             LOG_INFO("Large page allocation failed at %zu MB, performing aggressive defragmentation...",
-                     region.size / (1024 * 1024));
+                     region.size / (size_t{1024} * 1024));
             for (uint32_t round = 1; round <= 3; ++round) {
                 defragPhysicalMemory();
                 Sleep(500 * round); // Increasing delay: 500ms, 1s, 1.5s
@@ -1557,7 +1558,7 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
             // Step 3: Single large-page allocation failed — try chunked allocation (1GB chunks)
             // Each chunk independently finds contiguous 2MB physical regions
             LOG_INFO("Attempting chunked large page allocation (%zu MB in 1GB chunks)...",
-                     region.size / (1024 * 1024));
+                     region.size / (size_t{1024} * 1024));
             defragPhysicalMemory();
 
             if (tryAllocateLargePagesChunked(region, region.size)) {
@@ -1567,7 +1568,7 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
             // Large pages failed — fall through to VirtualLock which reliably locks memory
             LOG_INFO("Large page allocation failed at %zu MB after all defrag attempts. "
                      "Falling back to fully locked standard pages.",
-                     region.size / (1024 * 1024));
+                     region.size / (size_t{1024} * 1024));
         } else {
             // Non-aggressive mode: try large pages directly without defrag
             LOG_INFO("Attempting large page allocation (defrag disabled, use --aggressive-defrag to enable)...");
@@ -1579,7 +1580,7 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
             }
             LOG_INFO("Large page allocation failed at %zu MB without defrag. "
                      "Falling back to locked standard pages.",
-                     region.size / (1024 * 1024));
+                     region.size / (size_t{1024} * 1024));
         }
     }
 
@@ -1610,12 +1611,12 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
                 return true;
             }
             LOG_INFO("Hugepage allocation failed at %zu MB, falling back to locked standard pages",
-                     region.size / (1024 * 1024));
+                     region.size / (size_t{1024} * 1024));
         } else {
             // Non-aggressive: try hugepages once, skip defrag and kernel sysfs writes
-            const size_t hugepage_size = 2ULL * 1024 * 1024;
+            const size_t hugepage_size = size_t{2} * 1024 * 1024;
             size_t aligned_size = (region.size + hugepage_size - 1) & ~(hugepage_size - 1);
-            void* ptr = mmap(NULL, aligned_size, PROT_READ | PROT_WRITE,
+            void* ptr = mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE,
                              MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
             if (ptr != MAP_FAILED) {
                 region.base = static_cast<uint8_t*>(ptr);
@@ -1630,7 +1631,7 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
                 return true;
             }
             LOG_INFO("Hugepage allocation failed at %zu MB (use --aggressive-defrag to enable auto-reservation)",
-                     region.size / (1024 * 1024));
+                     region.size / (size_t{1024} * 1024));
         }
     }
     
@@ -1658,8 +1659,28 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
 MemoryGuard Platform::allocateMemoryRAII(size_t size, bool try_large_pages, bool try_lock, bool allow_swappable) {
     MemoryRegion region{};
     if (allocateMemory(region, size, try_large_pages, try_lock, allow_swappable)) {
-        return MemoryGuard(region.base, region.size, region.is_large_pages, region.large_page_bytes, region.is_locked,
-                           region.locked_offset, region.locked_bytes, region.lp_chunk_size);
+        MemoryGuard guard(region.base, region.size, region.is_large_pages, region.large_page_bytes, region.is_locked,
+                          region.locked_offset, region.locked_bytes, region.lp_chunk_size);
+#ifndef _WIN32
+        if (!region.is_locked) {
+            // Anonymous mappings are demand-paged. Write once per native page
+            // before mincore checks so it observes real private RAM rather than
+            // an untouched mapping or the shared read-only zero page.
+            const long native_page_size = sysconf(_SC_PAGESIZE);
+            if (native_page_size <= 0) {
+                LOG_ERROR("Cannot prefault allocation: native page size is unavailable");
+                return MemoryGuard();
+            }
+            const size_t page_size = static_cast<size_t>(native_page_size);
+            const auto started = std::chrono::steady_clock::now();
+            auto* pages = static_cast<volatile uint8_t*>(region.base);
+            for (size_t offset = 0; offset < region.size; offset += page_size) pages[offset] = 0;
+            LOG_DEBUG("Prefaulted unlocked allocation: bytes=%zu page-size=%zu in %.3fs",
+                      region.size, page_size,
+                      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+        }
+#endif
+        return guard;
     }
     return MemoryGuard();
 }
@@ -1794,8 +1815,8 @@ void Platform::registerShutdownHandler(void (*callback)()) {
     g_shutdown_callback.store(callback, std::memory_order_relaxed);
 
 #ifdef _WIN32
-    SetConsoleCtrlHandler(NULL, FALSE);
-    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+    SetConsoleCtrlHandler(nullptr, FALSE);
+    SetConsoleCtrlHandler(consoleCtrlHandler, TRUE);
 #else
     std::signal(SIGINT, SignalHandlerWrapper);
     std::signal(SIGTERM, SignalHandlerWrapper);

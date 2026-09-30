@@ -8,6 +8,7 @@
 #include <thread>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdint>
 #include <atomic>
 #include <queue>
 #include <condition_variable>
@@ -16,7 +17,7 @@
 
 namespace testsmem4u {
 
-enum class LogLevel {
+enum class LogLevel : uint8_t {
     DEBUG,
     INFO,
     WARN,

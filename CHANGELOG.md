@@ -11,12 +11,17 @@
 
 ### Improved
 
+- **Startup diagnostics and regression coverage:** added allocation/prefault and configuration debug messages, deterministic preparation-thread exception tests, and real CLI/build-tool regressions to the normal test command.
 - **LFSR streaming throughput:** restored non-temporal streaming stores in `fill_lfsr` (MOVNTI on x86_64) so DRAM write stress is sustained during `LFSRPattern` and `MovingInversionLFSR`.
 - **RandomAccess DRAM stress:** added cache flush after initial sweep so random reads target physical DRAM rather than CPU cache; clarified `Parameter` configuration handling (<=100 passes, >100 explicit count) with helper and startup warning.
 - **RefreshStable background coverage:** introduced a persistent active-half cursor across dwell windows so short retention dwells reliably sweep the entire active half.
 
 ### Fixed
 
+- **Linux unlocked-memory startup:** materialize fresh anonymous pages before residency checks so unlocked runs can complete their first test cycle; residency checks remain enforced.
+- **Preparation exception handling:** join the preparation display thread during allocation failures and propagate display failures after joining, preserving normal infrastructure-error reporting.
+- **Invalid configuration files:** reject malformed, unreadable, or non-file configurations instead of silently running with defaults; a missing optional file and explicit `--no-config` still allow defaults.
+- **Static-analysis verification:** generate absolute compilation-database paths, refresh the database for each lint run, and fail on diagnostics, missing commands, skipped sources, or tool failures. Corrected the project diagnostics exposed by actual analysis.
 - **Modulo20 disturbance and verification:** corrected false claim regarding untouched cache lines (due to RFO and writeback); switched disturbance to range fills and verification to SIMD `verify_words` using a 1280-word stride-aligned expected table.
 - **RowHammer disturbance isolation:** added `DisturbanceWindow` warning annotations for tests that overlap peer workers' RowHammer execution, avoiding false alarms without forcing idle barrier synchronization.
 

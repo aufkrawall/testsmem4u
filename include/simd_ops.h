@@ -9,7 +9,7 @@
 namespace testsmem4u {
 namespace simd {
 
-enum class SimdLevel {
+enum class SimdLevel : uint8_t {
     NONE = 0,
     SSE4_1 = 1,
     AVX2 = 2,

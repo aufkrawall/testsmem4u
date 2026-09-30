@@ -10,6 +10,7 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 ## Key Files
 - `src/main.cpp`: CLI argument parsing, interactive/non-interactive configuration, and process management.
 - `src/TestEngine.cpp`: allocation, dispatch, independent worker scheduling, and monitoring.
+- `include/PreparationStatus.h`: owns and joins the preparation display thread, including exception paths.
 - `src/TestPatterns.cpp`, `src/TestMarch.cpp`, `src/TestMemoryTraffic.cpp`, `src/TestModulo.cpp`,
   `src/TestRowHammer.cpp`: algorithm units; `src/simd_verify.cpp` owns first-observation march kernels.
 - `src/Platform.cpp`: Platform-specific API integration (CPU topology detection, memory locking, memory allocation, privilege escalation).
@@ -17,6 +18,7 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `src/PresetLoader.cpp` and `src/ConfigManager.cpp`: preset/config parsing, validation, and fail-closed load/save behavior.
 - `src/Logger.cpp`: Async logging implementation (background writer thread, rate-limited console output, queue backpressure).
 - `include/Logger.h`: Logger class declaration and LOG_* macros.
+- `tools/build_checks.py`: absolute compilation-database entries and fail-closed clang-tidy execution.
 
 ## Key Design Decisions
 - Process runs at NORMAL priority (not elevated) to avoid semi-freezing Windows
@@ -37,6 +39,15 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - Signal handler uses `memory_order_release` for `g_shutdown_initiated` to ensure stop flag visibility to workers.
 - Preset/config path validation rejects empty paths and control characters, but allows explicit absolute and parent-relative paths after filesystem canonicalization. Unsafe paths are hex-escaped in diagnostics.
 - Config loading parses into a temporary copy and only commits on full success; malformed config files must not leave partially-applied settings behind.
+- `loadConfigWithStatus` distinguishes loaded, missing, and invalid/unreadable files.
+  Configuration resolution rejects invalid implicit and explicit files; missing
+  optional `config.ini` uses defaults, and `--no-config` explicitly bypasses loading.
+  Non-regular files are rejected before opening; this avoids directory-as-EOF
+  behavior in libc++ and blocking reads from FIFOs. The bool `loadConfig` API remains.
+- Linux unlocked allocations write once per native page before residency checks;
+  the mapping is owned by `MemoryGuard` throughout prefaulting. Strict checks
+  remain active. Preparation display completion wakes immediately, and allocation
+  or display exceptions cannot destroy a joinable preparation thread.
 - Preset sequence parsing is strict: malformed, empty, or trailing-comma tokens invalidate the sequence instead of silently dropping bad entries. `Enable` is limited to 0/1 and `Pattern Mode` to 0/1/2.
 - On Windows, the elevation relaunch waits for the elevated child and returns the child exit code, preserving script-visible failures.
 - SIMD verifiers record mismatches from the already-loaded vector register
@@ -68,21 +79,33 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - Toolchain downloads are pinned with SHA-256 checks and ZIP members are validated before extraction to prevent path traversal. Object files live under toolchain/build-mode-specific directories and rebuild when `build.py` changes.
 
 ## Build Tools
-- `python build.py --lint`: Runs clang-tidy static analysis (requires `--compile-commands` or generates automatically).
-  Known review defects: generated relative compile-database directories cause the
-  installed clang-tidy to skip files, and `run_lint` accepts reported warnings as
-  success. Its "no issues found" result is not evidence of a clean analysis.
-  See [the unresolved review findings](log/recent.md).
+- `python build.py --lint`: regenerates a native MinGW compilation database,
+  including the test-runner define, then analyzes production sources and the
+  runner with warnings as errors. Absolute directories/files and `arguments`
+  arrays prevent command-lookup/quoting failures. Both output streams are retained;
+  missing commands, skipped files, diagnostics, and nonzero exits fail the gate.
+  `.clang-tidy` includes project and regression headers. Naming checks accept the
+  established camelCase/snake_case APIs and private trailing underscores; bug and
+  performance checks remain enabled. Earlier clean-lint claims remain unverified.
+- `--compile-commands` with the default `all` toolchain selects native Windows
+  targets for the LSP profile when present, otherwise the requested Zig targets.
 - `python build.py --fuzz`: Builds fuzzing harness for preset/config parsers (requires Linux or MSVC/Clang-cl; libFuzzer unavailable on Windows MinGW). The harness uses unique temporary files, including absolute temp paths.
 - `python build.py --tests`: Builds and runs the internal tests twice — an SSE2
   baseline runner and an AVX2 (`-v3`) runner so the AVX2 generate/verify paths
   are exercised. `--tests-v4` adds an AVX-512 runner (requires AVX-512 host).
+  It also builds the baseline application and runs Python CLI/build-tool tests,
+  including a real analyzer null-dereference fixture that must fail the lint gate.
+  `--no-run-tests` only builds the C++ runners.
 - `python build.py --run-sanitizers`: Runs ASan + UBSan builds and tests (both ISA runners each).
 
 ## Test Coverage
 - Internal tests covering: Utils parsing, strict Test Sequence parsing, Preset loading/validation, explicit absolute preset paths, Config save/load round-trip and invalid-load rollback, SIMD pattern generation/verification (including recorded-observed-value pinning and verify_pattern_pair), LFSR vectors, independent workers, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess, Modulo20, active retention, and RowHammer.
 - Fault hooks test positive error detection, destructive observation retention, partial blocks,
   cancellation and failed workers; virtual time tests retention without sleeping.
+- `tests/test_runtime_regressions.h`: fresh unlocked allocations, preparation
+  allocator/display exceptions, and transactional config load statuses.
+- `tests/test_cli.py` and `tests/test_build.py`: real configuration resolution,
+  database generation, and fail-closed analysis (including zero-exit diagnostics).
 
 Last verified: 2026-09-30 for native tests and the reviewed runtime/build paths;
 other architecture details retain their earlier verification dates.

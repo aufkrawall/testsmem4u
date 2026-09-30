@@ -18,12 +18,14 @@ namespace simd {
 
 #if defined(_MSC_VER)
     #include <intrin.h>
+    static inline void queryCpuId(int* cpuInfo, int function_id, int subfunction_id) {
+        __cpuidex(cpuInfo, function_id, subfunction_id);
+    }
 #else
     #include <cpuid.h>
-    static inline void call_cpuidex(int* cpuInfo, int function_id, int subfunction_id) {
+    static inline void queryCpuId(int* cpuInfo, int function_id, int subfunction_id) {
         __cpuid_count(function_id, subfunction_id, cpuInfo[0], cpuInfo[1], cpuInfo[2], cpuInfo[3]);
     }
-    #define __cpuidex(info, func, sub) call_cpuidex(info, func, sub)
 #endif
 
 static inline uint64_t read_xcr0() {
@@ -43,10 +45,10 @@ static SimdCapabilities detect_x86_capabilities() {
     SimdCapabilities caps;
 
     int info[4] = {0, 0, 0, 0};
-    __cpuidex(info, 0, 0);
+    queryCpuId(info, 0, 0);
     const int max_leaf = info[0];
 
-    __cpuidex(info, 1, 0);
+    queryCpuId(info, 1, 0);
     const bool cpu_has_sse41 = (info[2] & (1 << 19)) != 0;
     const bool cpu_has_avx = (info[2] & (1 << 28)) != 0;
     const bool cpu_has_osxsave = (info[2] & (1 << 27)) != 0;
@@ -66,7 +68,7 @@ static SimdCapabilities detect_x86_capabilities() {
     bool cpu_has_avx2 = false;
     bool cpu_has_avx512f = false;
     if (max_leaf >= 7) {
-        __cpuidex(info, 7, 0);
+        queryCpuId(info, 7, 0);
         caps.has_clflushopt = (info[1] & (1 << 23)) != 0;
         cpu_has_avx2 = (info[1] & (1 << 5)) != 0;
         cpu_has_avx512f = (info[1] & (1 << 16)) != 0;
@@ -104,7 +106,7 @@ static SimdCapabilities detect_x86_capabilities() {
     // AMD method: CPUID leaf 0x80000005, EBX[15:8] = L1 data cache line size
     if (static_cast<unsigned int>(max_leaf) >= 0x80000006U) {
         int ext_info[4] = {0, 0, 0, 0};
-        __cpuidex(ext_info, 0x80000005, 0);
+        queryCpuId(ext_info, 0x80000005, 0);
         unsigned int amd_line = (static_cast<unsigned int>(ext_info[1]) >> 8) & 0xFFU;
         if (amd_line >= 16 && amd_line <= 256) {
             caps.cache_line_size = amd_line;
@@ -114,7 +116,7 @@ static SimdCapabilities detect_x86_capabilities() {
     // bits 11:0 = (line size / 8) - 1
     if (max_leaf >= 4) {
         int cache_info[4] = {0, 0, 0, 0};
-        __cpuidex(cache_info, 4, 0);
+        queryCpuId(cache_info, 4, 0);
         unsigned int raw = static_cast<unsigned int>(cache_info[0]) & 0xFFFU;
         if (raw > 0) {
             unsigned int detected = (raw + 1) * 8;

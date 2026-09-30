@@ -66,7 +66,11 @@ struct TestContext {
 
 class TestEngine {
 public:
-    static RunResult runTests(const Config& config);
+    static RunResult runTests(const Config& config
+#ifdef TESTSMEM4U_TESTING
+                             , std::function<MemoryGuard(size_t, bool, bool)> allocator = {}
+#endif
+                             );
     static void requestStop();
 
     static TestResult runSimpleTest(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);

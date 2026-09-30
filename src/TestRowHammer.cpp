@@ -35,17 +35,17 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
     std::random_device rd;
     std::mt19937_64 rng(rd());
 
-    size_t dense_points = (region.size / (1024 * 1024)) * 2;
+    size_t dense_points = (region.size / (size_t{1024} * 1024)) * 2;
     size_t hammer_points = std::min((size_t)100000, dense_points);
     if (hammer_points < 10) hammer_points = 10;
 
     if (config.parameter > 0) hammer_points = config.parameter;
 
     const std::array<size_t, 4> row_stride_bytes = {
-        8ULL * 1024ULL,
-        16ULL * 1024ULL,
-        32ULL * 1024ULL,
-        64ULL * 1024ULL,
+        size_t{8} * 1024,
+        size_t{16} * 1024,
+        size_t{32} * 1024,
+        size_t{64} * 1024,
     };
     const size_t hammer_iterations = 200000;
 
@@ -83,7 +83,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         generate_pattern_uniform(ptr, count, victim_fill, true);
         simd::flush_cache_region(ptr, region.size);
 
-        size_t init_block = 256 * 1024;
+        size_t init_block = size_t{256} * 1024;
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += init_block) {
             size_t n = std::min(init_block, count - i);
             TestEngine::verifyAndReport(region, ptr + i, n, i, 0, victim_fill, 0, res, ctx, "RowHammer (Init)", stop);
@@ -168,7 +168,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         }
 
         simd::flush_cache_region(ptr, region.size);
-        size_t block = 256 * 1024;
+        size_t block = size_t{256} * 1024;
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);
             TestEngine::verifyAndReport(region, ptr + i, n, i, 0, victim_fill, 0, res, ctx, "RowHammer", stop);

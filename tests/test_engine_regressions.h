@@ -136,7 +136,7 @@ void testEngineRegressions() {
     }
 
     {
-        auto guard = Platform::allocateMemoryRAII(256 * 1024, false, false, true);
+        auto guard = Platform::allocateMemoryRAII(size_t{256} * 1024, false, false, true);
         expect(guard.valid(), "RowHammer regression allocation");
         if (guard.valid()) {
             MemoryRegion hammer{};
@@ -191,7 +191,7 @@ void testEngineRegressions() {
     // Short dwells must still sweep the whole active half across windows. With
     // one background chunk per dwell, each 3 MiB active half needs two windows.
     {
-        auto guard = Platform::allocateMemoryRAII(6 * 1024 * 1024, false, false, true);
+        auto guard = Platform::allocateMemoryRAII(size_t{6} * 1024 * 1024, false, false, true);
         expect(guard.valid(), "Retention cursor allocation");
         if (guard.valid()) {
             MemoryRegion big{};
@@ -248,7 +248,7 @@ void testEngineRegressions() {
 void testIndependentWorkerExecution() {
     const auto platform = Platform::detectPlatform();
     if (platform.cpu_cores < 2) return;
-    auto guard = Platform::allocateMemoryRAII(64 * 1024, false, false, true);
+    auto guard = Platform::allocateMemoryRAII(size_t{64} * 1024, false, false, true);
     expect(guard.valid(), "Scheduler test allocation");
     if (!guard.valid()) return;
     MemoryRegion region{};

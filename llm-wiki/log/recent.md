@@ -1,9 +1,49 @@
 # Recent Log
 
-## 2026-09-30 - Runtime, configuration, and build-tool review (unresolved)
+## 2026-09-30 - Implement runtime, configuration, and analysis review fixes
+
+Resolved all five findings from the review below:
+
+- Linux unlocked mappings receive one volatile write per native page before
+  residency checks (`src/Platform.cpp::allocateMemoryRAII`). The RAII guard owns
+  the mapping during prefaulting; strict residency checks remain active.
+- `include/PreparationStatus.h` stops/joins the display thread on every exit from
+  `runTests`, and captures callback exceptions for propagation after joining.
+  Completion uses condition-variable notification, rather than a polling delay.
+  A test-only allocator callback reproduces the original exception path without
+  linker wrappers. Global main also reports startup exceptions with an
+  allocation-free stderr fallback when the normal logger is unavailable.
+- `loadConfigWithStatus` distinguishes missing from invalid/unreadable files;
+  `src/main.cpp::resolveConfiguration` rejects invalid implicit/explicit config.
+  Linux libc++ can open a directory and report EOF without `badbit`, so regular
+  file validation precedes opening; directories, dangling links, and FIFOs cannot
+  silently become defaults or block the parser. The bool load API is retained.
+- `tools/build_checks.py` generates absolute database paths/argument arrays and
+  fails analysis on warnings/errors, missing commands, skipped files, and tool
+  failures, preserving stdout/stderr. `--lint` regenerates its native/test database.
+  Standalone database generation preserves explicitly requested cross targets.
+- Corrected diagnostics exposed by real analysis: arithmetic widening, loop-bound
+  width, pointer null constants, reserved CPUID alias, enum storage, duplicate
+  branches, and exception escape from entry points. Naming policy now describes
+  existing public/private conventions; bug/performance checks are preserved and
+  regression headers are included in analysis.
+
+Regression sources: `tests/test_runtime_regressions.h`, `tests/test_build.py`,
+`tests/test_cli.py`, plus fresh-residency assertions in `tests/test_engine_existing.h`.
+The normal test command includes real CLI and build-tool coverage. Debug messages
+cover allocation choices/results, prefault counts/time, and config load outcomes.
+
+Validation: Windows baseline and AVX2 suites; Linux baseline internal suite under
+WSL; real CLI/build-tool regressions; ASan/UBSan for both native ISA runners; all
+nine release builds; strict clang-tidy on production/test sources. The original
+16 MiB unlocked WSL reproduction now completes one full cycle with zero errors.
+AVX-512/ARM validation remains cross-build only. Generated fixtures/logs remain
+ignored under `build/review/`; no hardware error-detection improvement is claimed.
+
+## 2026-09-30 - Runtime, configuration, and build-tool review (historical; resolved above)
 
 Reviewed the current scheduler, test kernels, allocation/error paths, configuration
-resolution, and lint workflow at `a2cecfa`. Five confirmed findings remain unfixed:
+resolution, and lint workflow at `a2cecfa`. Five findings were unfixed at that revision:
 
 - **Linux unlocked startup (P1):** `tryAllocateStandard` creates an untouched
   anonymous mapping, but `executeSuite` calls `checkMemoryResident` before the
@@ -42,7 +82,7 @@ resolution, and lint workflow at `a2cecfa`. Five confirmed findings remain unfix
   `clang-analyzer-core.NullDereference`, yet `run_lint` returned true and printed
   "no issues found". Source: `build.py::run_lint`.
 
-Validation: baseline/SSE2 and AVX2 internal suites passed; Windows x86-64 and Linux
+Review-time validation: baseline/SSE2 and AVX2 internal suites passed; Windows x86-64 and Linux
 x86-64 baseline/v3/v4 links succeeded. The normal lint command's reported success
 is not valid analysis evidence. Earlier "clang-tidy clean" claims are unverified
 until the database and result gates are corrected and analysis is rerun. A valid

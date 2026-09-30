@@ -16,6 +16,8 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
+#include <exception>
 #include <limits>
 #include <sstream>
 #include <thread>
@@ -100,7 +102,7 @@ static bool isInputAvailable() {
     tv.tv_usec = 0;
     FD_ZERO(&fds);
     FD_SET(STDIN_FILENO, &fds);
-    select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv);
     return FD_ISSET(STDIN_FILENO, &fds);
 }
 
@@ -291,7 +293,7 @@ static uint32_t normalizeWindowMBForLargePages(uint32_t memory_window_mb, bool u
     SIZE_T large_page_min = GetLargePageMinimum();
     if (large_page_min == 0) return memory_window_mb;
 
-    uint64_t bytes = static_cast<uint64_t>(memory_window_mb) * 1024ULL * 1024ULL;
+    uint64_t bytes = static_cast<uint64_t>(memory_window_mb) * size_t{1024} * 1024;
     uint64_t aligned = (bytes / large_page_min) * large_page_min;
     if (aligned == 0) return memory_window_mb;
     return static_cast<uint32_t>(aligned / 1024ULL / 1024ULL);
@@ -310,7 +312,7 @@ static uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent
 static bool isPrivileged() {
 #ifdef _WIN32
     BOOL fRet = FALSE;
-    HANDLE hToken = NULL;
+    HANDLE hToken = nullptr;
     if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
         TOKEN_ELEVATION elevation;
         DWORD cbSize = sizeof(TOKEN_ELEVATION);
@@ -337,8 +339,8 @@ static bool relaunchAsPrivileged(int argc, char* argv[], int& exit_code) {
 
     // Get current executable path
     char exePath[MAX_PATH];
-    if (GetModuleFileNameA(NULL, exePath, MAX_PATH) == 0) {
-        std::cerr << "Failed to get executable path for elevation." << std::endl;
+    if (GetModuleFileNameA(nullptr, exePath, MAX_PATH) == 0) {
+        std::cerr << "Failed to get executable path for elevation." << '\n';
         return false;
     }
 
@@ -348,15 +350,15 @@ static bool relaunchAsPrivileged(int argc, char* argv[], int& exit_code) {
     sei.lpVerb = "runas";
     sei.lpFile = exePath;
     sei.lpParameters = args.c_str();
-    sei.hwnd = NULL;
+    sei.hwnd = nullptr;
     sei.nShow = SW_NORMAL;
 
     if (!ShellExecuteExA(&sei)) {
         DWORD err = GetLastError();
         if (err == ERROR_CANCELLED) {
-            std::cerr << "Elevation refused by user." << std::endl;
+            std::cerr << "Elevation refused by user." << '\n';
         } else {
-            std::cerr << "Failed to elevate: Error " << err << std::endl;
+            std::cerr << "Failed to elevate: Error " << err << '\n';
         }
         return false;
     }
@@ -367,14 +369,14 @@ static bool relaunchAsPrivileged(int argc, char* argv[], int& exit_code) {
     }
     DWORD wait_result = WaitForSingleObject(sei.hProcess, INFINITE);
     if (wait_result != WAIT_OBJECT_0) {
-        std::cerr << "Failed to wait for elevated process: error " << GetLastError() << std::endl;
+        std::cerr << "Failed to wait for elevated process: error " << GetLastError() << '\n';
         CloseHandle(sei.hProcess);
         exit_code = 2;
         return true;
     }
     DWORD child_exit_code = 0;
     if (!GetExitCodeProcess(sei.hProcess, &child_exit_code)) {
-        std::cerr << "Failed to read elevated process exit code: error " << GetLastError() << std::endl;
+        std::cerr << "Failed to read elevated process exit code: error " << GetLastError() << '\n';
         CloseHandle(sei.hProcess);
         exit_code = 2;
         return true;
@@ -395,7 +397,7 @@ static bool relaunchAsPrivileged(int argc, char* argv[], int& exit_code) {
     new_argv.push_back(nullptr);
 
     execvp("sudo", new_argv.data());
-    std::cerr << "Failed to run sudo: " << strerror(errno) << std::endl;
+    std::cerr << "Failed to run sudo: " << strerror(errno) << '\n';
     return false;
 #endif
 }
@@ -900,9 +902,7 @@ static bool prepareConfigForRun(Config& config, const PlatformInfo& plat,
                                 uint64_t& sizing_ram, uint32_t& requested_window_mb,
                                 std::string& error) {
     uint32_t available_cores = plat.cpu_cores > 0 ? plat.cpu_cores : 1;
-    if (config.cores == 0) {
-        config.cores = available_cores;
-    } else if (available_cores > 0 && config.cores > available_cores) {
+    if (config.cores == 0 || config.cores > available_cores) {
         config.cores = available_cores;
     }
 
@@ -950,7 +950,7 @@ static bool prepareConfigForRun(Config& config, const PlatformInfo& plat,
 
     uint64_t max_safe_bytes = Platform::getMaxTestableMemory(sizing_ram, 100);
     if (max_safe_bytes > 0) {
-        uint64_t requested_bytes = static_cast<uint64_t>(config.memory_window_mb) * 1024ULL * 1024ULL;
+        uint64_t requested_bytes = static_cast<uint64_t>(config.memory_window_mb) * size_t{1024} * 1024;
         if (requested_bytes > max_safe_bytes) {
             std::ostringstream ss;
             ss << "Requested memory window (" << config.memory_window_mb
@@ -977,9 +977,14 @@ static bool resolveConfiguration(const CliOptions& cli, bool automation_mode,
     resolution.config = makeDefaultConfig(resolution.platform);
 
     if (!cli.no_config) {
-        if (loadConfig(resolution.config_path, resolution.config)) {
+        const auto load_status = loadConfigWithStatus(resolution.config_path, resolution.config);
+        if (load_status == ConfigLoadStatus::LOADED) {
             resolution.config_loaded = true;
             resolution.config_source = resolution.config_path;
+        } else if (load_status == ConfigLoadStatus::INVALID) {
+            error = "Configuration is invalid or unreadable: " + resolution.config_path;
+            LOG_ERROR("Configuration resolution stopped; refusing to substitute defaults for an invalid file");
+            return false;
         } else if (cli.config_path_set && automation_mode) {
             error = "Config file not found: " + resolution.config_path;
             return false;
@@ -1521,6 +1526,14 @@ int main(int argc, char* argv[]) {
 
 } // namespace testsmem4u
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[]) try {
     return testsmem4u::main(argc, argv);
+} catch (const std::exception& error) {
+    // Startup/configuration can throw before the normal runtime handler exists.
+    // Use an allocation-free diagnostic when even the logger may be unavailable.
+    std::fprintf(stderr, "FATAL: application startup failed: %s\n", error.what());
+    return 2;
+} catch (...) {
+    std::fputs("FATAL: application startup failed with an unknown exception\n", stderr);
+    return 2;
 }

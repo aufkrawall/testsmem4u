@@ -6,6 +6,7 @@
 #include "Utils.h"
 #include "WorkerProgress.h"
 #include "DisturbanceWindow.h"
+#include "PreparationStatus.h"
 #include "TestEngineInternal.h"
 #include <chrono>
 #include <thread>
@@ -181,7 +182,7 @@ TestResult TestEngine::runTest(TestContext& ctx, const std::string& name, const 
 
 TestResult TestEngine::runRegionWork(TestContext& ctx, const MemoryRegion& region, const TestConfig& test_config,
                                      bool halt_on_error) {
-    size_t block_size = (size_t)test_config.block_size_mb * 1024 * 1024;
+    size_t block_size = (size_t)test_config.block_size_mb * size_t{1024} * 1024;
 
     if (block_size == 0 || block_size >= region.size) {
         return runTest(ctx, test_config.function, region, test_config, halt_on_error);
@@ -209,13 +210,17 @@ TestResult TestEngine::runRegionWork(TestContext& ctx, const MemoryRegion& regio
     return total;
 }
 
-RunResult TestEngine::runTests(const Config& config) {
+RunResult TestEngine::runTests(const Config& config
+#ifdef TESTSMEM4U_TESTING
+                               , std::function<MemoryGuard(size_t, bool, bool)> allocator
+#endif
+                               ) {
     RunResult result = {};
     g_rowhammer_large_page_warning_emitted.store(false, std::memory_order_release);
     g_stop_requested.store(false, std::memory_order_release);
 
     MemoryRegion region;
-    uint64_t needed_bytes = (uint64_t)config.memory_window_mb * 1024 * 1024;
+    uint64_t needed_bytes = (uint64_t)config.memory_window_mb * size_t{1024} * 1024;
     if (needed_bytes == 0) {
         LOG_ERROR("Configured memory window is 0 MB. Refusing to run an empty RAM test.");
         result.infrastructure_failure = true;
@@ -228,21 +233,22 @@ RunResult TestEngine::runTests(const Config& config) {
     bool try_lock = config.use_locked_memory;
 
     auto prep_start = std::chrono::steady_clock::now();
-    std::atomic<bool> prep_done{false};
-    std::thread prep_status_thread([&prep_done]() {
-        uint64_t seconds = 0;
-        while (!prep_done.load(std::memory_order_acquire)) {
-            std::ostringstream ss;
-            ss << "[Preparation] Optimizing memory layout... " << seconds << "s elapsed";
-            ConsoleDisplay::get().updateProgressLine(ss.str());
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            ++seconds;
-        }
+    PreparationStatus prep_status([](uint64_t seconds) {
+        std::ostringstream ss;
+        ss << "[Preparation] Optimizing memory layout... " << seconds << "s elapsed";
+        ConsoleDisplay::get().updateProgressLine(ss.str());
     });
 
+    LOG_DEBUG("Allocation starting: bytes=%llu large-pages=%s locked=%s",
+              static_cast<unsigned long long>(needed_bytes), try_large ? "yes" : "no", try_lock ? "yes" : "no");
+#ifdef TESTSMEM4U_TESTING
+    auto guard = allocator ? allocator(needed_bytes, try_large, try_lock) :
+                             Platform::allocateMemoryRAII(needed_bytes, try_large, try_lock);
+#else
     auto guard = Platform::allocateMemoryRAII(needed_bytes, try_large, try_lock);
-    prep_done.store(true, std::memory_order_release);
-    if (prep_status_thread.joinable()) prep_status_thread.join();
+#endif
+    prep_status.finish();
+    LOG_DEBUG("Allocation preparation finished: valid=%s bytes=%zu", guard.valid() ? "yes" : "no", guard.size());
     auto prep_seconds = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - prep_start).count();
     {
@@ -267,7 +273,7 @@ RunResult TestEngine::runTests(const Config& config) {
 
     if (region.size < needed_bytes) {
         LOG_ERROR("Allocation contract violated: requested %u MB but got only %zu MB. Aborting.",
-                  config.memory_window_mb, region.size / (1024 * 1024));
+                  config.memory_window_mb, region.size / (size_t{1024} * 1024));
         result.infrastructure_failure = true;
         result.infrastructure_error = "Allocation contract violated: allocator returned fewer bytes than requested.";
         return result;

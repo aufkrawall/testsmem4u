@@ -27,7 +27,7 @@ void Logger::init(const std::string& filename, LogLevel level, bool purge) {
     if (!filename.empty()) {
         file_handle_ = fopen(filename.c_str(), purge ? "w" : "a");
         if (!file_handle_) {
-            std::cerr << "[-] Failed to open log file: " << filename << std::endl;
+            std::cerr << "[-] Failed to open log file: " << filename << '\n';
         }
     }
 

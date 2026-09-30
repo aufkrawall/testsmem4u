@@ -7,7 +7,7 @@ namespace {
 
 constexpr size_t march_words = 512;
 // Fill granularity between cancellation checks (512 KiB).
-constexpr size_t fill_words = 64 * 1024;
+constexpr size_t fill_words = size_t{64} * 1024;
 
 // Streams the LFSR sequence over ptr[0..count) and returns the state after the
 // last word. Stops early (returning a meaningless state) on cancellation.

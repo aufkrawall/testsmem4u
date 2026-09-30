@@ -93,8 +93,8 @@ bool saveConfig(const std::string& filename, const Config& config) {
 
 #ifdef _WIN32
     // Flush file buffers to storage before renaming
-    HANDLE hFile = CreateFileA(tmp_filename.c_str(), GENERIC_WRITE, 0, NULL,
-                                OPEN_EXISTING, FILE_FLAG_WRITE_THROUGH, NULL);
+    HANDLE hFile = CreateFileA(tmp_filename.c_str(), GENERIC_WRITE, 0, nullptr,
+                                OPEN_EXISTING, FILE_FLAG_WRITE_THROUGH, nullptr);
     if (hFile != INVALID_HANDLE_VALUE) {
         FlushFileBuffers(hFile);
         CloseHandle(hFile);
@@ -120,17 +120,32 @@ bool saveConfig(const std::string& filename, const Config& config) {
     return true;
 }
 
-bool loadConfig(const std::string& filename, Config& config) {
+ConfigLoadStatus loadConfigWithStatus(const std::string& filename, Config& config) {
     if (Utils::hasUnsafePathControlCharacters(filename)) {
         LOG_ERROR("Refusing to load config from unsafe path");
-        return false;
+        return ConfigLoadStatus::INVALID;
     }
 
     recoverOrphanedTempFile(filename);
 
+    // Some standard libraries can open a directory and report EOF rather than
+    // a read error. Reject non-files before opening (also avoids blocking FIFOs).
+    std::error_code ec;
+    const auto link_status = std::filesystem::symlink_status(filename, ec);
+    if (link_status.type() == std::filesystem::file_type::not_found &&
+        (!ec || ec == std::errc::no_such_file_or_directory)) {
+        LOG_DEBUG("Optional configuration is missing: %s", filename.c_str());
+        return ConfigLoadStatus::NOT_FOUND;
+    }
+    if (ec || !std::filesystem::is_regular_file(std::filesystem::status(filename, ec)) || ec) {
+        LOG_ERROR("Configuration is not a readable regular file: %s", filename.c_str());
+        return ConfigLoadStatus::INVALID;
+    }
+
     std::ifstream file(filename);
     if (!file.is_open()) {
-        return false;
+        LOG_ERROR("Cannot open configuration for reading: %s", filename.c_str());
+        return ConfigLoadStatus::INVALID;
     }
 
     LOG_INFO("Loading configuration from %s", filename.c_str());
@@ -149,50 +164,59 @@ bool loadConfig(const std::string& filename, Config& config) {
         if (key == "MemoryWindowPercent") {
             if (!Utils::parseUintStrict(value, parsed.memory_window_percent)) {
                 LOG_ERROR("Invalid config value for MemoryWindowPercent in %s", filename.c_str());
-                return false;
+                return ConfigLoadStatus::INVALID;
             }
         } else if (key == "MemoryWindowMB") {
             if (!Utils::parseUintStrict(value, parsed.memory_window_mb)) {
                 LOG_ERROR("Invalid config value for MemoryWindowMB in %s", filename.c_str());
-                return false;
+                return ConfigLoadStatus::INVALID;
             }
         } else if (key == "Cores") {
             if (!Utils::parseUintStrict(value, parsed.cores)) {
                 LOG_ERROR("Invalid config value for Cores in %s", filename.c_str());
-                return false;
+                return ConfigLoadStatus::INVALID;
             }
         } else if (key == "Cycles") {
             if (!Utils::parseUintStrict(value, parsed.cycles)) {
                 LOG_ERROR("Invalid config value for Cycles in %s", filename.c_str());
-                return false;
+                return ConfigLoadStatus::INVALID;
             }
         } else if (key == "UseLockedMemory") {
             if (!parseBoolValue(value, parsed.use_locked_memory)) {
                 LOG_ERROR("Invalid config value for UseLockedMemory in %s", filename.c_str());
-                return false;
+                return ConfigLoadStatus::INVALID;
             }
         } else if (key == "UseLargePages") {
             if (!parseBoolValue(value, parsed.use_large_pages)) {
                 LOG_ERROR("Invalid config value for UseLargePages in %s", filename.c_str());
-                return false;
+                return ConfigLoadStatus::INVALID;
             }
         } else if (key == "HaltOnError") {
             if (!parseBoolValue(value, parsed.halt_on_error)) {
                 LOG_ERROR("Invalid config value for HaltOnError in %s", filename.c_str());
-                return false;
+                return ConfigLoadStatus::INVALID;
             }
         } else if (key == "PresetFile") {
             if (Utils::hasUnsafePathControlCharacters(value)) {
                 LOG_ERROR("Invalid config value for PresetFile in %s", filename.c_str());
-                return false;
+                return ConfigLoadStatus::INVALID;
             }
             parsed.preset_file = value;
         }
     }
 
+    if (file.bad() || (file.fail() && !file.eof())) {
+        LOG_ERROR("Configuration read failed: %s", filename.c_str());
+        return ConfigLoadStatus::INVALID;
+    }
     file.close();
     config = parsed;
-    return true;
+    LOG_DEBUG("Configuration parsed successfully: %s", filename.c_str());
+    return ConfigLoadStatus::LOADED;
+}
+
+bool loadConfig(const std::string& filename, Config& config) {
+    return loadConfigWithStatus(filename, config) == ConfigLoadStatus::LOADED;
 }
 
 } // namespace testsmem4u

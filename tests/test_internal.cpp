@@ -9,6 +9,9 @@
 #include "WorkerProgress.h"
 #include "DisturbanceWindow.h"
 #include "TestEngineInternal.h"
+#include "PreparationStatus.h"
+#include <future>
+#include <stdexcept>
 #include <array>
 #include <chrono>
 #include <sstream>
@@ -230,7 +233,8 @@ void testPresetLoadEmptyFile() {
 void testPresetLoadUnsafePath() {
     // Path with null byte should be rejected
     // Use explicit-length construction to embed a null byte in the string
-    std::string bad_path("safe_part\0unsafe.cfg", 21);
+    constexpr char bad_path_bytes[] = "safe_part\0unsafe.cfg";
+    std::string bad_path(bad_path_bytes, sizeof(bad_path_bytes) - 1);
     PresetInfo preset = loadPreset(bad_path);
     expect(!preset.valid, "preset with null byte path is rejected");
     // Path with ESC byte should be rejected
@@ -638,10 +642,11 @@ void testRunResultMerge() {
 
 #include "test_engine_existing.h"
 #include "test_engine_regressions.h"
+#include "test_runtime_regressions.h"
 
 } // namespace
 
-int main() {
+int main() try {
     ConsoleDisplay::get().setTestingActive(true);
 
     // Utils tests
@@ -668,6 +673,7 @@ int main() {
     testConfigLoadMissing();
     testConfigInvalidLoadDoesNotPartiallyApply();
     testConfigRejectsUnsafePath();
+    testConfigLoadStatuses();
 
     // Existing tests from original file
     testBoundedUniformVerification();
@@ -687,6 +693,8 @@ int main() {
 
     testEngineRegressions();
     testIndependentWorkerExecution();
+    testPreparationExceptionCleanup();
+    testFreshUnlockedRun();
 
     // End-to-end tests with real memory allocation
     testSimpleEndToEnd();
@@ -707,4 +715,10 @@ int main() {
 
     std::cout << "All internal tests passed.\n";
     return 0;
+} catch (const std::exception& error) {
+    std::fprintf(stderr, "Internal tests failed with an exception: %s\n", error.what());
+    return 1;
+} catch (...) {
+    std::fputs("Internal tests failed with an unknown exception\n", stderr);
+    return 1;
 }
