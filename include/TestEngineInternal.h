@@ -1,6 +1,8 @@
 #pragma once
 #include "TestEngine.h"
+#include "Logger.h"
 #include <algorithm>
+#include <chrono>
 
 namespace testsmem4u {
 // Generate expected pattern value for verification
@@ -23,6 +25,15 @@ inline uint64_t reportAddress(const MemoryRegion& region, const void* ptr) {
 
 inline size_t globalWordStart(const MemoryRegion& region, size_t local_start_idx = 0) {
     return (region.base_offset_bytes / sizeof(uint64_t)) + local_start_idx;
+}
+
+// RandomAccess Parameter: values up to this limit are passes over the region
+// (0 means 1 pass); larger values are an explicit access count per region.
+constexpr uint32_t kRandomAccessPassLimit = 100;
+
+inline uint64_t randomAccessIterations(uint32_t parameter, size_t words) {
+    if (parameter > kRandomAccessPassLimit) return parameter;
+    return static_cast<uint64_t>(words) * std::max(1U, parameter);
 }
 
 inline void addUnverifiedOverflow(TestResult& res, size_t total_found, size_t sampled) {

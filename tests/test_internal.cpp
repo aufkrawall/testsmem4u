@@ -7,6 +7,8 @@
 #include "Platform.h"
 #include "MemoryTestKernels.h"
 #include "WorkerProgress.h"
+#include "DisturbanceWindow.h"
+#include "TestEngineInternal.h"
 #include <array>
 #include <chrono>
 #include <sstream>
@@ -23,6 +25,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <filesystem>
+#include <set>
 #include <system_error>
 
 using namespace testsmem4u;
@@ -574,50 +577,6 @@ void testVerifyPatternPair() {
 }
 
 // ---------------------------------------------------------------------------
-// Concurrency tests (ThreadBarrier analog using std primitives)
-// ---------------------------------------------------------------------------
-
-void testThreadBarrierBasic() {
-    constexpr uint32_t kParticipants = 4;
-    std::mutex mtx;
-    std::condition_variable cv;
-    uint32_t arrived = 0;
-    uint32_t generation = 0;
-    uint32_t barrier_count = 0;
-
-    auto arrive_and_wait = [&]() {
-        std::unique_lock<std::mutex> lock(mtx);
-        uint32_t gen = generation;
-        if (++arrived == kParticipants) {
-            arrived = 0;
-            ++generation;
-            ++barrier_count;
-            cv.notify_all();
-            return;
-        }
-        cv.wait(lock, [&]() { return generation != gen; });
-    };
-
-    std::vector<std::thread> threads;
-    std::atomic<uint32_t> phase_count{0};
-
-    for (uint32_t t = 0; t < kParticipants; ++t) {
-        threads.emplace_back([&]() {
-            arrive_and_wait();
-            phase_count.fetch_add(1, std::memory_order_relaxed);
-            arrive_and_wait();
-        });
-    }
-
-    for (auto& th : threads) th.join();
-
-    expect(barrier_count == 2,
-           "ThreadBarrier: barrier released all participants twice");
-    expect(phase_count.load(std::memory_order_relaxed) == kParticipants,
-           "ThreadBarrier: all threads completed both phases");
-}
-
-// ---------------------------------------------------------------------------
 // TestContext (standalone) tests
 // ---------------------------------------------------------------------------
 
@@ -632,13 +591,6 @@ void testTestContextBasics() {
 
     // Reset by constructing fresh (no un-reset mechanism by design)
     TestContext ctx2;
-    ctx2.setActiveTestName("SimpleTest");
-    expect(ctx2.getActiveTestName() == "SimpleTest",
-           "TestContext: setActiveTestName/getActiveTestName round-trip");
-    ctx2.setActiveTestName("LFSRPattern");
-    expect(ctx2.getActiveTestName() == "LFSRPattern",
-           "TestContext: active test name updates on second set");
-
     ctx2.setInfrastructureFailure("test error");
     expect(ctx2.hasInfrastructureFailure(),
            "TestContext: hasInfrastructureFailure after set");
@@ -728,7 +680,6 @@ int main() {
     testVerifyPatternPair();
 
     // Concurrency and infrastructure tests
-    testThreadBarrierBasic();
     testTestContextBasics();
     testRunResultMerge();
     testMemoryAllocationRoundTrip();

@@ -26,26 +26,15 @@ struct TestContext {
     std::atomic<uint64_t> total_soft_errors{0};
     std::atomic<uint64_t> total_unverified_errors{0};
     std::atomic<uint64_t> total_bytes{0};
-    std::atomic<uint32_t> current_cycle{0};
-    std::atomic<uint32_t> completed_cycles{0};
-    std::atomic<uint32_t> current_test_idx{0};
+    // Cross-worker disturbance tracking: workers run independently, so one
+    // region's RowHammer can overlap (and physically disturb rows shared with)
+    // a neighbouring region's unrelated test. Used only to annotate errors.
+    std::atomic<uint32_t> disturbance_active{0};
+    std::atomic<uint64_t> disturbance_starts{0};
     std::atomic<bool> infrastructure_failure{false};
 
-    std::mutex status_mutex;
     std::mutex failure_mutex;
-    char active_test_name[64] = "Idle";
     std::string infrastructure_error;
-
-    void setActiveTestName(const std::string& name) {
-        std::lock_guard<std::mutex> lock(status_mutex);
-        size_t len = name.copy(active_test_name, sizeof(active_test_name) - 1);
-        active_test_name[len] = '\0';
-    }
-
-    std::string getActiveTestName() {
-        std::lock_guard<std::mutex> lock(status_mutex);
-        return std::string(active_test_name);
-    }
 
     void requestStop() {
         stop_flag.store(true, std::memory_order_release);

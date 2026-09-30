@@ -44,28 +44,39 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
                                              slice(region, 0, split)) : slice(region, 0, 0);
         auto* ptr = reinterpret_cast<uint64_t*>(held.base);
         const size_t count = held.size / sizeof(uint64_t);
+        TestConfig background;
+        background.pattern_mode = 1;
+        background.pattern_param1 = 0x9E3779B97F4A7C15ULL;
+        // The background cursor persists across dwell windows so short dwells
+        // still sweep the whole active half instead of re-testing its start.
+        size_t active_cursor = 0;
+        bool background_inverted = false;
         for (unsigned polarity = 0; polarity < 2 && !ctx.shouldStop(); ++polarity) {
             const uint64_t pattern = polarity ? ~config.pattern_param0 : config.pattern_param0;
             simd::generate_pattern_uniform(ptr, count, pattern, true);
             simd::flush_cache_region(ptr, held.size);
-            const auto deadline = now() + std::chrono::milliseconds(delay_ms);
+            const auto hold_start = now();
+            const auto deadline = hold_start + std::chrono::milliseconds(delay_ms);
             testPhase(ctx, "Retention held", held);
-            TestConfig background;
-            background.pattern_mode = 1;
-            background.pattern_param0 = ~pattern;
-            background.pattern_param1 = 0x9E3779B97F4A7C15ULL;
+            size_t active_chunks = 0;
+            size_t active_wraps = 0;
             while (!ctx.shouldStop() && now() < deadline) {
                 if (active.size) {
                     // Bound cancellation and deadline overshoot without shrinking
                     // the retention region or adding compute-only work.
                     constexpr size_t chunk_bytes = 2 * 1024 * 1024;
-                    for (size_t offset = 0; offset < active.size && !ctx.shouldStop(); offset += chunk_bytes) {
-                        const auto chunk = slice(active, offset, std::min(chunk_bytes, active.size - offset));
-                        testPhase(ctx, "Retention active", chunk);
-                        res.merge(runSimpleTest(ctx, chunk, background, stop));
-                        if (now() >= deadline) break;
+                    const auto chunk = slice(active, active_cursor,
+                                             std::min(chunk_bytes, active.size - active_cursor));
+                    background.pattern_param0 = background_inverted ? pattern : ~pattern;
+                    testPhase(ctx, "Retention active", chunk);
+                    res.merge(runSimpleTest(ctx, chunk, background, stop));
+                    ++active_chunks;
+                    active_cursor += chunk.size;
+                    if (active_cursor >= active.size) {
+                        active_cursor = 0;
+                        background_inverted = !background_inverted;
+                        ++active_wraps;
                     }
-                    background.pattern_param0 = ~background.pattern_param0;
                 } else {
                     // Sub-cache-line inputs cannot provide a disjoint active
                     // region. Only this tiny-input fallback deliberately idles.
@@ -73,14 +84,21 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
                 }
             }
             if (ctx.shouldStop()) break;
+            const double held_seconds = std::chrono::duration<double>(now() - hold_start).count();
             testPhase(ctx, "Retention verify", held);
             simd::flush_cache_region(ptr, held.size);
+            const uint64_t errors_before = res.total_errors();
             constexpr size_t block = 256 * 1024;
             for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
                 const size_t n = std::min(block, count - i);
                 verifyAndReport(held, ptr + i, n, i, 0, pattern, 0, res, ctx, "RefreshStable", stop);
                 res.bytes_tested += n * sizeof(uint64_t);
             }
+            LOG_DEBUG("RefreshStable: held offset=%zu bytes=%zu pattern=0x%016llx dwell=%.3fs "
+                      "(min %ums) active chunks=%zu full sweeps=%zu cursor=%zu errors=%llu",
+                      held.base_offset_bytes, held.size, static_cast<unsigned long long>(pattern),
+                      held_seconds, delay_ms, active_chunks, active_wraps, active_cursor,
+                      static_cast<unsigned long long>(res.total_errors() - errors_before));
         }
     }
     return res;
@@ -105,8 +123,10 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
         }
     };
     verifyAll();
-    const uint64_t iterations = config.parameter > 100 ? config.parameter :
-                               static_cast<uint64_t>(count) * std::max(1U, config.parameter);
+    // The sweep leaves its most recent lines cached; random reads must see DRAM.
+    simd::flush_cache_region(ptr, region.size);
+    const auto started = std::chrono::steady_clock::now();
+    const uint64_t iterations = randomAccessIterations(config.parameter, count);
     uint64_t state = 0x1234567890ABCDEFULL ^ word_start;
     constexpr size_t lanes = 16;
     std::array<size_t, lanes> indices{};
@@ -144,6 +164,11 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
         }
         done += n;
     }
+    LOG_DEBUG("RandomAccess: offset=%zu words=%zu accesses=%llu (Parameter=%u) errors=%llu in %.3fs%s",
+              region.base_offset_bytes, count, static_cast<unsigned long long>(iterations), config.parameter,
+              static_cast<unsigned long long>(res.total_errors()),
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
+              ctx.shouldStop() ? " [stopped]" : "");
     // Catch damage to non-selected cells and the last restored values too.
     simd::flush_cache_region(ptr, region.size);
     testPhase(ctx, "Random final", region);
@@ -162,6 +187,8 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
     const uint64_t step = 0x9E3779B97F4A7C15ULL;
     const uint32_t repeats = config.parameter ? config.parameter : 1;
     constexpr size_t block = 256 * 1024;
+    std::vector<std::pair<uint64_t, uint64_t>> errors;
+    errors.reserve(128);
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
         const uint64_t pattern = config.pattern_param0 ^ (step * r);
         simd::generate_pattern_linear(ptr, count, pattern, step, true, start);
@@ -169,6 +196,7 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
         for (unsigned direction = 0; direction < 2 && !ctx.shouldStop(); ++direction) {
             auto* source = direction ? ptr + half : ptr;
             auto* destination = direction ? ptr : ptr + half;
+            const uint64_t errors_before = res.total_errors();
             if (direction) {
                 // Poison the destination so a failed/no-op copy cannot pass.
                 simd::generate_pattern_linear(destination, half, ~pattern, step, true, start);
@@ -177,12 +205,12 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
             simd::flush_cache_region(ptr, region.size);
             testPhase(ctx, "Block moved", region);
             for (size_t side = 0; side < 2 && !ctx.shouldStop(); ++side) {
+                // Both copies contain the first half's address-dependent data.
+                // Error addresses must still identify the actual copy.
+                const auto copy = slice(region, side * half * 8, half * 8);
                 for (size_t i = 0; i < half && !ctx.shouldStop(); i += block) {
                     const size_t n = std::min(block, half - i);
-                    // Both copies contain the first half's address-dependent data.
-                    const auto copy = slice(region, side * half * 8, half * 8);
-                    // Error addresses must still identify the actual copy.
-                    std::vector<std::pair<uint64_t, uint64_t>> errors;
+                    errors.clear();
                     const size_t found = simd::verify_pattern_linear(ptr + side * half + i, n,
                                                                      start + i, pattern, step, errors);
                     classifyAndLogErrors(copy, reinterpret_cast<uint64_t*>(copy.base), errors, found, i,
@@ -191,6 +219,10 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
                     res.bytes_tested += n * sizeof(uint64_t);
                 }
             }
+            LOG_DEBUG("BlockMove: offset=%zu words=%zu repeat=%u direction=%s errors=%llu%s",
+                      region.base_offset_bytes, count, r, direction ? "upper->lower" : "lower->upper",
+                      static_cast<unsigned long long>(res.total_errors() - errors_before),
+                      ctx.shouldStop() ? " [stopped]" : "");
         }
         if ((count & 1) && !ctx.shouldStop()) {
             verifyAndReport(region, ptr + count - 1, 1, count - 1, 2, pattern, step,

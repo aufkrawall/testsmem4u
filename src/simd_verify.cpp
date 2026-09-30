@@ -6,6 +6,21 @@
 
 namespace testsmem4u::simd {
 
+uint64_t fill_lfsr(uint64_t* memory, size_t count, uint64_t seed) {
+    // The LFSR recurrence is serial, so generation (not store width) bounds
+    // throughput; 8-byte MOVNTI stores combine into full lines in the WC buffers.
+    for (size_t i = 0; i < count; ++i) {
+#if defined(__x86_64__) || defined(_M_X64)
+        _mm_stream_si64(reinterpret_cast<long long*>(memory + i), static_cast<long long>(seed));
+#else
+        memory[i] = seed;
+#endif
+        seed = lfsrNext(seed);
+    }
+    sfence();
+    return seed;
+}
+
 size_t verify_words(uint64_t* memory, const uint64_t* expected, size_t count,
                     std::vector<std::pair<uint64_t, uint64_t>>& errors,
                     bool march, bool reverse, size_t max_samples) {

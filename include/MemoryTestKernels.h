@@ -20,4 +20,9 @@ inline uint64_t lfsrPrevious(uint64_t value) {
     return ((value ^ ((0ULL - bit) & 0xD800000000000000ULL)) << 1) | bit;
 }
 
+// Writes count consecutive LFSR states starting at seed with non-temporal
+// stores where available (no RFO reads of stale lines), then fences. Returns
+// the state following the last written word.
+uint64_t fill_lfsr(uint64_t* memory, size_t count, uint64_t seed);
+
 } // namespace testsmem4u::simd

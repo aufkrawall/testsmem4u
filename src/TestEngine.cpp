@@ -5,6 +5,7 @@
 #include "simd_ops.h"
 #include "Utils.h"
 #include "WorkerProgress.h"
+#include "DisturbanceWindow.h"
 #include "TestEngineInternal.h"
 #include <chrono>
 #include <thread>
@@ -419,6 +420,15 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                      (unsigned long long)total_loop_estimate,
                      (unsigned long long)kMaxRecommendedLoops);
         }
+        // RandomAccess overloads Parameter: <= 100 is a pass count, larger is an
+        // absolute access count, so raising 100 to 150 means far fewer accesses.
+        for (const auto& [test_id, tc] : configs) {
+            if (tc.enabled && tc.function == "RandomAccess" && tc.parameter > kRandomAccessPassLimit) {
+                LOG_WARN("Test %u (RandomAccess): Parameter=%u exceeds %u, so it is an explicit access count "
+                         "per worker region, not a pass multiplier. Use 1-%u for full-region passes.",
+                         test_id, tc.parameter, kRandomAccessPassLimit, kRandomAccessPassLimit);
+            }
+        }
     }
 
     if (seq.empty() || std::none_of(seq.begin(), seq.end(), [&](uint32_t id) {
@@ -510,12 +520,21 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                                           static_cast<unsigned long long>(cycle + 1), seq_idx + 1, tc.function.c_str());
                                 const uint64_t loops = std::max<uint64_t>(1,
                                     (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100);
+                                const bool disturbs = isCrossRegionDisturbanceTest(tc.function);
                                 for (uint64_t loop = 0; loop < loops && !ctx.shouldStop(); ++loop) {
+                                    DisturbanceWindow window(ctx, disturbs);
                                     TestResult tr = runRegionWork(ctx, my_region, tc, config.halt_on_error);
                                     ctx.total_hard_errors.fetch_add(tr.hard_errors, std::memory_order_relaxed);
                                     ctx.total_soft_errors.fetch_add(tr.soft_errors, std::memory_order_relaxed);
                                     ctx.total_unverified_errors.fetch_add(tr.unverified_errors, std::memory_order_relaxed);
                                     ctx.total_bytes.fetch_add(tr.bytes_tested, std::memory_order_relaxed);
+                                    if (tr.total_errors() && window.overlappedForeignDisturbance()) {
+                                        LOG_WARN("Worker %u: %llu error(s) in %s (region offset=%zu bytes=%zu) while "
+                                                 "RowHammer ran on another worker region. Rows can span region "
+                                                 "boundaries, so cross-region hammering may have caused them.",
+                                                 t, static_cast<unsigned long long>(tr.total_errors()),
+                                                 tc.function.c_str(), my_region.base_offset_bytes, my_region.size);
+                                    }
                                     if (tr.total_errors() && config.halt_on_error) ctx.requestStop();
                                 }
                             }

@@ -6,6 +6,17 @@ namespace testsmem4u {
 namespace {
 
 constexpr size_t march_words = 512;
+// Fill granularity between cancellation checks (512 KiB).
+constexpr size_t fill_words = 64 * 1024;
+
+// Streams the LFSR sequence over ptr[0..count) and returns the state after the
+// last word. Stops early (returning a meaningless state) on cancellation.
+uint64_t fillLfsr(TestContext& ctx, uint64_t* ptr, size_t count, uint64_t seed) {
+    for (size_t i = 0; i < count && !ctx.shouldStop(); i += fill_words) {
+        seed = simd::fill_lfsr(ptr + i, std::min(fill_words, count - i), seed);
+    }
+    return seed;
+}
 
 // A march has already overwritten the cell. Re-reading it cannot classify the
 // original mismatch as persistent/transient; preserve and count the observation.
@@ -30,15 +41,10 @@ TestResult runMarch(TestContext& ctx, const MemoryRegion& region,
     std::array<uint64_t, march_words> expected{};
     std::vector<std::pair<uint64_t, uint64_t>> errors;
     errors.reserve(128);
+    const auto started = std::chrono::steady_clock::now();
     uint64_t end_seed = seed;
     if (lfsr) {
-        for (size_t i = 0; i < count && !ctx.shouldStop(); i += march_words) {
-            const size_t n = std::min(march_words, count - i);
-            for (size_t j = 0; j < n; ++j) {
-                ptr[i + j] = end_seed;
-                end_seed = simd::lfsrNext(end_seed);
-            }
-        }
+        end_seed = fillLfsr(ctx, ptr, count, seed);
     } else {
         simd::generate_pattern_uniform(ptr, count, seed, true);
     }
@@ -78,6 +84,13 @@ TestResult runMarch(TestContext& ctx, const MemoryRegion& region,
         simd::flush_cache_region(ptr, count * sizeof(uint64_t));
         testPhase(ctx, phase == 0 ? "March inverted" : "March restored", region);
     }
+    LOG_DEBUG("March(%s seed=0x%016llx): offset=%zu words=%zu errors=%llu (unverified=%llu) in %.3fs%s",
+              lfsr ? "LFSR" : "uniform", static_cast<unsigned long long>(seed),
+              region.base_offset_bytes, count,
+              static_cast<unsigned long long>(res.total_errors()),
+              static_cast<unsigned long long>(res.unverified_errors),
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
+              ctx.shouldStop() ? " [stopped]" : "");
     return res;
 }
 
@@ -128,17 +141,11 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
     auto* ptr = reinterpret_cast<uint64_t*>(region.base);
     const size_t count = region.size / sizeof(uint64_t);
     const uint64_t seed = config.pattern_param0 ? config.pattern_param0 : 0xACE1ACE2DEADBEEFULL;
-    uint64_t state = seed;
-    for (size_t i = 0; i < count && !ctx.shouldStop(); i += march_words) {
-        const size_t n = std::min(march_words, count - i);
-        for (size_t j = 0; j < n; ++j) {
-            ptr[i + j] = state;
-            state = simd::lfsrNext(state);
-        }
-    }
+    const auto started = std::chrono::steady_clock::now();
+    fillLfsr(ctx, ptr, count, seed);
     simd::flush_cache_region(ptr, count * sizeof(uint64_t));
     testPhase(ctx, "LFSR filled", region);
-    state = seed;
+    uint64_t state = seed;
     std::array<uint64_t, march_words> expected{};
     std::vector<std::pair<uint64_t, uint64_t>> errors;
     errors.reserve(128);
@@ -154,6 +161,11 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
                              [&](size_t k) { return expected[k - i]; }, res, ctx, "LFSR", stop);
         res.bytes_tested += n * sizeof(uint64_t);
     }
+    LOG_DEBUG("LFSRPattern(seed=0x%016llx): offset=%zu words=%zu errors=%llu in %.3fs%s",
+              static_cast<unsigned long long>(seed), region.base_offset_bytes, count,
+              static_cast<unsigned long long>(res.total_errors()),
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
+              ctx.shouldStop() ? " [stopped]" : "");
     return res;
 }
 

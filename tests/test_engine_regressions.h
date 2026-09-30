@@ -172,6 +172,71 @@ void testEngineRegressions() {
                "Long test names cannot hide errors or elapsed time");
     }
 
+    // Streaming LFSR fill writes the exact recurrence and returns the next state.
+    {
+        std::array<uint64_t, 7> filled{};
+        const uint64_t next = simd::fill_lfsr(filled.data(), filled.size(), tc.pattern_param0);
+        uint64_t value = tc.pattern_param0;
+        for (uint64_t word : filled) {
+            expect(word == value, "fill_lfsr writes consecutive LFSR states");
+            value = simd::lfsrNext(value);
+        }
+        expect(next == value, "fill_lfsr returns the state after the last word");
+    }
+
+    expect(randomAccessIterations(0, 50) == 50 && randomAccessIterations(100, 50) == 5000 &&
+           randomAccessIterations(101, 50) == 101,
+           "RandomAccess Parameter: <=100 passes, larger explicit access count");
+
+    // Short dwells must still sweep the whole active half across windows. With
+    // one background chunk per dwell, each 3 MiB active half needs two windows.
+    {
+        auto guard = Platform::allocateMemoryRAII(6 * 1024 * 1024, false, false, true);
+        expect(guard.valid(), "Retention cursor allocation");
+        if (guard.valid()) {
+            MemoryRegion big{};
+            big.base = guard.base();
+            big.size = guard.size();
+            TestContext ctx;
+            auto time = std::chrono::steady_clock::time_point{};
+            ctx.retention_clock = [&]() { time += std::chrono::milliseconds(1); return time; };
+            std::set<size_t> active_offsets;
+            ctx.phase_hook = [&](const char* phase, const MemoryRegion& part) {
+                if (std::string(phase) == "Retention active") active_offsets.insert(part.base_offset_bytes);
+            };
+            TestConfig retention = tc;
+            retention.parameter = 2;
+            const auto result = TestEngine::runRefreshStable(ctx, big, retention, false);
+            expect(result.total_errors() == 0 && active_offsets.size() == 4,
+                   "Retention background cursor advances across dwell windows");
+        }
+    }
+
+    // Cross-worker disturbance attribution: any overlap with a peer's RowHammer
+    // window is reported; a disturbance that ended earlier, or a test's own
+    // hammering, is not.
+    {
+        TestContext ctx;
+        expect(isCrossRegionDisturbanceTest("RowHammer") && !isCrossRegionDisturbanceTest("Modulo20"),
+               "Only RowHammer is a cross-region disturbance test");
+        {
+            DisturbanceWindow observer(ctx, false);
+            expect(!observer.overlappedForeignDisturbance(), "No disturbance: no overlap");
+            {
+                DisturbanceWindow hammer(ctx, true);
+                expect(!hammer.overlappedForeignDisturbance(), "Own hammering is not foreign");
+            }
+            expect(observer.overlappedForeignDisturbance(), "Hammer started during window overlaps");
+        }
+        {
+            DisturbanceWindow hammer(ctx, true);
+            DisturbanceWindow observer(ctx, false);
+            expect(observer.overlappedForeignDisturbance(), "Hammer active at window start overlaps");
+        }
+        DisturbanceWindow later(ctx, false);
+        expect(!later.overlappedForeignDisturbance(), "Finished hammer does not overlap a later window");
+    }
+
     WorkerProgress progress(3);
     progress.publish(0, 50);
     progress.publish(1, 20);

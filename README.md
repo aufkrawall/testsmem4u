@@ -166,7 +166,11 @@ physical coverage nor a hardware DRAM-bandwidth counter. Dwell time, memory late
 cache flushes, and OS scheduling affect CPU utilization differently. No software
 change guarantees maximum DIMM temperature or detection of every instability.
 Virtual addresses and large pages do not prove physical DRAM row/bank adjacency;
-RowHammer remains a heuristic disturbance test. Firmware-reserved and OS-owned RAM
+RowHammer remains a heuristic disturbance test. Because workers run independently,
+one region's RowHammer can disturb rows shared with a neighbouring region running a
+different test; errors found during such an overlap are flagged with a warning in
+the log. `RandomAccess` Parameter 1-100 is a pass multiplier, while larger values
+are an explicit access count per worker region. Firmware-reserved and OS-owned RAM
 is outside this user-space tester's allocation.
 
 Implementation details, regression coverage, and local performance measurements are

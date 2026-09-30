@@ -1,6 +1,6 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-09-12. Stale risk: medium for hardware effectiveness;
+Last verified: 2026-09-30. Stale risk: medium for hardware effectiveness;
 low for tested software invariants.
 
 ## Sources and responsibilities
@@ -9,6 +9,8 @@ low for tested software invariants.
   independent sequence execution, monitoring, termination, exception containment.
 - `include/WorkerProgress.h`: per-worker completed sequence position; the minimum
   defines whole-allocation progress and completed cycles.
+- `include/DisturbanceWindow.h`: flags test invocations that overlapped another
+  worker's RowHammer so their errors can be annotated.
 - `src/TestPatterns.cpp`: SimpleTest, MirrorMove, MirrorMove128, walking bits,
   and the shared public pattern verification/reporting entry point.
 - `src/TestMarch.cpp`: LFSR verification and moving-inversion variants.
@@ -38,6 +40,15 @@ progress without running; an empty/all-disabled or undefined sequence fails clos
 The displayed test is the least advanced region's next test, not a claim that all
 workers run that test. Mid-test cancellation does not publish a completed boundary.
 
+Because workers are unsynchronised, one region's RowHammer can overlap another
+region's unrelated test. Regions are 4 KiB-aligned but DRAM rows are larger, so
+hammering near a boundary can flip a peer's cells. This is accepted (a lockstep
+RowHammer barrier would reintroduce per-cycle idling, since RowHammer is last in
+default.cfg). Instead each invocation runs inside a `DisturbanceWindow`; if it
+reports errors and any peer RowHammer was active at its start or started during it,
+the worker logs a WARN naming the test and region. Disturbers register
+active-then-start and observers snapshot start-then-active, so no overlap is missed.
+
 Shutdown no longer dereferences a stack-context pointer asynchronously: a static
 atomic outlives every run. Worker exceptions and partial thread-start failures
 request stop and join all successfully started workers. ASan/UBSan do not establish
@@ -49,9 +60,15 @@ configured polarities and is untouched for at least the configured dwell interva
 The other half runs address-sensitive SimpleTest write/verify passes in bounded
 chunks. Roles rotate; no held data is used as background traffic. The deadline is
 monotonic, and a current verification chunk may finish after the minimum dwell.
+The background chunk cursor persists across a side's dwell windows (and flips the
+background polarity per full sweep), so short dwells still cover the whole active
+half rather than re-testing its first chunks.
 An invocation now has four dwell intervals. Inputs smaller than two cache lines
 retain an idle fallback because a separate active region is impossible.
 
+LFSR fills (LFSRPattern and MovingInversionLFSR) stream through `simd::fill_lfsr`
+with MOVNTI on x86_64 (plain stores elsewhere), avoiding RFO reads of stale lines;
+a 2026-09-12 regression had used cached scalar stores.
 LFSR comparisons retain observed values from the original load, eliminating the
 old memcmp-then-re-read transient-loss window. Reverse LFSR generation starts from
 the terminal state and walks the inverse recurrence; no count-sized seed-table
@@ -72,13 +89,20 @@ restored alternating pair pattern (including odd-length wrapped tails).
 RandomAccess issues up to 16 independent locations in disjoint address bands,
 checks the original, inverted, and restored values, and flushes/fences writes as
 a batch. Distinct indices prevent outstanding writes from conflicting. Initial
-and final full-region sweeps cover unselected cells and collateral corruption.
+and final full-region sweeps cover unselected cells and collateral corruption; the
+region is flushed after the initial sweep so random reads cannot hit its cached tail.
 The configured access count remains exact, including the partial last batch.
+Parameter 1-100 (0 = 1) is a pass multiplier; >100 is an explicit per-region access
+count (`randomAccessIterations`). executeSuite warns about the latter at startup.
 
 Modulo20 holds one word in every 20 at one polarity while repeatedly writing the
-other 19 with its complement. Protected words are not accessed during disturbance;
-cache flushes separate passes and final verification checks every word. All offsets
-and both polarities run, including short tails. This complements the march tests'
+other 19 with its complement. Software never reads or writes a protected word during
+disturbance, but it shares a cache line with peers: the RFO fetches it and the flush
+writes back the fetched value. So this checks disturbance from complement writes in
+the same and neighbouring bursts, not an untouched row. Cache flushes separate passes
+and final verification checks every word with `simd::verify_words` against a
+1280-word (stride- and vector-aligned) expected table. All offsets and both
+polarities run, including short tails. This complements the march tests'
 cache/buffering sensitivity; see the primary algorithm descriptions at
 [MemTest86](https://www.memtest86.com/tech_memtest-algoritm.html) and
 [Memtest86+](https://memtest.org/readme).
@@ -91,7 +115,13 @@ is shared across available strides rather than silently expanded to one per stri
 ## Diagnostics and interpretation
 
 - Startup logs describe independent scheduling and active retention. Debug logs
-  identify worker region offsets/weights, test starts, and elapsed test durations.
+  (`--debug`) identify worker region offsets/weights, test starts, and elapsed test
+  durations, plus per-invocation summaries from March/LFSRPattern (seed, errors,
+  unverified, time), Modulo20 (per polarity), RefreshStable (per dwell: actual dwell,
+  active chunks, full sweeps, cursor), RandomAccess (access count), and BlockMove
+  (per direction). `[stopped]` marks cancelled invocations.
+- WARN "... while RowHammer ran on another worker region" marks errors that may be
+  cross-region disturbance rather than a failure specific to the named test.
 - Final `Coverage` is the number of complete cycles across every worker region.
 - Byte totals count verified reads, including repeated checks and retention's useful
   active tests. They are neither unique memory coverage nor physical bus traffic.

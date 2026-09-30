@@ -1,5 +1,31 @@
 # Recent Log
 
+## 2026-09-30 - Review fixes for the v1.6 workload refactor
+
+A high-effort review of 54e3582..cbb33d2 found and fixed:
+- LFSR fills (LFSRPattern, MovingInversionLFSR) had regressed to cached scalar
+  stores; they now stream via `simd::fill_lfsr` (MOVNTI on x86_64).
+- RandomAccess read random cells right after a cached full sweep; the region is now
+  flushed first. Its Parameter overload (<=100 passes, >100 explicit count) is now
+  a named helper, documented in default.cfg, and warned about at startup.
+- Modulo20's claim that protected words are untouched was false at the cache-line
+  level (RFO + writeback); comment/cfg/wiki corrected. Disturbance uses range fills
+  instead of per-word modulo; verification uses SIMD `verify_words` with a 1280-word
+  expected table.
+- RefreshStable restarted background work at the active half's first chunk every
+  dwell; a persistent cursor now sweeps it fully.
+- Independent workers let RowHammer overlap peers' tests. Rejected a lockstep
+  barrier (per-cycle idling); added `DisturbanceWindow` WARN annotation instead.
+- Removed dead TestContext status fields and an obsolete ThreadBarrier analog test;
+  hoisted BlockMove's per-block allocations; added per-invocation debug summaries.
+
+Validation: all nine release targets without warnings; baseline and AVX2 runners;
+ASan/UBSan; clang-tidy clean; new regressions for fill_lfsr, RandomAccess parameter
+semantics, retention cursor coverage, and DisturbanceWindow overlap rules. Native
+AVX2 smoke run (512 MiB unlocked, 8 workers, 7 tests incl. Modulo20/RefreshStable/
+RowHammer, 1 cycle): 0 errors in 44 s. Modulo20 took ~4 s per 64 MiB worker region
+at default Parameter=3; not benchmarked against the previous implementation.
+
 ## 2026-09-12 - Continuous useful RAM testing and verification corrections (v1.6)
 
 The August concurrency audit's claim that static core weights eliminate barrier
