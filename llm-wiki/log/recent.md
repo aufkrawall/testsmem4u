@@ -1,5 +1,16 @@
 # Recent Log
 
+## 2026-09-30 - LLM Prompt Templates baseline integration
+
+Integrated missing prompt templates and developer tool guidelines from https://github.com/aufkrawall/llm-prompt-templates:
+- Created root `CHANGELOG.md` with Keep a Changelog categories and initial unreleased entries.
+- Created `llm-wiki/changelog-guidelines.md` adapting project release conventions and continuous unreleased updates.
+- Created `llm-wiki/secret-leak-prevention.md` establishing mandatory pre-commit and post-commit secret checks.
+- Created `llm-wiki/debug-tools.md` and `llm-wiki/debug-tools-security-audit.md` covering Windows SDK debuggers, MSVC binary tools, LLVM utilities, Sysinternals (vmmap, procexp), and PE/ELF binary hardening.
+- Added non-mutating `tools/discover-debug-tools.ps1` and `tool-paths.example.env` for local developer and debugger tool resolution.
+- Updated `AGENTS.md` with secret leak prevention commit gates, changelog rules, diagnostic logging and regression test standards, and Windows tool discovery guidance.
+- Updated `.gitignore` to prevent committing local `tool-paths.env` overrides or discovery manifests.
+
 ## 2026-09-30 - Review fixes for the v1.6 workload refactor
 
 A high-effort review of 54e3582..cbb33d2 found and fixed:

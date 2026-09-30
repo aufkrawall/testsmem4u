@@ -27,3 +27,10 @@ Thumbs.db
 *.7z
 /testsmem4u/
 /1.png
+
+# Local tool paths and debug discovery manifests
+tool-paths.env
+debug-tool-manifest.json
+debug-tool-warnings.txt
+debug-tool-availability.md
+
