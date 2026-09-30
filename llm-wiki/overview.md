@@ -69,6 +69,10 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 
 ## Build Tools
 - `python build.py --lint`: Runs clang-tidy static analysis (requires `--compile-commands` or generates automatically).
+  Known review defects: generated relative compile-database directories cause the
+  installed clang-tidy to skip files, and `run_lint` accepts reported warnings as
+  success. Its "no issues found" result is not evidence of a clean analysis.
+  See [the unresolved review findings](log/recent.md).
 - `python build.py --fuzz`: Builds fuzzing harness for preset/config parsers (requires Linux or MSVC/Clang-cl; libFuzzer unavailable on Windows MinGW). The harness uses unique temporary files, including absolute temp paths.
 - `python build.py --tests`: Builds and runs the internal tests twice — an SSE2
   baseline runner and an AVX2 (`-v3`) runner so the AVX2 generate/verify paths
@@ -80,5 +84,7 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - Fault hooks test positive error detection, destructive observation retention, partial blocks,
   cancellation and failed workers; virtual time tests retention without sleeping.
 
-Last verified: 2026-09-12
-Stale risk: Medium for hardware effectiveness; see the memory-testing page.
+Last verified: 2026-09-30 for native tests and the reviewed runtime/build paths;
+other architecture details retain their earlier verification dates.
+Stale risk: Medium for hardware effectiveness and historical lint claims; see
+[memory testing](memory-testing.md) and [the recent review](log/recent.md).

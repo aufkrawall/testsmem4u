@@ -160,6 +160,15 @@ live only under ignored `build/ram_review/`; generated binaries/logs are not com
 
 ## Open questions and limits
 
+Confirmed unresolved startup defect: Linux unlocked standard-page allocations are
+not prefaulted before `executeSuite` checks residency. The untouched mapping fails
+`mincore` before any worker can run a test. A 16 MiB baseline reproduction under
+WSL reported 4096 nonresident pages and zero coverage. Allocation exceptions also
+terminate `runTests` because its preparation thread is not joined during unwinding.
+See [the review log](log/recent.md) for sources and reproduction details. Historical
+clang-tidy-clean claims are unverified because the current lint workflow can skip
+files and accept reported warnings.
+
 No temperature sensor or unstable-memory experiment was performed. Higher useful
 load does not establish a universal optimum or a particular error-detection speedup.
 Different DIMMs/controllers, capacities, NUMA placement, SMT, and ISA variants need

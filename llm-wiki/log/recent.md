@@ -1,5 +1,55 @@
 # Recent Log
 
+## 2026-09-30 - Runtime, configuration, and build-tool review (unresolved)
+
+Reviewed the current scheduler, test kernels, allocation/error paths, configuration
+resolution, and lint workflow at `a2cecfa`. Five confirmed findings remain unfixed:
+
+- **Linux unlocked startup (P1):** `tryAllocateStandard` creates an untouched
+  anonymous mapping, but `executeSuite` calls `checkMemoryResident` before the
+  first test writes it. A fresh 16 MiB allocation failed with all 4096 pages
+  nonresident and zero test coverage. Reproduction: a one-entry SimpleTest preset,
+  `--yes --no-config --no-elevation --no-locked-memory --no-large-pages --memory 16
+  --cores 1 --cycles 1`. Reproduced under WSL with a freshly linked baseline Linux
+  binary; the equivalent Windows run succeeded. Sources:
+  `src/Platform.cpp::tryAllocateStandard` (Linux),
+  `src/TestEngine.cpp::executeSuite`.
+- **Allocator exception cleanup (P2):** `runTests` starts a preparation thread
+  before `allocateMemoryRAII`, but has no scope cleanup to signal/join that thread
+  if allocation throws (including allocations made by privilege checks/logging).
+  Unwinding destroys a joinable thread and terminates the process before main's
+  exception handler can report an infrastructure failure. Reproduced by linking
+  the existing baseline test objects with an allocator wrapper that throws;
+  `--wrap=_ZN10testsmem4u8Platform18allocateMemoryRAIIEybbb` and a custom terminate
+  handler proved termination rather than propagation to the caller. Source:
+  `src/TestEngine.cpp::runTests`.
+- **Malformed default configuration (P2):** `loadConfig` rejects invalid values
+  transactionally, but `resolveConfiguration` falls back to defaults when the
+  implicit `config.ini` exists and is invalid. A synthetic config with
+  `MemoryWindowMB=16`, `Cores=invalid`, and `Cycles=2` followed by
+  `--dry-run --yes --no-elevation --preset <valid-preset>` returned success and
+  resolved 85% RAM, every thread, and three cycles. Source:
+  `src/main.cpp::resolveConfiguration`.
+- **Skipped static analysis (P2):** generated compile databases use
+  `directory: "."` and relative file paths. Installed clang-tidy 22.1.6 skips the
+  repository sources with "Compile command not found" on stderr and exits zero;
+  `run_lint` hides stderr and reports "no issues found". Using absolute directory
+  and file paths in an isolated database made analysis run and emit findings.
+  Sources: `build.py::write_compile_commands`, `build.py::run_lint`.
+- **Lint warning gate (P2):** independently of database lookup, `run_lint` treats
+  zero process exit status as clean even when it prints analyzer warnings.
+  With a valid isolated database, a synthetic null dereference produced
+  `clang-analyzer-core.NullDereference`, yet `run_lint` returned true and printed
+  "no issues found". Source: `build.py::run_lint`.
+
+Validation: baseline/SSE2 and AVX2 internal suites passed; Windows x86-64 and Linux
+x86-64 baseline/v3/v4 links succeeded. The normal lint command's reported success
+is not valid analysis evidence. Earlier "clang-tidy clean" claims are unverified
+until the database and result gates are corrected and analysis is rerun. A valid
+database currently exposes pre-existing diagnostics; this review did not fix them.
+Synthetic reproduction sources and output remain ignored under `build/review/`.
+No runtime code changed, so no behavioral changelog entry was added.
+
 ## 2026-09-30 - Populate historical releases in CHANGELOG.md
 
 Populated root `CHANGELOG.md` with release entries for v1.6, v1.5, and v1.4, along with current unreleased improvements from the recent workload review pass, following `llm-wiki/changelog-guidelines.md`:
