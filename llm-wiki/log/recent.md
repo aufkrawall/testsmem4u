@@ -1,5 +1,13 @@
 # Recent Log
 
+## 2026-10-06 - Release v1.7
+
+Bumped version string to `1.7` across runtime and changelog:
+- Promoted unreleased improvements to `## 1.7 - 2026-10-06` in `CHANGELOG.md`.
+- Verified test suite (`python build.py --tests`), static analysis (`--lint`), and runtime sanitizers (`--run-sanitizers`).
+- Built all nine release binaries with LLVM MinGW (Windows x86_64 variants with CFG/CET hardening) and Zig (Linux x86/x64/ARM, Windows ARM64).
+- Packaged `testsmem4u-1.7-allOS.7z` and published GitHub release `1.7`.
+
 ## 2026-09-30 - Implement runtime, configuration, and analysis review fixes
 
 Resolved all five findings from the review below:

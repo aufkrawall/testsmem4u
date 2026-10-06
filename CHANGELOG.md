@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.7 - 2026-10-06
+
 ### New
 
 - **Developer and debug tool discovery:** added non-mutating `tools/discover-debug-tools.ps1` to detect installed Windows SDK debuggers (`cdb`, `windbg`, `dumpchk`, `symchk`), MSVC tools, LLVM utilities, and Sysinternals.
