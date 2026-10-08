@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **Support and project references:** added GitHub Sponsors and Buy Me a Coffee donation badges and cross-project links to `README.md`.
+
 ## 1.7 - 2026-10-06
 
 ### New

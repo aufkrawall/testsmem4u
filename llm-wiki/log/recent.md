@@ -1,5 +1,11 @@
 # Recent Log
 
+## 2026-10-08 - Update README with support and project cross-references
+
+- Added `## Support` section to `README.md` with GitHub Sponsors and Buy Me a Coffee badges.
+- Added `## Other projects` section to `README.md` referencing `capture-engine`, `green-curve`, `Shader-Stress`, `obs-indicator`, and GitHub profile repositories.
+- Updated `CHANGELOG.md` unreleased section.
+
 ## 2026-10-06 - Release v1.7
 
 Bumped version string to `1.7` across runtime and changelog:
