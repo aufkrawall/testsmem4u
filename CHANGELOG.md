@@ -27,6 +27,7 @@
 
 ### Changed
 
+- **Linux memory headroom guidance:** `README.md` now recommends a swap file and a moderate `vm.swappiness` for desktop use alongside the locked default test window, and correctly states that Linux runs relaunch through `sudo` unless `--no-elevation` is given.
 - **Support and project references:** added GitHub Sponsors and Buy Me a Coffee donation badges and cross-project links to `README.md`.
 
 ## 1.7 - 2026-10-06

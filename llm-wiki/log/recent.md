@@ -1,5 +1,13 @@
 # Recent Log
 
+## 2026-10-13 - README Linux swap guidance
+
+- User decision: do not cap default sizing by available memory and do not lower
+  worker priority; users are expected to configure swap sensibly. README now
+  explains swap/swappiness for desktop use with the locked 85% default window.
+- Corrected the stale README claim that Linux never elevates; `main.cpp` relaunches
+  through `sudo` unless `--no-elevation` (verified in source).
+
 ## 2026-10-13 - Show current-test progress in the status line
 
 - Review follow-up to the reported "stalled" display: long tests (default

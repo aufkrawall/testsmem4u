@@ -126,7 +126,7 @@ See cli-report.md for the full option reference, mode rules, exit codes, and exa
 - If launched interactively, it shows a 3-second countdown and opens the wizard if a key is pressed.
 - If launched with run-specific CLI overrides, --yes, or non-interactive stdin, it skips prompts and runs in direct CLI mode.
 - On Windows, the program can offer to grant SeLockMemoryPrivilege when interactive and elevated.
-- On Linux, the program warns when memory-lock or hugepage capability appears limited, but it does not attempt privilege changes automatically.
+- On Linux, the program relaunches itself through `sudo` unless `--no-elevation` is given, so the test window can be locked in RAM. It warns when memory-lock or hugepage capability still appears limited.
 - Binary variant selection is manual: run the `-v3` (AVX2) or `-v4` (AVX-512) binary that matches your CPU; the baseline binary works everywhere. A startup warning points out when a faster variant would fit your CPU.
 - If the run falls back from full large pages to locked standard pages, the console now explains that the test remains valid and how to improve large-page coverage for future runs.
 
@@ -173,6 +173,27 @@ an unchanged verified-byte count alone does not establish that a worker is stuck
 Defaults use all available CPU targets and 85% of total physical RAM. For concurrent
 desktop use, select fewer workers with `--cores` and a smaller window with
 `--memory` to leave more resources for other applications.
+
+### Linux: swap and swappiness
+
+The test window is locked in RAM and is never swapped, so everything else
+(kernel, desktop, applications, file cache) must fit into the remaining ~15%.
+To keep the desktop usable during a default-sized run:
+
+- **Have a swap file or partition** (a few GiB is enough) so the kernel can move
+  idle application memory out of the way.
+- **Keep `vm.swappiness` at the distribution default (usually 60)** or another
+  moderate value. Very low values such as 0-10, a common "SSD tweak", make the
+  kernel drop file cache, including program code, instead of swapping idle memory.
+  Under a large locked window this makes the desktop stutter or appear frozen.
+- If memory is still tight, reduce the window with `--memory`.
+
+Check the current settings with:
+
+```bash
+swapon --show
+cat /proc/sys/vm/swappiness
+```
 
 `RefreshStable` preserves the configured untouched dwell for each half and both
 polarities, with write/verify testing on the other half throughout the dwell.
