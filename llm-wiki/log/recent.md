@@ -1,5 +1,13 @@
 # Recent Log
 
+## 2026-10-13 - Release v1.8
+
+Bumped version string to `1.8` across runtime and changelog:
+- Promoted unreleased improvements to `## 1.8 - 2026-10-13` in `CHANGELOG.md`.
+- Verified test suite (`python build.py --tests`), static analysis (`--lint`), and runtime sanitizers (`--run-sanitizers`).
+- Built all nine release binaries with LLVM MinGW (Windows x86_64 variants with CFG/CET hardening) and Zig (Linux x86/x64/ARM, Windows ARM64).
+- Packaged `testsmem4u-1.8-allOS.7z` and published GitHub release `1.8`.
+
 ## 2026-10-13 - README Linux swap guidance
 
 - User decision: do not cap default sizing by available memory and do not lower

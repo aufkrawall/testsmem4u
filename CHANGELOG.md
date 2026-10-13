@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.8 - 2026-10-13
+
 ### Fixed
 
 - **Unaligned x86 cache flushes:** region flushing covers both boundary cache lines when a range starts or ends inside a line.
