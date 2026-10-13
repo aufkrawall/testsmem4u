@@ -60,15 +60,7 @@ TestResult runMarch(TestContext& ctx, const MemoryRegion& region,
         for (size_t done = 0; done < count && !ctx.shouldStop(); done += march_words) {
             const size_t n = std::min(march_words, count - done);
             const size_t offset = phase == 1 ? count - done - n : done;
-            for (size_t j = 0; lfsr && j < n; ++j) {
-                if (phase == 1) {
-                    state = simd::lfsrPrevious(state);
-                    expected[n - j - 1] = ~state;
-                } else {
-                    expected[j] = state;
-                    state = simd::lfsrNext(state);
-                }
-            }
+            if (lfsr) state = simd::generate_lfsr_expected(expected.data(), n, state, phase == 1, phase == 1);
             errors.clear();
             const uint64_t uniform = phase == 1 ? ~seed : seed;
             const size_t found = lfsr ? simd::verify_words(ptr + offset, expected.data(), n,
@@ -156,18 +148,16 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
     errors.reserve(128);
     for (size_t i = 0; i < count && !ctx.shouldStop(); i += march_words) {
         const size_t n = std::min(march_words, count - i);
-        for (size_t j = 0; j < n; ++j) {
-            expected[j] = state;
-            state = simd::lfsrNext(state);
-        }
+        state = simd::generate_lfsr_expected(expected.data(), n, state);
         errors.clear();
         const size_t found = simd::verify_words(ptr + i, expected.data(), n, errors);
         classifyAndLogErrors(region, ptr, errors, found, i,
                              [&](size_t k) { return expected[k - i]; }, res, ctx, "LFSR", stop);
         progress.addBytes(n * sizeof(uint64_t));
     }
-    LOG_DEBUG("LFSRPattern(seed=0x%016llx): offset=%zu words=%zu errors=%llu in %.3fs%s",
+    LOG_DEBUG("LFSRPattern(seed=0x%016llx): offset=%zu words=%zu lanes=%zu errors=%llu in %.3fs%s",
               static_cast<unsigned long long>(seed), region.base_offset_bytes, count,
+              simd::kLfsrGenerationLanes,
               static_cast<unsigned long long>(res.total_errors()),
               std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
               ctx.shouldStop() ? " [stopped]" : "");

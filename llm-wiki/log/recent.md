@@ -1,5 +1,22 @@
 # Recent Log
 
+## 2026-10-13 - Parallel exact-sequence LFSR generation
+
+- AVX2 fills/expected buffers generate four consecutive states with T^4;
+  reverse expected buffers use a 16-entry T^-4 feedback table and forward
+  generation. Both return exactly the original scalar boundary state.
+- Alignment prefixes/tails retain streaming scalar writes and the fill fence;
+  scalar/non-AVX2 targets retain the original recurrence. Added scalar-reference
+  tests for all 64 basis seeds, mixed/zero seeds, direction, complement and tails.
+- Native baseline/AVX2 and all 17 Python regressions pass, including existing
+  partial-reverse, injected-fault, cancellation and live-progress contracts.
+- Initial 512 MiB 8/16-worker measurements show mostly bandwidth-limited results;
+  no multi-thread speedup or power gain is established by those short samples.
+- A one-worker comparison against the pre-task snapshot shows shorter uniform
+  march and LFSR times. The harness uses the same pinned release flags, affinity,
+  512 MiB region and verified-byte contracts, with a warmup and three samples;
+  final combined measurements are recorded below when traffic changes finish.
+
 ## 2026-10-13 - Remove cache-flush and uniform-march overhead
 
 - Complete CLFLUSHOPT region/batch loops have one dispatch and a final MFENCE;

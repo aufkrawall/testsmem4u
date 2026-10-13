@@ -13,6 +13,7 @@
 ### Improved
 
 - **Useful memory throughput:** region cache flushes dispatch once instead of calling a helper for every cache line, and uniform moving inversions keep expected patterns in registers. Verification preserves the original observed errors, vector traversal, replacement writes, and byte accounting; no filler load or reduced test coverage was added.
+- **LFSR generation:** AVX2-capable variants generate four exact consecutive LFSR states in parallel for streaming fills and expected-data verification. Reverse blocks use an equivalent four-step inverse; seeds, patterns, terminal states and verification coverage are preserved.
 - **Kernel diagnostics:** per-march summaries identify register-pattern uniform marches separately from LFSR table verification.
 - **Long-test diagnostics:** `--debug` records bounded progress snapshots every ten seconds with verified-byte deltas and up to four workers' test positions, phases, and time since their last verified-byte change. Fill, verification, residency, and disturbance phases distinguish normal long work from a possible stall without adding clocks or logging to hot verification blocks.
 - **Regression coverage:** added deterministic progress, cancellation, worker/monitor exception, nested accounting, multi-terabyte counter, diagnostic cadence, and narrow-terminal tests across baseline and AVX2 paths.

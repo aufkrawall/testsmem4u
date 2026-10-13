@@ -89,12 +89,22 @@ An invocation now has four dwell intervals. Inputs smaller than two cache lines
 retain an idle fallback because a separate active region is impossible.
 
 LFSR fills (LFSRPattern and MovingInversionLFSR) stream through `simd::fill_lfsr`
-with MOVNTI on x86_64 (plain stores elsewhere), avoiding RFO reads of stale lines;
+with AVX2 vector stores in v3/v4 and MOVNTI in x86_64 scalar prefixes/tails and
+baseline builds (plain stores elsewhere), avoiding RFO reads of stale lines;
 a 2026-09-12 regression had used cached scalar stores.
 LFSR comparisons retain observed values from the original load, eliminating the
 old memcmp-then-re-read transient-loss window. Reverse LFSR generation starts from
 the terminal state and walks the inverse recurrence; no count-sized seed-table
 prepass exists, and partial backward blocks use their actual indices.
+
+`src/simd_lfsr.cpp` advances four consecutive states with a closed-form T^4
+transform in AVX2 lanes. Cached expected generation shares that exact sequence.
+Reverse blocks find their initial state with T^-4 and a 16-entry constexpr
+feedback table, then generate forward in ascending memory order; the returned
+state remains the reverse block's first state. NT stores retain alignment-safe
+scalar prefixes/tails and SFENCE. Scalar-reference tests cover every basis bit,
+zero/mixed seeds, unaligned starts, complements and partial blocks. Startup and
+LFSR summaries report lane width; no logging is added inside generation loops.
 
 Moving inversions read and replace adjacent SIMD vectors forward, then backward,
 then verify the restored data. Whole-pass cache flushes remain. This is vector-grain

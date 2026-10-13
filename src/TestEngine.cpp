@@ -8,6 +8,7 @@
 #include "DisturbanceWindow.h"
 #include "PreparationStatus.h"
 #include "TestEngineInternal.h"
+#include "MemoryTestKernels.h"
 #include "ProgressDiagnostics.h"
 #include <chrono>
 #include <thread>
@@ -393,6 +394,9 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                  built_isa,
                  caps.has_avx2 ? "yes" : "no",
                  caps.has_avx512 ? "yes" : "no", threads);
+        LOG_DEBUG("Kernels: uniform-march=register-pattern cache-line=%zu flush=%s LFSR-lanes=%zu",
+                  caps.cache_line_size, caps.has_clflushopt ? "CLFLUSHOPT region/batch" :
+                  caps.has_clflush ? "CLFLUSH" : "platform fallback", simd::kLfsrGenerationLanes);
 #if !defined(__AVX512F__)
         if (caps.has_avx512) {
             LOG_WARN("This CPU supports AVX-512: use the -v4 binary variant for maximum RAM-test throughput.");

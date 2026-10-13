@@ -696,6 +696,7 @@ int main() try {
 
     testEngineRegressions();
     testUniformMarchSpecialization();
+    testLfsrParallelGeneration();
     testIndependentWorkerExecution();
     testPreparationExceptionCleanup();
     testFreshUnlockedRun();

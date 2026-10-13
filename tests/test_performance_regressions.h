@@ -1,5 +1,41 @@
 #pragma once
 
+void testLfsrParallelGeneration() {
+    alignas(64) std::array<uint64_t, 1056> memory{};
+    std::vector<uint64_t> seeds{0, ~0ULL, 0xACE1ACE2DEADBEEFULL, 0x1234567890ABCDEFULL};
+    for (unsigned bit = 0; bit < 64; ++bit) seeds.push_back(1ULL << bit);
+    for (const uint64_t seed : seeds) {
+        for (size_t count : {0U, 1U, 2U, 3U, 4U, 7U, 8U, 15U, 31U, 511U, 512U, 513U, 1027U}) {
+            std::vector<uint64_t> reference(count);
+            uint64_t end = seed;
+            for (auto& value : reference) {
+                value = end;
+                end = (end >> 1) ^ ((end & 1) ? 0xD800000000000000ULL : 0);
+            }
+            for (size_t offset = 0; offset < 4; ++offset) {
+                memory.fill(0x1234);
+                const auto next = simd::fill_lfsr(memory.data() + offset, count, seed);
+                expect(next == end && std::equal(reference.begin(), reference.end(), memory.begin() + offset),
+                       "LFSR streaming SIMD/alignment/tails preserve exact scalar sequence and terminal state");
+                expect(memory[offset + count] == 0x1234 && (offset == 0 || memory[offset - 1] == 0x1234),
+                       "LFSR streaming respects range boundaries");
+                for (bool reverse : {false, true}) {
+                    for (bool inverted : {false, true}) {
+                        memory.fill(0x1234);
+                        const auto result = simd::generate_lfsr_expected(memory.data() + offset, count,
+                                                                         reverse ? end : seed, reverse, inverted);
+                        expect(result == (reverse ? seed : end), "LFSR expected generator preserves both boundary states");
+                        bool matches = true;
+                        for (size_t i = 0; i < count; ++i) matches &= memory[offset + i] == (inverted ? ~reference[i] : reference[i]);
+                        expect(matches && memory[offset + count] == 0x1234,
+                               "LFSR expected forward/reverse/complement data matches scalar reference");
+                    }
+                }
+            }
+        }
+    }
+}
+
 void testUniformMarchSpecialization() {
     alignas(64) std::array<uint64_t, 1056> generic{}, specialized{}, expected{};
     for (size_t count : {0U, 1U, 2U, 3U, 7U, 8U, 15U, 31U, 63U, 511U, 512U, 513U, 1027U}) {
