@@ -6,6 +6,7 @@
 #include "testsmem4u.h"
 #include "Platform.h"
 #include "PlatformMemoryInternal.h"
+#include "RunConfiguration.h"
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
@@ -657,6 +658,7 @@ void testRunResultMerge() {
 #include "test_performance_regressions.h"
 #include "test_runtime_regressions.h"
 #include "test_memory_pages.h"
+#include "test_config_wizard.h"
 #include "test_progress_regressions.h"
 #include "test_step_progress.h"
 
@@ -690,6 +692,8 @@ int main() try {
     testConfigInvalidLoadDoesNotPartiallyApply();
     testConfigRejectsUnsafePath();
     testConfigLoadStatuses();
+    testWizardDefaultPolicies();
+    testWizardExplicitSettings();
 
     // Existing tests from original file
     testBoundedUniformVerification();

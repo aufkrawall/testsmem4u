@@ -51,6 +51,15 @@ Sources: `include/testsmem4u.h::Config`, `include/RunConfiguration.h::CliOptions
 Both locking and large-page preference default to enabled; saved config and CLI
 overrides can disable them. Large-page preference is best effort, while requested
 locking is strict. Aggressive preparation remains opt-in.
+Both wizards ask the same questions and default to 85% RAM, all cores, three
+cycles, locking, large pages and halt-on-error. `ConfigWizard.cpp` returns the
+requested policies (`MemoryWindowMB=0`, `Cores=0` for automatic defaults);
+`main.cpp` resolves a copy and saves the original request. Explicit MiB/thread
+choices remain explicit. Percentage sizing still uses total RAM, preserving
+the previous user decision. Invalid cycles fall back to three; explicit zero
+retains infinite runs. Shared native-page normalization applies in CLI and wizard
+resolution. Windows chunk candidates include the actual API minimum, and native
+base pages cap worker counts as well as partition boundaries.
 
 - Windows uses its native page size and `GetLargePageMinimum` for large pages,
   retaining direct/chunked/hybrid allocation and fully locked standard fallback.
@@ -104,6 +113,9 @@ allocation. Linux-only process-local syscall fixtures exercise non-2-MiB HugeTLB
 redundant-mlock avoidance, incompatible 1 GiB defaults, unavailable huge pages/
 advice, strict lock failure plus unmapping, explicit pageable fallback and
 no-large-page advice. They never modify sysctls or impose timing assumptions.
+`tests/test_config_wizard.h` drives real wizard streams/preset resolution and
+checks defaults, saved policies, explicit settings and invalid/infinite cycles;
+`tests/test_cli.py` checks real default/override normalization and saved policies.
 Windows syscall fixtures additionally check direct success without preparation,
 exact 18-MiB chunking, a 6-MiB LP prefix with locked native tail, exception rollback,
 strict lock failure, pageable fallback sizing and a small incompatible window.
@@ -152,8 +164,9 @@ worker implementation with deterministic condition-variable handshakes.
 
 Linux unlocked anonymous mappings are materialized with one volatile byte write
 per native page before `executeSuite` can check residency. Reading zeroes alone
-would not establish private backing. `MemoryGuard` owns the allocation during
-prefaulting, so later exceptions release it. This initializes pages once, without
+would not establish private backing. The native mapping scope owns the allocation
+during prefaulting/logging, then transfers it to `MemoryGuard`; exceptions release
+the owned mapping. This initializes pages once, without
 weakening runtime residency checks or guaranteeing against subsequent eviction.
 `PreparationStatus` always stops/joins its display worker during unwinding and
 rethrows callback failures on `finish()`. Its one-second condition-variable timeout
@@ -396,7 +409,7 @@ snapshot during a march and ends with exactly 60,397,977,600 verified bytes.
 Limits: the original preset/version, hardware, elapsed stall duration, and Linux
 warning are unknown. Actual long-run kernel failure, scheduler starvation, or
 memory pressure on the reporter's machine is unverified. Current defaults use all
-available CPU targets and 85% of total physical RAM (`src/main.cpp::makeDefaultConfig`
+available CPU targets and 85% of total physical RAM (`src/RunConfiguration.cpp::makeDefaultConfig`
 and `getSizingBaselineRAM`); process priority remains normal
 (`src/Platform.cpp::confirmNormalProcessPriority`). These choices can compete with
 other workloads. WSL regressions and a bounded Linux CLI run pass, but desktop

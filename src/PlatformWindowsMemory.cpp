@@ -436,15 +436,19 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size, b
         size_t{16} * 1024 * 1024,        // 16MB
         size_t{8} * 1024 * 1024,         // 8MB
         size_t{4} * 1024 * 1024,         // 4MB
-        size_t{2} * 1024 * 1024          // 2MB (single large page)
+        size_t{2} * 1024 * 1024,
+        static_cast<size_t>(large_page_min) // Native minimum, including non-2-MiB systems.
     };
 
     const size_t candidate_count = sizeof(chunk_candidates) / sizeof(chunk_candidates[0]);
+    size_t last_chunk = 0;
     for (size_t candidate_index = 0; candidate_index < candidate_count; candidate_index++) {
         size_t candidate = chunk_candidates[candidate_index];
         size_t aligned_chunk = 0;
         if (!memory_pages::alignSize(candidate, large_page_min, aligned_chunk) ||
             aligned_chunk > size || size % aligned_chunk != 0) continue;
+        if (aligned_chunk == last_chunk) continue;
+        last_chunk = aligned_chunk;
 
         const size_t num_chunks = size / aligned_chunk;
         const size_t aligned_total = size;

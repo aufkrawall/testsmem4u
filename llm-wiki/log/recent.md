@@ -1,5 +1,28 @@
 # Recent Log
 
+## 2026-10-13 - Make wizard defaults and sizing policies comparable
+
+- Both wizards use shared defaults/question order with large pages enabled.
+  Input/output streams allow deterministic scripted coverage of the real wizard.
+  Main resolves a copy for execution and saves the requested percent/all-core
+  policies; explicit values remain explicit. Invalid cycles use three, while
+  explicit zero still requests an infinite run.
+- Shared window normalization follows preferred native large-page granularity.
+  Windows chunk candidates now reach the actual minimum and skip duplicate
+  aligned candidates. Worker caps now use native base pages, avoiding invalid
+  weighted partition arithmetic when there are more workers than 64-KiB pages.
+- Windows/WSL baseline+AVX2 wizard tests and all 19 Python regressions pass.
+  All nine release targets, strict native analysis and both native ISA ASan/UBSan
+  suites pass, including the final native-page cap correction. Release binaries
+  were rebuilt after sanitizers; signatures, sizes and new wizard/preparation
+  markers were inspected for all nine, and the native PE has no sanitizer import.
+- Real Windows/WSL CLI defaults match policy: 85%/three cycles/locked large-page
+  preference; 17 MiB resolves to 16 MiB with large pages and stays 17 MiB when
+  disabled. Final 16 MiB allocation checks show full Windows LP and Linux THP +
+  mlock, exact bytes/cycle and zero errors. Linux old/fixed/disabled and SIGKILL
+  checks still pass with the pool unchanged and no test processes remaining.
+  No hardware optimum, full-85%-window coverage or ARM runtime claim is made.
+
 ## 2026-10-13 - Preserve Windows LP defaults with bounded preparation
 
 - Native large pages remain the first choice. Chunk fallback uses exact-size

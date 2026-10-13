@@ -71,10 +71,9 @@ static std::vector<WorkerAssignment> buildWorkerAssignments(const MemoryRegion& 
     if (targets.empty()) {
         targets.push_back(CpuTarget{});
     }
-    targets.resize(std::min(targets.size(), std::max<size_t>(1, region.size / 4096)));
-
     const size_t page_size = Platform::getNativePageSize();
     if (page_size == 0) throw std::runtime_error("Native page size is unavailable");
+    targets.resize(std::min(targets.size(), memory_pages::workerLimit(region.size, page_size)));
     if (region.size < page_size) return {{targets.front(), 0, region.size}};
     const size_t aligned_region_size = (region.size / page_size) * page_size;
     size_t total_pages = aligned_region_size / page_size;
@@ -389,7 +388,14 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 
     uint32_t threads = config.cores > 0 ? config.cores : hw_threads;
     threads = std::min(threads, hw_threads);
-    uint32_t max_threads_for_region = static_cast<uint32_t>(std::max<size_t>(1, region.size / 4096));
+    const size_t native_page_size = Platform::getNativePageSize();
+    if (native_page_size == 0) {
+        result.infrastructure_failure = true;
+        result.infrastructure_error = "Native page size is unavailable.";
+        return result;
+    }
+    uint32_t max_threads_for_region = static_cast<uint32_t>(std::min(
+        memory_pages::workerLimit(region.size, native_page_size), size_t{std::numeric_limits<uint32_t>::max()}));
     threads = std::min(threads, max_threads_for_region);
     if (threads == 0) threads = 1;
 

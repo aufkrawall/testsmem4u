@@ -3,6 +3,7 @@
 #include "testsmem4u.h"
 #include "Platform.h"
 #include <string>
+#include <iosfwd>
 
 namespace testsmem4u {
 inline constexpr const char* kProgramName = "testsmem4u";
@@ -74,7 +75,7 @@ bool prepareConfigForRun(Config& config, const PlatformInfo& plat, uint64_t& siz
 bool resolveConfiguration(const CliOptions& cli, bool automation_mode, ConfigResolution& resolution, std::string& error);
 void reportMemoryWindowAdjustment(uint32_t requested_mb, uint32_t actual_mb);
 void printConfigSummary(const ConfigResolution& resolution, const CliOptions& cli, bool automation_mode);
-Config runConfigWizard();
+Config runConfigWizard(std::istream& input_stream, std::ostream& output_stream);
 uint64_t getSizingBaselineRAM();
 uint32_t normalizeWindowMBForLargePages(uint32_t memory_window_mb, bool use_large_pages);
 uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent, bool use_large_pages);

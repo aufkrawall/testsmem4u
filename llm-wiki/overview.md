@@ -11,7 +11,11 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `src/main.cpp`: process management and CLI/wizard orchestration.
 - `src/CliOptions.cpp`, `src/RunConfiguration.cpp`, `src/ConfigWizard.cpp`,
   `include/RunConfiguration.h`: argument parsing, shared configuration resolution,
-  summaries and the interactive wizard.
+  summaries and the stream-driven interactive wizard. Both platforms share the
+  same question order/defaults; main resolves a copy and saves the original
+  requested percentage/all-core policies. Wizard/CLI normalization uses the
+  preferred native large-page size on both platforms. Program/version/default-path
+  constants now live in `include/RunConfiguration.h`.
 - `src/TestEngine.cpp`: allocation, dispatch, independent worker scheduling, and monitoring.
 - `include/PreparationStatus.h`: owns and joins the preparation display thread, including exception paths.
 - `include/TestProgress.h`: separate worker counters and scoped thread-local binding for nested kernels; `VerificationProgress` in `TestEngineInternal.h` publishes verified blocks and error deltas once.
@@ -67,7 +71,8 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   Non-regular files are rejected before opening; this avoids directory-as-EOF
   behavior in libc++ and blocking reads from FIFOs. The bool `loadConfig` API remains.
 - Linux unlocked allocations write once per native page before residency checks;
-  the mapping is owned by `MemoryGuard` throughout prefaulting. Strict checks
+  the native mapping scope owns it throughout prefaulting/logging before ownership
+  transfers to `MemoryGuard`. Strict checks
   remain active. Preparation display completion wakes immediately, and allocation
   or display exceptions cannot destroy a joinable preparation thread.
 - Preset sequence parsing is strict: malformed, empty, or trailing-comma tokens invalidate the sequence instead of silently dropping bad entries. `Enable` is limited to 0/1 and `Pattern Mode` to 0/1/2.

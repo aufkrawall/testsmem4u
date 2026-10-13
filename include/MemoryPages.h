@@ -43,6 +43,10 @@ inline uint32_t normalizeWindow(uint32_t mb, bool prefer_large, size_t page_size
     return aligned == 0 ? mb : static_cast<uint32_t>(aligned / mib);
 }
 
+inline size_t workerLimit(size_t bytes, size_t native_page_size) {
+    return native_page_size == 0 ? 0 : std::max(size_t{1}, bytes / native_page_size);
+}
+
 struct Coverage {
     size_t bytes = 0;
     size_t possible_bytes = 0;

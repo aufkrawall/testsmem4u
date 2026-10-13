@@ -58,19 +58,7 @@ uint64_t getSizingBaselineRAM() {
 }
 
 uint32_t normalizeWindowMBForLargePages(uint32_t memory_window_mb, bool use_large_pages) {
-#ifdef _WIN32
-    if (!use_large_pages || memory_window_mb == 0) return memory_window_mb;
-    SIZE_T large_page_min = GetLargePageMinimum();
-    if (large_page_min == 0) return memory_window_mb;
-
-    uint64_t bytes = static_cast<uint64_t>(memory_window_mb) * size_t{1024} * 1024;
-    uint64_t aligned = (bytes / large_page_min) * large_page_min;
-    if (aligned == 0) return memory_window_mb;
-    return static_cast<uint32_t>(aligned / 1024ULL / 1024ULL);
-#else
-    (void)use_large_pages;
-    return memory_window_mb;
-#endif
+    return memory_pages::normalizeWindow(memory_window_mb, use_large_pages, Platform::getPreferredLargePageSize());
 }
 
 uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent, bool use_large_pages) {
@@ -79,24 +67,24 @@ uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent, bool 
     return normalizeWindowMBForLargePages(window_mb, use_large_pages);
 }
 
-Config runConfigWizard() {
-    Config config;
+Config runConfigWizard(std::istream& input_stream, std::ostream& output_stream) {
     PlatformInfo plat = Platform::detectPlatform();
+    Config config = makeDefaultConfig(plat);
     uint64_t total_ram = Platform::getTotalSystemRAM();
     uint64_t sizing_ram = getSizingBaselineRAM();
     if (sizing_ram == 0) sizing_ram = total_ram;
 
-    std::cout << "\n--- testsmem4u Configuration Wizard ---\n";
-    std::cout << "Detected " << plat.cpu_cores << " cores, " << (total_ram / 1024 / 1024) << " MB RAM";
+    output_stream << "\n--- testsmem4u Configuration Wizard ---\n";
+    output_stream << "Detected " << plat.cpu_cores << " cores, " << (total_ram / 1024 / 1024) << " MB RAM";
     if (sizing_ram > 0 && sizing_ram != total_ram) {
-        std::cout << " (" << (sizing_ram / 1024 / 1024) << " MB currently available)";
+        output_stream << " (" << (sizing_ram / 1024 / 1024) << " MB currently available)";
     }
-    std::cout << ".\n\n";
+    output_stream << ".\n\n";
 
     std::string input;
 
-    std::cout << "Enter memory to test (e.g. '85%', '2048' for MB) [Default: 85%]: ";
-    std::getline(std::cin, input);
+    output_stream << "Enter memory to test (e.g. '85%', '2048' for MB) [Default: 85%]: ";
+    std::getline(input_stream, input);
     input = Utils::trim(input);
 
     if (input.empty()) {
@@ -126,12 +114,14 @@ Config runConfigWizard() {
         }
     }
 
-    std::cout << "Enter number of threads to use (1-" << plat.cpu_cores << ") [Default: all]: ";
-    std::getline(std::cin, input);
+    output_stream << "Enter number of threads to use (1-" << plat.cpu_cores << ") [Default: all]: ";
+    std::getline(input_stream, input);
     input = Utils::trim(input);
 
     uint32_t cores;
-    if (parseUintOrDefault(input, cores, plat.cpu_cores)) {
+    if (input.empty()) {
+        config.cores = 0; // Persist the all-core policy; resolution chooses the actual count.
+    } else if (parseUintOrDefault(input, cores, plat.cpu_cores)) {
         if (cores < 1) cores = 1;
         if (cores > plat.cpu_cores && plat.cpu_cores > 0) cores = plat.cpu_cores;
         config.cores = cores;
@@ -139,27 +129,27 @@ Config runConfigWizard() {
         config.cores = plat.cpu_cores;
     }
 
-    std::cout << "Enter number of cycles (0 for infinite) [Default: 3]: ";
-    std::getline(std::cin, input);
+    output_stream << "Enter number of cycles (0 for infinite) [Default: 3]: ";
+    std::getline(input_stream, input);
     input = Utils::trim(input);
 
-    parseUintOrDefault(input, config.cycles, 3);
+    if (!parseUintOrDefault(input, config.cycles, 3)) {
+        config.cycles = 3;
+        output_stream << "[!] Invalid cycle count. Using default 3.\n";
+    }
 
-    std::cout << "Use locked memory? (y/n) [Default: y]: ";
-    std::getline(std::cin, input);
+    output_stream << "Use locked memory? (y/n) [Default: y]: ";
+    std::getline(input_stream, input);
     input = Utils::trim(input);
     config.use_locked_memory = (input != "n" && input != "N");
 
-#ifndef _WIN32
-    // Linux hugepages option
-    std::cout << "Use large pages (hugepages)? Improves RowHammer test effectiveness. (y/n) [Default: y]: ";
-    std::getline(std::cin, input);
+    output_stream << "Prefer large pages (hugepages)? (y/n) [Default: y]: ";
+    std::getline(input_stream, input);
     input = Utils::trim(input);
     config.use_large_pages = (input != "n" && input != "N");
-#endif
 
-    std::cout << "Halt on detected errors? (y/n) [Default: y]: ";
-    std::getline(std::cin, input);
+    output_stream << "Halt on detected errors? (y/n) [Default: y]: ";
+    std::getline(input_stream, input);
     input = Utils::trim(input);
     config.halt_on_error = (input.empty() || (input != "n" && input != "N"));
 
@@ -173,24 +163,24 @@ Config runConfigWizard() {
     }
 
     if (presets.empty()) {
-        std::cout << "No preset files were found in the current directory.\n";
-        std::cout << "Enter preset file path [" << kDefaultPresetPath << "]: ";
-        std::getline(std::cin, input);
+        output_stream << "No preset files were found in the current directory.\n";
+        output_stream << "Enter preset file path [" << kDefaultPresetPath << "]: ";
+        std::getline(input_stream, input);
         config.preset_file = Utils::trim(input);
     } else {
-        std::cout << "Select Preset:\n";
+        output_stream << "Select Preset:\n";
         for (size_t i = 0; i < presets.size(); ++i) {
-            std::cout << (i + 1) << ". " << presets[i];
+            output_stream << (i + 1) << ". " << presets[i];
             if (presets[i] == kDefaultPresetPath) {
-                std::cout << " (Recommended)";
+                output_stream << " (Recommended)";
             }
-            std::cout << "\n";
+            output_stream << "\n";
         }
         size_t custom_choice = presets.size() + 1;
-        std::cout << custom_choice << ". Custom config file\n";
-        std::cout << "Enter selection [" << (default_choice + 1) << "]: ";
+        output_stream << custom_choice << ". Custom config file\n";
+        output_stream << "Enter selection [" << (default_choice + 1) << "]: ";
 
-        std::getline(std::cin, input);
+        std::getline(input_stream, input);
         input = Utils::trim(input);
 
         uint32_t selection = 0;
@@ -201,8 +191,8 @@ Config runConfigWizard() {
         if (selection >= 1 && selection <= presets.size()) {
             config.preset_file = presets[selection - 1];
         } else if (selection == custom_choice) {
-            std::cout << "Enter preset file path: ";
-            std::getline(std::cin, input);
+            output_stream << "Enter preset file path: ";
+            std::getline(input_stream, input);
             config.preset_file = Utils::trim(input);
         } else {
             config.preset_file = presets[default_choice];
@@ -218,13 +208,10 @@ Config runConfigWizard() {
         config.preset = loadPreset(config.preset_file);
     }
 
-    if (config.memory_window_mb == 0) {
-        config.memory_window_mb = computeWindowMBFromPercent(sizing_ram, config.memory_window_percent, config.use_large_pages);
-        if (config.memory_window_mb == 0) {
-            uint32_t fallback_mb = static_cast<uint32_t>(sizing_ram / 1024 / 1024 / 2);
-            config.memory_window_mb = normalizeWindowMBForLargePages(fallback_mb, config.use_large_pages);
-        }
-    }
+    LOG_DEBUG("Wizard: memory-percent=%u requested-MB=%u cores=%u (0=all) cycles=%u locked=%s large-pages=%s halt=%s",
+              config.memory_window_percent, config.memory_window_mb, config.cores, config.cycles,
+              config.use_locked_memory ? "yes" : "no", config.use_large_pages ? "yes" : "no",
+              config.halt_on_error ? "yes" : "no");
 
     return config;
 }

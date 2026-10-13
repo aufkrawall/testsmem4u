@@ -4,10 +4,12 @@
 
 ### Improved
 
+- **Comparable configuration wizards:** Windows and Linux ask the same questions and default to 85% of RAM, all cores, three cycles, strict locking, large-page preference and halt-on-error. Saved wizard settings retain percentage/all-core policies for the next system instead of freezing resolved RAM/thread counts; explicit selections remain explicit.
 - **Linux huge-page defaults:** large-page preference now requests aligned transparent huge pages automatically when an existing HugeTLB pool cannot satisfy the window, while preserving strict memory locking and native-page fallback. Allocation and RowHammer diagnostics report measured huge-page coverage, including conservative bounds for partial worker slices.
 
 ### Fixed
 
+- **Wizard cycles and page granularity:** invalid cycle input falls back to three instead of accidentally selecting an infinite run. Both platforms normalize windows using their preferred large-page size; Windows chunking reaches its actual native large-page minimum, and worker caps use native base pages on non-4-KiB systems.
 - **Windows allocation footprint and recovery:** chunked large-page fallback keeps the requested size instead of rounding small windows up to much larger chunks. Partial allocations are released on exceptions, and an explicitly allowed pageable fallback retains its original size after a lock failure.
 - **Windows cache preparation:** aggressive preparation flushes the file-cache working set with the documented API instead of toggling cache limits and potentially leaving hard limits enabled at zero.
 - **Native page sizes:** allocation and worker partitioning use the OS base page size; HugeTLB allocation uses its actual default size and does not silently expand a small window to a 1 GiB huge page.

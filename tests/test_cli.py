@@ -1,6 +1,7 @@
 """Run after building the baseline binary; exercises real configuration resolution."""
 
 import os
+import ctypes
 import subprocess
 import tempfile
 import unittest
@@ -59,6 +60,42 @@ class ConfigCliTests(unittest.TestCase):
         result = self.dry_run()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Config source:   defaults", result.stdout)
+        self.assertIn("Memory window:   85%", result.stdout)
+        self.assertIn("Locked memory:   Yes", result.stdout)
+        self.assertIn("Large pages:     Yes", result.stdout)
+        self.assertIn("Cycles:          3", result.stdout)
+
+    def test_large_page_window_uses_native_preferred_granularity(self):
+        if os.name == "nt":
+            query = ctypes.WinDLL("kernel32").GetLargePageMinimum
+            query.restype = ctypes.c_size_t
+            granularity = query()
+        else:
+            path = Path("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size")
+            granularity = int(path.read_text()) if path.exists() else 0
+            if not granularity:
+                for line in Path("/proc/meminfo").read_text().splitlines():
+                    if line.startswith("Hugepagesize:"):
+                        granularity = int(line.split()[1]) * 1024
+        expected = 17
+        if granularity:
+            aligned = (17 * 1024 * 1024 // granularity) * granularity
+            if aligned:
+                expected = aligned // (1024 * 1024)
+        result = self.dry_run("--no-config", "--memory", "17")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"Memory window:   {expected} MB", result.stdout)
+        result = self.dry_run("--no-config", "--memory", "17", "--no-large-pages")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Memory window:   17 MB", result.stdout)
+
+    def test_saved_percentage_and_all_core_policies_are_resolved(self):
+        self.config.write_text("MemoryWindowPercent=85\nMemoryWindowMB=0\nCores=0\nCycles=3\nUseLockedMemory=1\nUseLargePages=1\n")
+        result = self.dry_run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Memory window:   85%", result.stdout)
+        self.assertIn("Locked memory:   Yes", result.stdout)
+        self.assertIn("Large pages:     Yes", result.stdout)
 
     def test_missing_explicit_config_fails_in_automation(self):
         result = self.dry_run("--config", str(self.config))

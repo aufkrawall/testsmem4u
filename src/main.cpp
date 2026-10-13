@@ -504,7 +504,8 @@ int main(int argc, char* argv[]) {
 
         if (waitForInput(3, msg)) {
             std::string wizard_error;
-            config = runConfigWizard();
+            const Config wizard_config = runConfigWizard(std::cin, std::cout);
+            config = wizard_config;
             if (!prepareConfigForRun(
                     config,
                     resolution.platform,
@@ -518,7 +519,7 @@ int main(int argc, char* argv[]) {
 
             if (!cli.no_config) {
                 const std::string save_path = cli.config_path_set ? cli.config_path : kDefaultConfigPath;
-                if (!saveConfig(save_path, config)) {
+                if (!saveConfig(save_path, wizard_config)) {
                     ConsoleDisplay::get().printError(
                         std::string("[!] Failed to save configuration to ") + save_path);
                 }

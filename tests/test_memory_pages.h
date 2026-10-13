@@ -16,8 +16,9 @@ size_t g_windows_large_chunks = 0;
 uint32_t g_windows_preparations = 0;
 std::array<void*, 16> g_windows_owned{};
 std::array<bool, 16> g_windows_released{};
+size_t g_windows_page_size = size_t{2} * 1024 * 1024;
 
-size_t fixtureWindowsPageSize() { return size_t{2} * 1024 * 1024; }
+size_t fixtureWindowsPageSize() { return g_windows_page_size; }
 bool fixtureWindowsPrivilege() { return true; }
 bool fixtureWindowsWorkingSet(size_t, size_t) { return true; }
 bool fixtureWindowsLock(void*, size_t) { return g_windows_mode != WindowsFixtureMode::FAIL_LOCK; }
@@ -71,6 +72,7 @@ void resetWindowsFixture(WindowsFixtureMode mode, size_t target) {
     g_windows_preparations = 0;
     g_windows_owned.fill(nullptr);
     g_windows_released.fill(false);
+    g_windows_page_size = size_t{2} * 1024 * 1024;
 }
 
 void testWindowsMemoryFallbacks() {
@@ -130,6 +132,12 @@ void testWindowsMemoryFallbacks() {
     auto small = Platform::allocateMemoryRAII(size_t{1024} * 1024, true, false);
     expect(small.valid() && small.size() == size_t{1024} * 1024 && !small.is_large_pages(),
            "Small Windows windows fall back instead of growing to the large-page minimum");
+    const size_t native_window = size_t{192} * 1024;
+    resetWindowsFixture(WindowsFixtureMode::CHUNKED, native_window);
+    g_windows_page_size = size_t{64} * 1024;
+    auto native = Platform::allocateMemoryRAII(native_window, true, true);
+    expect(native.valid() && native.size() == native_window && native.large_page_bytes() == native_window && g_windows_large_chunks == 3,
+           "Windows chunk fallback reaches the actual native large-page minimum");
 }
 #endif
 
@@ -149,6 +157,9 @@ void testMemoryPageContracts() {
            "Small explicit windows and unavailable large pages preserve requested sizing");
     expect(normalizeWindow(513, true, size_t{512} * 1024 * 1024) == 512,
            "Window normalization supports ARM64 PMD page sizes");
+    expect(workerLimit(65536, 65536) == 1 && workerLimit(size_t{4} * 65536, 65536) == 4 &&
+           workerLimit(65536, 4096) == 16 && workerLimit(1024, 65536) == 1 && workerLimit(65536, 0) == 0,
+           "Worker caps follow native pages and cannot outnumber 64-KiB pages on ARM64");
 
     SmapsCoverage full(0x200000, 0x400000);
     full.consume("200000-600000 rw-p 00000000 00:00 0");

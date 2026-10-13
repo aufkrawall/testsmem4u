@@ -125,6 +125,7 @@ See cli-report.md for the full option reference, mode rules, exit codes, and exa
 
 - With no run-specific options, the program loads config.ini from the current working directory if present.
 - If launched interactively, it shows a 3-second countdown and opens the wizard if a key is pressed.
+- The wizard asks the same questions on Windows and Linux. Accepting defaults selects 85% of RAM, all cores, three cycles, locked memory, large-page preference and halt-on-error. Saved defaults use `MemoryWindowPercent=85`, `MemoryWindowMB=0` and `Cores=0`, so the next run resolves RAM and core counts for its current system; explicit MiB/thread selections are saved as requested.
 - If launched with run-specific CLI overrides, --yes, or non-interactive stdin, it skips prompts and runs in direct CLI mode.
 - On Windows, the program can offer to grant SeLockMemoryPrivilege when interactive and elevated.
 - On Linux, the program relaunches itself through `sudo` unless `--no-elevation` is given, so the test window can be locked in RAM. It warns when memory-lock or hugepage capability still appears limited.
