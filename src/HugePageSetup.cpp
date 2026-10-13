@@ -1,7 +1,10 @@
 #include "HugePageSetup.h"
 #include "Logger.h"
+#include "Utils.h"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cerrno>
 #include <charconv>
 #include <cstdio>
@@ -57,7 +60,7 @@ void reportInspectionFailure(const ThpPolicySnapshot& snapshot, std::ostream& ou
         output << "[!] Could not determine the effective Linux THP policy; leaving OS settings unchanged.\n"
                << "    Huge-page allocation remains best effort; check the THP controls and process policy.\n";
     }
-    LOG_WARN("THP setup: inspection unavailable process-mode=%d error=%d; no policy write",
+    LOG_INFO("THP setup: inspection unavailable process-mode=%d error=%d; no policy write",
              snapshot.process_mode, snapshot.error);
 }
 
@@ -160,7 +163,7 @@ ThpPolicySnapshot inspectThpPolicy(ThpPolicyAccess& access) {
 }
 
 ThpSetupResult configureThpForRun(ThpPolicyAccess& access, bool use_large_pages,
-                                bool interactive, bool privileged,
+                                ThpPrompt prompt, bool privileged,
                                 std::istream& input, std::ostream& output) {
     if (!use_large_pages) return ThpSetupResult::SKIPPED;
     const auto initial = inspectThpPolicy(access);
@@ -185,9 +188,15 @@ ThpSetupResult configureThpForRun(ThpPolicyAccess& access, bool use_large_pages,
                                   "    This changes the system-wide default, including THP sizes that inherit it, and affects other applications.\n")
            << "    The runtime change lasts until reboot or another policy change.\n"
            << "    No boot configuration is saved. No reboot or sign-out is needed; this run can use it immediately.\n";
-    if (!interactive) {
+    if (prompt == ThpPrompt::AUTOMATION) {
         output << "    Direct/non-interactive mode: skipping automatic THP policy setup.\n";
         LOG_DEBUG("THP setup: disabled policy; skipped non-interactive write");
+        return ThpSetupResult::SKIPPED;
+    }
+    if (prompt == ThpPrompt::UNATTENDED) {
+        output << "    Unattended start: skipping the setup offer so this run does not wait for input.\n"
+               << "    Press a key during the startup countdown to configure the run and receive the offer.\n";
+        LOG_INFO("THP setup: disabled policy; countdown expired, no prompt or policy write");
         return ThpSetupResult::SKIPPED;
     }
     if (!privileged) {
@@ -196,15 +205,18 @@ ThpSetupResult configureThpForRun(ThpPolicyAccess& access, bool use_large_pages,
         return ThpSetupResult::NEEDS_PRIVILEGE;
     }
     output << "    Enable 'madvise' now? [Y/n]: " << std::flush;
-    std::string answer;
-    if (!std::getline(input, answer)) {
+    std::string raw_answer;
+    if (!std::getline(input, raw_answer)) {
         output << "    No answer received; leaving OS settings unchanged.\n";
         LOG_DEBUG("THP setup: input closed; no policy write");
         return ThpSetupResult::DECLINED;
     }
-    if (!answer.empty() && answer != "y" && answer != "Y" && answer != "yes" && answer != "Yes" && answer != "YES") {
+    std::string answer = Utils::trim(raw_answer);
+    std::transform(answer.begin(), answer.end(), answer.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (!answer.empty() && answer != "y" && answer != "yes") {
         output << "    Leaving OS settings unchanged; huge-page allocation remains best effort.\n";
-        LOG_DEBUG("THP setup: offer declined; no policy write");
+        LOG_DEBUG("THP setup: offer declined answer-length=%zu; no policy write", raw_answer.size());
         return ThpSetupResult::DECLINED;
     }
     // A user may leave the prompt open while an administrator changes policy.
@@ -217,14 +229,14 @@ ThpSetupResult configureThpForRun(ThpPolicyAccess& access, bool use_large_pages,
     }
     if (!samePolicy(initial, current)) {
         output << "[!] THP policy changed while waiting for confirmation; leaving it unchanged. Rerun to inspect it again.\n";
-        LOG_WARN("THP setup: policy changed before write; no policy write");
+        LOG_INFO("THP setup: policy changed before write; no policy write");
         return ThpSetupResult::SETUP_FAILED;
     }
     const int error = access.writeMadvise(control);
     if (error != 0) {
         output << "[!] Could not complete THP policy setup (error " << error << "). Check root access and writable sysfs.\n"
                << "    A write may have partially applied; inspect THP policy. Huge-page allocation remains best effort.\n";
-        LOG_WARN("THP setup: write failed control=%s error=%d; no retry or restoration", controlName(control), error);
+        LOG_INFO("THP setup: write failed control=%s error=%d; no retry or restoration", controlName(control), error);
         return ThpSetupResult::SETUP_FAILED;
     }
     const auto verified = inspectThpPolicy(access);
@@ -232,7 +244,7 @@ ThpSetupResult configureThpForRun(ThpPolicyAccess& access, bool use_large_pages,
     if (verified.availability != ThpAvailability::READY || selected != ThpPolicy::MADVISE) {
         output << "[!] THP policy write could not be verified. Another policy manager may have changed it; check THP settings.\n"
                << "    Huge-page allocation remains best effort.\n";
-        LOG_WARN("THP setup: readback failed control=%s effective=%s process-mode=%d error=%d",
+        LOG_INFO("THP setup: readback failed control=%s effective=%s process-mode=%d error=%d",
                  controlName(control), policyName(verified.effective), verified.process_mode, verified.error);
         return ThpSetupResult::SETUP_FAILED;
     }
@@ -241,10 +253,10 @@ ThpSetupResult configureThpForRun(ThpPolicyAccess& access, bool use_large_pages,
     return ThpSetupResult::CHANGED;
 }
 
-ThpSetupResult runLinuxHugePageSetup(bool use_large_pages, bool interactive, bool privileged,
+ThpSetupResult runLinuxHugePageSetup(bool use_large_pages, ThpPrompt prompt, bool privileged,
                                    std::istream& input, std::ostream& output) {
     NativeThpPolicyAccess access;
-    return configureThpForRun(access, use_large_pages, interactive, privileged, input, output);
+    return configureThpForRun(access, use_large_pages, prompt, privileged, input, output);
 }
 
 } // namespace testsmem4u

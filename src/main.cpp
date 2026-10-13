@@ -498,12 +498,14 @@ int main(int argc, char* argv[]) {
 #endif
 
     uint32_t requested_window_mb = resolution.requested_window_mb;
+    [[maybe_unused]] bool operator_attended = false; // Linux THP offer only
     if (!automation_mode) {
         const char* msg = resolution.config_loaded
             ? "Starting with saved settings..."
             : "Starting with default settings...";
 
         if (waitForInput(3, msg)) {
+            operator_attended = true;
             std::string wizard_error;
             const Config wizard_config = runConfigWizard(std::cin, std::cout);
             config = wizard_config;
@@ -530,7 +532,11 @@ int main(int argc, char* argv[]) {
 
 #ifndef _WIN32
     // Inspect the final wizard/config selection before any test allocation.
-    runLinuxHugePageSetup(config.use_large_pages, !automation_mode, isPrivileged(), std::cin, std::cout);
+    // Offer a policy change only to an operator who opened the wizard; an
+    // expired countdown promised an automatic start and must not block.
+    const ThpPrompt thp_prompt = automation_mode ? ThpPrompt::AUTOMATION :
+                                 operator_attended ? ThpPrompt::ATTENDED : ThpPrompt::UNATTENDED;
+    runLinuxHugePageSetup(config.use_large_pages, thp_prompt, isPrivileged(), std::cin, std::cout);
 #endif
 
     reportMemoryWindowAdjustment(requested_window_mb, config.memory_window_mb);

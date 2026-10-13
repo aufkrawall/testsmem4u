@@ -148,7 +148,11 @@ recommends it, explaining that sign-out/sign-in suffices without a reboot.
   use the legacy global control; unreadable controls and unknown process modes
   cannot authorize writes. Complete process disabling is never cleared.
 - When effective policy is `never`, stream-driven setup recommends `madvise`
-  with `[Y/n]` only for an interactive privileged run with page preference enabled.
+  with `[Y/n]` only for an attended (`ThpPrompt::ATTENDED`: the operator opened
+  the wizard during the countdown) privileged run with page preference enabled.
+  An expired countdown is `UNATTENDED`: it explains how to receive the offer and
+  never reads stdin, because that start promised to proceed automatically.
+  Answers are trimmed and case-insensitive (`y`/`yes`/empty accept).
   Modern kernels change the PMD-size control only; older kernels change global
   `enabled`. The offer explains the system-wide scope, runtime persistence and
   immediate applicability. It saves no boot configuration or HugeTLB reservation.
@@ -163,6 +167,8 @@ recommends it, explaining that sign-out/sign-in suffices without a reboot.
   A Linux `/dev/full` fixture verifies buffered flush failure propagation.
   Tests never change real sysfs/process policy. Stable `THP setup:` diagnostics
   record parsed modes, decision, control and errno without raw sysfs contents.
+  They are INFO/DEBUG (file-only): `LOG_WARN` echoes to the console, which
+  duplicated the operator text already written to the setup stream.
 
 Verified against the [kernel THP controls](https://docs.kernel.org/admin-guide/mm/transhuge.html)
 and [process-policy API](https://man7.org/linux/man-pages/man2/PR_GET_THP_DISABLE.2const.html),

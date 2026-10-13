@@ -49,13 +49,16 @@ struct ThpPolicySnapshot {
 };
 
 enum class ThpSetupResult : uint8_t { SKIPPED, READY, UNAVAILABLE, DECLINED, NEEDS_PRIVILEGE, CHANGED, SETUP_FAILED };
+// Only an operator who opened the interactive configuration is waiting at the
+// terminal; an expired startup countdown must never block on a prompt.
+enum class ThpPrompt : uint8_t { AUTOMATION, UNATTENDED, ATTENDED };
 
 ThpPolicy parseThpPolicy(std::string_view text, bool allow_inherit);
 ThpPolicySnapshot inspectThpPolicy(ThpPolicyAccess& access);
 ThpSetupResult configureThpForRun(ThpPolicyAccess& access, bool use_large_pages,
-                                bool interactive, bool privileged,
+                                ThpPrompt prompt, bool privileged,
                                 std::istream& input, std::ostream& output);
-ThpSetupResult runLinuxHugePageSetup(bool use_large_pages, bool interactive, bool privileged,
+ThpSetupResult runLinuxHugePageSetup(bool use_large_pages, ThpPrompt prompt, bool privileged,
                                    std::istream& input, std::ostream& output);
 
 } // namespace testsmem4u

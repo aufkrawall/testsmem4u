@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- **Unattended Linux startup no longer waits on the THP offer:** when the startup countdown expires without opening the configuration, a disabled THP policy is reported with instructions instead of blocking indefinitely on a `[Y/n]` prompt. The offer still appears after the operator opens the wizard. Confirmations now accept surrounding whitespace, CRLF input and any letter case, and setup diagnostics no longer appear twice on the console.
 - **Wizard cycles and page granularity:** invalid cycle input falls back to three instead of accidentally selecting an infinite run. Both platforms normalize windows using their preferred large-page size; Windows chunking reaches its actual native large-page minimum, and worker caps use native base pages on non-4-KiB systems.
 - **Windows allocation footprint and recovery:** chunked large-page fallback keeps the requested size instead of rounding small windows up to much larger chunks. Partial allocations are released on exceptions, and an explicitly allowed pageable fallback retains its original size after a lock failure.
 - **Windows cache preparation:** aggressive preparation flushes the file-cache working set with the documented API instead of toggling cache limits and potentially leaving hard limits enabled at zero.

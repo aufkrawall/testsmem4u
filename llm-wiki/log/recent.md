@@ -1,5 +1,13 @@
 # Recent Log
 
+## 2026-10-13 - Review fixes for the large-page/THP range (4dac99d..0098097)
+
+- THP offer: an expired startup countdown previously reached a blocking `[Y/n]`
+  prompt after printing "Starting tests...". `main` now passes `ThpPrompt`
+  (AUTOMATION/UNATTENDED/ATTENDED); only an operator who opened the wizard is
+  prompted. Answers are trimmed/case-insensitive; `THP setup:` WARN logs became
+  INFO because WARN is echoed to the console next to the stream text.
+
 ## 2026-10-13 - Integrate huge-page setup and expand operator documentation
 
 - Linux invokes THP policy setup after final wizard/config resolution and before

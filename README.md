@@ -128,7 +128,7 @@ The executable now supports the following high-value operator options:
 - The wizard asks the same questions on Windows and Linux. Accepting defaults selects 85% of RAM, all cores, three cycles, locked memory, large-page preference and halt-on-error. Saved defaults use `MemoryWindowPercent=85`, `MemoryWindowMB=0` and `Cores=0`, so the next run resolves RAM and core counts for its current system; explicit MiB/thread selections are saved as requested.
 - If launched with run-specific CLI overrides, --yes, or non-interactive stdin, it skips prompts and runs in direct CLI mode.
 - On Windows, interactive startup recommends and offers to grant a missing `SeLockMemoryPrivilege`. After granting it, sign out and sign back in; a reboot is not required.
-- On Linux, the program relaunches itself through `sudo` unless `--no-elevation` is given, so the test window can be locked in RAM. After the wizard, it checks effective THP policy and offers a runtime `madvise` change when the requested huge-page size is disabled. See [large and huge pages](#large-and-huge-pages) for setup scope and persistence.
+- On Linux, the program relaunches itself through `sudo` unless `--no-elevation` is given, so the test window can be locked in RAM. After the wizard, it checks effective THP policy and offers a runtime `madvise` change when the requested huge-page size is disabled. If the countdown expires without opening the wizard, the run starts as promised and only reports a disabled policy instead of waiting for an answer. See [large and huge pages](#large-and-huge-pages) for setup scope and persistence.
 - Binary variant selection is manual: run the `-v3` (AVX2) or `-v4` (AVX-512) binary that matches your CPU; the baseline binary works everywhere. A startup warning points out when a faster variant would fit your CPU.
 - If the run falls back from full large pages to locked standard pages, the console now explains that the test remains valid and how to improve large-page coverage for future runs.
 - Large pages and strict memory locking are preferred by default on both platforms. Windows tries native large pages, chunked/hybrid allocations and fully locked standard fallback. Linux first tries a compatible existing HugeTLB pool, then requests aligned transparent huge pages and locks the mapping. Allocation output reports actual large-page coverage; Linux THP coverage is a snapshot and can change under kernel memory management.
@@ -212,8 +212,8 @@ After the wizard resolves the final page preference, startup checks the global T
 available, and inherited process THP restrictions. A size-specific policy can
 override the global setting, so the global value alone is insufficient.
 
-If effective policy is `never`, an interactive root run recommends **`madvise`** and
-offers `[Y/n]`. This permits huge pages for allocations that explicitly request
+If effective policy is `never`, an interactive root run whose operator opened the
+wizard recommends **`madvise`** and offers `[Y/n]`. This permits huge pages for allocations that explicitly request
 them. Modern kernels change only the native PMD-size control. Older kernels with
 no size-specific control use the global `enabled` control. The offer explains that
 the change also affects other applications and lasts until reboot or another policy
@@ -223,8 +223,8 @@ boot policy is reapplied on reboot. **No reboot, sign-out or application relaunc
 the test allocates its memory after setup and can use the new policy immediately.
 [Linux THP policy documentation](https://docs.kernel.org/admin-guide/mm/transhuge.html).
 
-Already suitable policies need no prompt. Direct/non-interactive runs diagnose a
-disabled policy without changing it. An unprivileged interactive run explains how
+Already suitable policies need no prompt. Direct/non-interactive runs and an
+expired startup countdown diagnose a disabled policy without prompting or changing it. An unprivileged interactive run explains how
 to relaunch with `sudo`; `--no-large-pages` bypasses THP setup. Missing/unreadable
 controls, inherited complete process disabling, declined/invalid input and closed
 stdin do not authorize policy changes. Setup rechecks policy after confirmation
@@ -253,6 +253,8 @@ operations affect system memory/cache state and can slow other applications whil
 they refill their caches. Neither platform needs a reboot for these operations.
 
 To receive setup offers, launch interactively without run-specific overrides.
+On Linux, press a key during the startup countdown to open the wizard; the THP
+offer follows it.
 `--yes`, run-specific CLI options and non-interactive stdin skip setup prompts;
 `--dry-run` exits before privilege elevation or OS setup.
 

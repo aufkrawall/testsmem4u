@@ -36,11 +36,15 @@ public:
         }
         return 0;
     }
-    ThpSetupResult run(const std::string& answer = "\n", bool interactive = true, bool privileged = true, bool use_pages = true) {
+    std::streamoff unread_input = 0;
+    ThpSetupResult run(const std::string& answer = "\n", ThpPrompt prompt = ThpPrompt::ATTENDED,
+                       bool privileged = true, bool use_pages = true) {
         std::istringstream input(answer);
         std::ostringstream output;
-        const auto result = configureThpForRun(*this, use_pages, interactive, privileged, input, output);
+        const auto result = configureThpForRun(*this, use_pages, prompt, privileged, input, output);
         prompts = output.str();
+        input.clear();
+        unread_input = static_cast<std::streamoff>(answer.size()) - static_cast<std::streamoff>(input.tellg());
         return result;
     }
 };
@@ -90,21 +94,34 @@ void testThpSetupConsentAndScope() {
     expect(fixture.run("y\n") == ThpSetupResult::CHANGED && fixture.written_control == ThpControl::GLOBAL &&
            fixture.prompts.find("sizes that inherit it") != std::string::npos,
            "Legacy setup changes only global enabled and explains the wider effect");
-    for (const auto* answer : {"n\n", "invalid\n", ""}) {
+    for (const auto* answer : {" y \n", "Y\r\n", "YES\n", "\t\r\n"}) {
+        fixture = ThpSetupFixture{};
+        expect(fixture.run(answer) == ThpSetupResult::CHANGED && fixture.writes == 1,
+               "Confirmations tolerate surrounding whitespace, CRLF input and letter case");
+    }
+    for (const auto* answer : {"n\n", "invalid\n", " no \n", "y y\n", ""}) {
         fixture = ThpSetupFixture{};
         expect(fixture.run(answer) == ThpSetupResult::DECLINED && fixture.writes == 0,
                "Declining, invalid input and closed stdin never authorize OS changes");
     }
     fixture = ThpSetupFixture{};
-    expect(fixture.run("\n", false) == ThpSetupResult::SKIPPED && fixture.writes == 0 &&
-           fixture.prompts.find("[Y/n]") == std::string::npos,
-           "Direct/non-interactive runs diagnose disabled THP without prompts or writes");
+    expect(fixture.run("\n", ThpPrompt::AUTOMATION) == ThpSetupResult::SKIPPED && fixture.writes == 0 &&
+           fixture.prompts.find("[Y/n]") == std::string::npos && fixture.unread_input == 1,
+           "Direct/non-interactive runs diagnose disabled THP without prompts, input reads or writes");
     fixture = ThpSetupFixture{};
-    expect(fixture.run("\n", true, false) == ThpSetupResult::NEEDS_PRIVILEGE && fixture.writes == 0 &&
+    expect(fixture.run("y\n", ThpPrompt::UNATTENDED) == ThpSetupResult::SKIPPED && fixture.writes == 0 &&
+           fixture.prompts.find("[Y/n]") == std::string::npos && fixture.unread_input == 2 &&
+           fixture.prompts.find("startup countdown") != std::string::npos,
+           "An expired startup countdown never blocks on the THP offer and explains how to receive it");
+    fixture = ThpSetupFixture{};
+    expect(fixture.run("\n", ThpPrompt::UNATTENDED, false) == ThpSetupResult::SKIPPED && fixture.unread_input == 1,
+           "Unattended unprivileged starts also continue without reading input");
+    fixture = ThpSetupFixture{};
+    expect(fixture.run("\n", ThpPrompt::ATTENDED, false) == ThpSetupResult::NEEDS_PRIVILEGE && fixture.writes == 0 &&
            fixture.prompts.find("requires root") != std::string::npos,
            "Unprivileged setup explains sudo and leaves OS settings unchanged");
     fixture = ThpSetupFixture{};
-    expect(fixture.run("\n", true, true, false) == ThpSetupResult::SKIPPED && fixture.reads == 0 && fixture.writes == 0,
+    expect(fixture.run("\n", ThpPrompt::ATTENDED, true, false) == ThpSetupResult::SKIPPED && fixture.reads == 0 && fixture.writes == 0,
            "Disabling large pages bypasses policy probes and setup entirely");
     fixture = ThpSetupFixture{};
     fixture.global.text = "always [madvise] never";
