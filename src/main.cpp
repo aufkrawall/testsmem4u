@@ -6,6 +6,7 @@
 #include "simd_ops.h"
 #include "Utils.h"
 #include <iostream>
+#include <iomanip>
 #include <string>
 #include <vector>
 #include <fstream>
@@ -1475,6 +1476,19 @@ int main(int argc, char* argv[]) {
 
     ConsoleDisplay::get().printLine("");
     ConsoleDisplay::get().printLine("--- Results ---");
+    {
+        std::ostringstream ss;
+        ss << "Tested memory: " << std::fixed << std::setprecision(2)
+           << res.bytes_tested / (1024.0 * 1024.0 * 1024.0)
+           << " GiB (" << res.bytes_tested << " bytes verified; repeated reads included)";
+        ConsoleDisplay::get().printLine(ss.str());
+        ConsoleDisplay::get().printLine("Completed cycles: " + std::to_string(res.cycles_completed));
+    }
+    LOG_INFO("Results: verified-bytes=%llu complete-cycles=%llu errors=%llu duration=%.3fs infrastructure-failure=%s",
+             static_cast<unsigned long long>(res.bytes_tested),
+             static_cast<unsigned long long>(res.cycles_completed),
+             static_cast<unsigned long long>(res.total_errors()), res.duration_seconds,
+             res.infrastructure_failure ? "yes" : "no");
     {
         std::ostringstream ss;
         ss << "Total Errors: " << res.total_errors();

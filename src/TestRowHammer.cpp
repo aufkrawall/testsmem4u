@@ -29,6 +29,7 @@ using namespace simd;
 std::atomic<bool> g_rowhammer_large_page_warning_emitted{false};
 TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
     TestResult res = {};
+    VerificationProgress progress(ctx, res, region);
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
 
@@ -87,7 +88,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += init_block) {
             size_t n = std::min(init_block, count - i);
             TestEngine::verifyAndReport(region, ptr + i, n, i, 0, victim_fill, 0, res, ctx, "RowHammer (Init)", stop);
-            res.bytes_tested += n * sizeof(uint64_t);
+            progress.addBytes(n * sizeof(uint64_t));
             if (stop && ctx.shouldStop()) break;
         }
         if (stop && ctx.shouldStop()) break;
@@ -118,7 +119,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
                     simd::flush_cache_region(ptr + idx, sizeof(uint64_t));
                     TestEngine::verifyAndReport(region, ptr + idx, 1, idx, 0, victim_fill, 0,
                                                 res, ctx, "RowHammer (Before reuse)", stop);
-                    res.bytes_tested += sizeof(uint64_t);
+                    progress.addBytes(sizeof(uint64_t));
                     if (ctx.shouldStop()) break;
                 }
                 if (ctx.shouldStop()) break;
@@ -153,7 +154,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
                 if (!ctx.shouldStop()) {
                     TestEngine::verifyAndReport(region, ptr + victim_start, victim_count, victim_start,
                                                 0, victim_fill, 0, res, ctx, "RowHammer (Victim)", stop);
-                    res.bytes_tested += victim_count * sizeof(uint64_t);
+                    progress.addBytes(victim_count * sizeof(uint64_t));
                 }
 #if defined(__x86_64__) || defined(_M_X64)
                 _mm_stream_si64((long long*)&ptr[idxA], (long long)victim_fill);
@@ -172,7 +173,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);
             TestEngine::verifyAndReport(region, ptr + i, n, i, 0, victim_fill, 0, res, ctx, "RowHammer", stop);
-            res.bytes_tested += n * sizeof(uint64_t);
+            progress.addBytes(n * sizeof(uint64_t));
             if (stop && res.total_errors() > 0) break;
         }
     }

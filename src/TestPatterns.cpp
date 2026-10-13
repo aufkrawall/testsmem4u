@@ -85,6 +85,7 @@ size_t TestEngine::verifyAndReport(const MemoryRegion& region, const uint64_t* p
 
 TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
     TestResult res = {};
+    VerificationProgress progress(ctx, res, region);
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
     size_t word_start = globalWordStart(region);
@@ -106,6 +107,8 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
 
         simd::flush_cache_region(ptr, region.size);
 
+        testPhase(ctx, "Simple filled", region);
+
         // Verify in blocks (2MB chunks)
         size_t block = size_t{256} * 1024;
 
@@ -115,7 +118,7 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
 
             TestEngine::verifyAndReport(region, ptr + i, n, i, config.pattern_mode, config.pattern_param0,
                                         config.pattern_param1, res, ctx, "SimpleTest", stop);
-            res.bytes_tested += n * sizeof(uint64_t);
+            progress.addBytes(n * sizeof(uint64_t));
 
             if (stop && ctx.shouldStop()) break;
         }
@@ -126,6 +129,7 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
 
 TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
     TestResult res = {};
+    VerificationProgress progress(ctx, res, region);
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
     size_t word_start = globalWordStart(region);
@@ -144,7 +148,7 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
             size_t n = std::min(block, count - i);
             TestEngine::verifyAndReport(region, ptr + i, n, i, 1, config.pattern_param0,
                                         config.pattern_param1, res, ctx, "MirrorMove (Init)", stop);
-            res.bytes_tested += n * sizeof(uint64_t);
+            progress.addBytes(n * sizeof(uint64_t));
             if (stop && ctx.shouldStop()) break;
         }
         if (stop && ctx.shouldStop()) break;
@@ -161,7 +165,7 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
 
             TestEngine::verifyAndReport(region, ptr + i, n, i, 1, ~config.pattern_param0,
                                         config.pattern_param1, res, ctx, "MirrorMove (Inv)", stop);
-            res.bytes_tested += n * sizeof(uint64_t);
+            progress.addBytes(n * sizeof(uint64_t));
 
             if (stop && ctx.shouldStop()) break;
         }
@@ -172,6 +176,7 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
 
 TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
     TestResult res = {};
+    VerificationProgress progress(ctx, res, region);
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
@@ -261,12 +266,12 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
                 classifyAndLogErrors(region, ptr, errors, found, i,
                                      [&](size_t offset) { return (offset & 1) ? odd : even; },
                                      res, ctx, "MirrorMove128", stop);
-                res.bytes_tested += n * sizeof(uint64_t);
+                progress.addBytes(n * sizeof(uint64_t));
             }
             if (paired != count && !ctx.shouldStop()) {
                 verifyAndReport(region, ptr + paired, 1, paired, 0, config.pattern_param0, 0,
                                 res, ctx, "MirrorMove128 (Tail)", stop);
-                res.bytes_tested += sizeof(uint64_t);
+                progress.addBytes(sizeof(uint64_t));
             }
         }
     }
@@ -277,6 +282,7 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
 TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop, bool invert) {
     (void)config;
     TestResult res = {};
+    VerificationProgress progress(ctx, res, region);
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
 
@@ -301,7 +307,7 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
             size_t found = simd::verify_uniform(ptr + i, n, pattern, errors);
             classifyAndLogErrors(region, ptr, errors, found, i,
                                  [&](size_t) { return pattern; }, res, ctx, name, stop);
-            res.bytes_tested += n * sizeof(uint64_t);
+            progress.addBytes(n * sizeof(uint64_t));
         }
     }
 

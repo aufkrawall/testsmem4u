@@ -4,6 +4,7 @@
 #include "simd_ops.h"
 #include "testsmem4u.h"
 #include "Types.h"
+#include "TestProgress.h"
 #include <vector>
 #include <map>
 #include <atomic>
@@ -26,6 +27,8 @@ struct TestContext {
     std::atomic<uint64_t> total_soft_errors{0};
     std::atomic<uint64_t> total_unverified_errors{0};
     std::atomic<uint64_t> total_bytes{0};
+    // Fixed before threads start and folded into the totals only after joining.
+    std::vector<ProgressCounters> worker_progress;
     // Cross-worker disturbance tracking: workers run independently, so one
     // region's RowHammer can overlap (and physically disturb rows shared with)
     // a neighbouring region's unrelated test. Used only to annotate errors.
@@ -35,6 +38,34 @@ struct TestContext {
 
     std::mutex failure_mutex;
     std::string infrastructure_error;
+
+    void publishProgress(const TestResult& delta) noexcept {
+        if (ProgressBinding::publish(this, delta)) return;
+        // Standalone kernel calls have no worker binding.
+        if (delta.bytes_tested) total_bytes.fetch_add(delta.bytes_tested, std::memory_order_relaxed);
+        if (delta.hard_errors) total_hard_errors.fetch_add(delta.hard_errors, std::memory_order_relaxed);
+        if (delta.soft_errors) total_soft_errors.fetch_add(delta.soft_errors, std::memory_order_relaxed);
+        if (delta.unverified_errors) total_unverified_errors.fetch_add(delta.unverified_errors, std::memory_order_relaxed);
+    }
+
+    TestResult progressSnapshot() const noexcept {
+        TestResult result;
+        result.bytes_tested = total_bytes.load(std::memory_order_relaxed);
+        result.hard_errors = total_hard_errors.load(std::memory_order_relaxed);
+        result.soft_errors = total_soft_errors.load(std::memory_order_relaxed);
+        result.unverified_errors = total_unverified_errors.load(std::memory_order_relaxed);
+        for (const auto& worker : worker_progress) result.merge(worker.snapshot());
+        return result;
+    }
+
+    void finishProgress() noexcept {
+        const auto totals = progressSnapshot();
+        total_bytes.store(totals.bytes_tested, std::memory_order_relaxed);
+        total_hard_errors.store(totals.hard_errors, std::memory_order_relaxed);
+        total_soft_errors.store(totals.soft_errors, std::memory_order_relaxed);
+        total_unverified_errors.store(totals.unverified_errors, std::memory_order_relaxed);
+        worker_progress.clear();
+    }
 
     void requestStop() {
         stop_flag.store(true, std::memory_order_release);

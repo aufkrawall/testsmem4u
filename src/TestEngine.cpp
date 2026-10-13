@@ -455,9 +455,11 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     std::vector<std::thread> workers;
     workers.reserve(threads);
     WorkerProgress progress(threads);
+    ctx.worker_progress = std::vector<ProgressCounters>(threads);
     LOG_INFO("Scheduling: independent workers; progress reports minimum completed coverage. "
              "Faster workers continue genuine tests until every region completes the requested cycles.");
     LOG_INFO("Retention: alternate untouched halves while testing the other half; no whole-run sleep.");
+    LOG_DEBUG("Progress: verified blocks publish to separate worker counters; completed cycles require every region.");
 
     auto start = std::chrono::steady_clock::now();
 
@@ -483,10 +485,9 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             info.test_idx = static_cast<uint32_t>(position % seq.size() + 1);
             info.total_tests = seq.size();
             info.test_name = configs.at(seq[position % seq.size()]).function;
-            info.bytes_tested = ctx.total_bytes.load(std::memory_order_relaxed);
-            info.errors = ctx.total_hard_errors.load(std::memory_order_relaxed) +
-                          ctx.total_soft_errors.load(std::memory_order_relaxed) +
-                          ctx.total_unverified_errors.load(std::memory_order_relaxed);
+            const auto totals = ctx.progressSnapshot();
+            info.bytes_tested = totals.bytes_tested;
+            info.errors = totals.total_errors();
             info.elapsed_seconds = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::seconds>(now - start).count());
 
@@ -498,6 +499,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     try {
         for (uint32_t t = 0; t < threads; ++t) {
             workers.emplace_back([&, t]() {
+                ProgressBinding binding(&ctx, ctx.worker_progress[t]);
                 try {
                     const WorkerAssignment& assignment = assignments[t];
                     if (!Platform::bindCurrentThread(assignment.target)) {
@@ -520,6 +522,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         for (size_t seq_idx = 0; seq_idx < seq.size() && !ctx.shouldStop(); ++seq_idx) {
                             const TestConfig& tc = configs.at(seq[seq_idx]);
                             const auto test_start = std::chrono::steady_clock::now();
+                            const uint64_t bytes_before = ctx.worker_progress[t].snapshot().bytes_tested;
                             if (tc.enabled) {
                                 testPhase(ctx, "Worker test start", my_region);
                                 LOG_DEBUG("Worker %u cycle %llu test %zu: %s started", t,
@@ -530,10 +533,6 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                                 for (uint64_t loop = 0; loop < loops && !ctx.shouldStop(); ++loop) {
                                     DisturbanceWindow window(ctx, disturbs);
                                     TestResult tr = runRegionWork(ctx, my_region, tc, config.halt_on_error);
-                                    ctx.total_hard_errors.fetch_add(tr.hard_errors, std::memory_order_relaxed);
-                                    ctx.total_soft_errors.fetch_add(tr.soft_errors, std::memory_order_relaxed);
-                                    ctx.total_unverified_errors.fetch_add(tr.unverified_errors, std::memory_order_relaxed);
-                                    ctx.total_bytes.fetch_add(tr.bytes_tested, std::memory_order_relaxed);
                                     if (tr.total_errors() && window.overlappedForeignDisturbance()) {
                                         LOG_WARN("Worker %u: %llu error(s) in %s (region offset=%zu bytes=%zu) while "
                                                  "RowHammer ran on another worker region. Rows can span region "
@@ -546,9 +545,10 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                             }
                             if (ctx.shouldStop()) break;
                             progress.publish(t, cycle * seq.size() + seq_idx + 1);
-                            LOG_DEBUG("Worker %u cycle %llu test %zu: %s completed in %.3fs", t,
+                            LOG_DEBUG("Worker %u cycle %llu test %zu: %s completed in %.3fs verified-bytes=%llu", t,
                                       static_cast<unsigned long long>(cycle + 1), seq_idx + 1, tc.function.c_str(),
-                                      std::chrono::duration<double>(std::chrono::steady_clock::now() - test_start).count());
+                                      std::chrono::duration<double>(std::chrono::steady_clock::now() - test_start).count(),
+                                      static_cast<unsigned long long>(ctx.worker_progress[t].snapshot().bytes_tested - bytes_before));
                             if (config.cycles && progress.minimum() / seq.size() >= config.cycles) {
                                 ctx.requestStop();
                                 break;
@@ -576,6 +576,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     if (monitor.joinable()) monitor.join();
 
     ConsoleDisplay::get().setTestingActive(false);
+    ctx.finishProgress();
 
     auto end = std::chrono::steady_clock::now();
     result.hard_errors = ctx.total_hard_errors.load(std::memory_order_relaxed);

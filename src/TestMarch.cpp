@@ -36,6 +36,7 @@ void reportMarchErrors(const MemoryRegion& region, uint64_t* ptr, size_t offset,
 TestResult runMarch(TestContext& ctx, const MemoryRegion& region,
                     uint64_t seed, bool lfsr, bool stop) {
     TestResult res;
+    VerificationProgress progress(ctx, res, region);
     auto* ptr = reinterpret_cast<uint64_t*>(region.base);
     const size_t count = region.size / sizeof(uint64_t);
     std::array<uint64_t, march_words> expected{};
@@ -79,7 +80,7 @@ TestResult runMarch(TestContext& ctx, const MemoryRegion& region,
                                      [&](size_t k) { return expected[k - offset]; },
                                      res, ctx, "March (Final)", stop);
             }
-            res.bytes_tested += n * sizeof(uint64_t);
+            progress.addBytes(n * sizeof(uint64_t));
         }
         simd::flush_cache_region(ptr, count * sizeof(uint64_t));
         testPhase(ctx, phase == 0 ? "March inverted" : "March restored", region);
@@ -138,6 +139,7 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
 TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& region,
                                     const TestConfig& config, bool stop) {
     TestResult res;
+    VerificationProgress progress(ctx, res, region);
     auto* ptr = reinterpret_cast<uint64_t*>(region.base);
     const size_t count = region.size / sizeof(uint64_t);
     const uint64_t seed = config.pattern_param0 ? config.pattern_param0 : 0xACE1ACE2DEADBEEFULL;
@@ -159,7 +161,7 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
         const size_t found = simd::verify_words(ptr + i, expected.data(), n, errors);
         classifyAndLogErrors(region, ptr, errors, found, i,
                              [&](size_t k) { return expected[k - i]; }, res, ctx, "LFSR", stop);
-        res.bytes_tested += n * sizeof(uint64_t);
+        progress.addBytes(n * sizeof(uint64_t));
     }
     LOG_DEBUG("LFSRPattern(seed=0x%016llx): offset=%zu words=%zu errors=%llu in %.3fs%s",
               static_cast<unsigned long long>(seed), region.base_offset_bytes, count,

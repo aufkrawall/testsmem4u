@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Live tested-memory progress:** long test invocations now publish verified bytes and observed errors during testing instead of leaving the displayed total unchanged until all internal repetitions finish. Separate worker counters preserve exact totals through nested retention work, configured sub-blocks, cancellation, and worker exceptions.
+- **Final test totals:** console results and the persistent log now report the exact verified-byte total and completed cycles, including partial work from a stopped run. The console explains that repeated verification reads contribute to the total.
+
 ### Improved
 
 - **Agent instructions baseline:** merged upstream prompt-template improvements into `AGENTS.md` covering economical diagnostic logging format, test-app and background process lifecycle management, toolchain substitution guardrails, direct artifact/change verification rigor, concise bullet-point commit messages, and small reviewable commits.

@@ -5,6 +5,48 @@
 #include <chrono>
 
 namespace testsmem4u {
+// Account verified blocks once, at the leaf kernel. Nested results are merged
+// for the return value only. Error deltas survive cancellation and unwinding.
+class VerificationProgress {
+public:
+    VerificationProgress(TestContext& ctx, TestResult& result, const MemoryRegion& region)
+        : ctx_(ctx), result_(result), region_(region) {}
+    ~VerificationProgress() { publish(0); }
+    VerificationProgress(const VerificationProgress&) = delete;
+    VerificationProgress& operator=(const VerificationProgress&) = delete;
+
+    void addBytes(uint64_t bytes) {
+        result_.bytes_tested += bytes;
+        publish(bytes);
+#ifdef TESTSMEM4U_TESTING
+        if (ctx_.phase_hook) ctx_.phase_hook("Verified block", region_);
+#endif
+    }
+
+    void mergeNested(const TestResult& nested) {
+        result_.merge(nested);
+        published_.hard_errors += nested.hard_errors;
+        published_.soft_errors += nested.soft_errors;
+        published_.unverified_errors += nested.unverified_errors;
+    }
+
+private:
+    void publish(uint64_t bytes) noexcept {
+        TestResult delta;
+        delta.bytes_tested = bytes;
+        delta.hard_errors = result_.hard_errors - published_.hard_errors;
+        delta.soft_errors = result_.soft_errors - published_.soft_errors;
+        delta.unverified_errors = result_.unverified_errors - published_.unverified_errors;
+        ctx_.publishProgress(delta);
+        published_ = result_;
+    }
+
+    TestContext& ctx_;
+    TestResult& result_;
+    [[maybe_unused]] const MemoryRegion& region_;
+    TestResult published_;
+};
+
 // Generate expected pattern value for verification
 // mode 0: uniform (val = p0)
 // mode 1: XOR pattern (val = p0 ^ (index * p1), wrapping is intentional for address testing)

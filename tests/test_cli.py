@@ -73,6 +73,21 @@ class ConfigCliTests(unittest.TestCase):
         self.assertIn("Threads:         1", result.stdout)
         self.assertIn("Cycles:          2", result.stdout)
 
+    def test_completed_run_reports_exact_verified_bytes_and_cycles(self):
+        self.preset.write_text("Test Sequence=0\n[Test0]\nFunction=SimpleTest\nParameter=3\n")
+        result = subprocess.run([
+            str(self.binary), "--yes", "--no-config", "--no-elevation",
+            "--no-locked-memory", "--no-large-pages", "--preset", str(self.preset),
+            "--memory", "16", "--cores", "1", "--cycles", "1",
+        ], cwd=self.root, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        summary = result.stdout.split("--- Results ---", 1)[1]
+        self.assertIn("50331648 bytes verified", summary)
+        self.assertIn("Completed cycles: 1", summary)
+        self.assertIn("repeated reads included", summary)
+        log = (self.root / "testsmem4u.log").read_text()
+        self.assertIn("Results: verified-bytes=50331648 complete-cycles=1", log)
+
 
 if __name__ == "__main__":
     unittest.main()

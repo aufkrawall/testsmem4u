@@ -7,6 +7,7 @@ namespace testsmem4u {
 TestResult TestEngine::runModulo20(TestContext& ctx, const MemoryRegion& region,
                                   const TestConfig& config, bool stop) {
     TestResult res;
+    VerificationProgress progress(ctx, res, region);
     auto* ptr = reinterpret_cast<uint64_t*>(region.base);
     const size_t count = region.size / sizeof(uint64_t);
     constexpr size_t stride = 20;
@@ -58,7 +59,7 @@ TestResult TestEngine::runModulo20(TestContext& ctx, const MemoryRegion& region,
                 classifyAndLogErrors(region, ptr, errors, found, i,
                                      [&](size_t j) { return j % stride == offset ? pattern : ~pattern; },
                                      res, ctx, "Modulo20", stop);
-                res.bytes_tested += n * sizeof(uint64_t);
+                progress.addBytes(n * sizeof(uint64_t));
             }
         }
         LOG_DEBUG("Modulo20: offset=%zu words=%zu polarity=%u pattern=0x%016llx repeats=%u errors=%llu%s",

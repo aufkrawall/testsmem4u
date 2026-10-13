@@ -643,6 +643,7 @@ void testRunResultMerge() {
 #include "test_engine_existing.h"
 #include "test_engine_regressions.h"
 #include "test_runtime_regressions.h"
+#include "test_progress_regressions.h"
 
 } // namespace
 
@@ -695,6 +696,9 @@ int main() try {
     testIndependentWorkerExecution();
     testPreparationExceptionCleanup();
     testFreshUnlockedRun();
+    testLiveProgressAndCancellation();
+    testAllKernelProgress();
+    testSubBlockAndConcurrentProgress();
 
     // End-to-end tests with real memory allocation
     testSimpleEndToEnd();

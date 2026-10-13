@@ -1,5 +1,22 @@
 # Recent Log
 
+## 2026-10-13 - Fix live progress and final verified-byte results
+
+- Leaf kernels publish completed verification blocks and error deltas to separate
+  worker counters. Scoped bindings preserve shared stop/disturbance state; nested
+  return-value merges no longer credit work twice. Standalone kernel calls use the
+  same accounting through context atomics. Joined totals are folded exactly once.
+- Cancellation and exceptions retain completed checks/mismatches; partial cycles
+  stay uncredited. Console results and the persistent log now report exact verified
+  bytes and completed cycles, with the repeated-read interpretation stated.
+- Added deterministic live/peer progress, all-algorithm, configured-sub-block,
+  nested retention-error, exception and synthetic 5,000/8,000 GiB regressions.
+  The actual CLI regression failed on the prior code's missing total.
+- Baseline and AVX2 suites plus all 17 Python regressions pass. See
+  [memory-testing.md](../memory-testing.md) for accounting/lifetime invariants.
+  The earlier reporting findings below are resolved; the reporter's unobserved
+  long-run stall, desktop responsiveness and Linux warning remain unverified.
+
 ## 2026-10-13 - Investigate reported tested-byte freeze around 5-8 TB
 
 - Confirmed two unfixed reporting defects: `executeSuite` publishes verified bytes

@@ -27,6 +27,7 @@ uint64_t randomWord(uint64_t& state) {
 TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& region,
                                        const TestConfig& config, bool stop) {
     TestResult res;
+    VerificationProgress progress(ctx, res, region);
     const size_t split = (region.size / 2 / 64) * 64;
     const uint32_t delay_ms = config.parameter ? config.parameter : 100;
     auto now = [&]() {
@@ -69,7 +70,7 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
                                              std::min(chunk_bytes, active.size - active_cursor));
                     background.pattern_param0 = background_inverted ? pattern : ~pattern;
                     testPhase(ctx, "Retention active", chunk);
-                    res.merge(runSimpleTest(ctx, chunk, background, stop));
+                    progress.mergeNested(runSimpleTest(ctx, chunk, background, stop));
                     ++active_chunks;
                     active_cursor += chunk.size;
                     if (active_cursor >= active.size) {
@@ -92,7 +93,7 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
             for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
                 const size_t n = std::min(block, count - i);
                 verifyAndReport(held, ptr + i, n, i, 0, pattern, 0, res, ctx, "RefreshStable", stop);
-                res.bytes_tested += n * sizeof(uint64_t);
+                progress.addBytes(n * sizeof(uint64_t));
             }
             LOG_DEBUG("RefreshStable: held offset=%zu bytes=%zu pattern=0x%016llx dwell=%.3fs "
                       "(min %ums) active chunks=%zu full sweeps=%zu cursor=%zu errors=%llu",
@@ -107,6 +108,7 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
 TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& region,
                                       const TestConfig& config, bool stop) {
     TestResult res;
+    VerificationProgress progress(ctx, res, region);
     auto* ptr = reinterpret_cast<uint64_t*>(region.base);
     const size_t count = region.size / sizeof(uint64_t);
     const size_t word_start = globalWordStart(region);
@@ -119,7 +121,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             const size_t n = std::min(block, count - i);
             verifyAndReport(region, ptr + i, n, i, 2, 0, 1, res, ctx, "RandomAccess (Sweep)", stop);
-            res.bytes_tested += n * sizeof(uint64_t);
+            progress.addBytes(n * sizeof(uint64_t));
         }
     };
     verifyAll();
@@ -153,7 +155,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
             classifyAndLogErrors(region, ptr, errors, errors.size(), 0,
                                  [&](size_t idx) { return phase == 1 ? ~(word_start + idx) : word_start + idx; },
                                  res, ctx, "RandomAccess", stop);
-            res.bytes_tested += n * sizeof(uint64_t);
+            progress.addBytes(n * sizeof(uint64_t));
             if (phase == 2 || ctx.shouldStop()) break;
             for (size_t lane = 0; lane < n; ++lane) {
                 const size_t idx = indices[lane];
@@ -182,6 +184,7 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
     auto* ptr = reinterpret_cast<uint64_t*>(region.base);
     const size_t count = region.size / sizeof(uint64_t);
     if (count < 2) return runSimpleTest(ctx, region, config, stop);
+    VerificationProgress progress(ctx, res, region);
     const size_t half = count / 2;
     const size_t start = globalWordStart(region);
     const uint64_t step = 0x9E3779B97F4A7C15ULL;
@@ -216,7 +219,7 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
                     classifyAndLogErrors(copy, reinterpret_cast<uint64_t*>(copy.base), errors, found, i,
                                          [&](size_t k) { return pattern + (start + k) * step; },
                                          res, ctx, "BlockMove", stop);
-                    res.bytes_tested += n * sizeof(uint64_t);
+                    progress.addBytes(n * sizeof(uint64_t));
                 }
             }
             LOG_DEBUG("BlockMove: offset=%zu words=%zu repeat=%u direction=%s errors=%llu%s",
@@ -227,7 +230,7 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
         if ((count & 1) && !ctx.shouldStop()) {
             verifyAndReport(region, ptr + count - 1, 1, count - 1, 2, pattern, step,
                             res, ctx, "BlockMove (Tail)", stop);
-            res.bytes_tested += sizeof(uint64_t);
+            progress.addBytes(sizeof(uint64_t));
         }
     }
     return res;
