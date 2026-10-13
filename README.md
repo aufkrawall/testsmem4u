@@ -180,13 +180,12 @@ The test window is locked in RAM and is never swapped, so everything else
 (kernel, desktop, applications, file cache) must fit into the remaining ~15%.
 To keep the desktop usable during a default-sized run:
 
-- **Have a swap file or partition** (a few GiB is enough) so the kernel can move
-  idle application memory out of the way.
-- **Keep `vm.swappiness` at the distribution default (usually 60)** or another
-  moderate value. Very low values such as 0-10, a common "SSD tweak", make the
-  kernel drop file cache, including program code, instead of swapping idle memory.
-  Under a large locked window this makes the desktop stutter or appear frozen.
-- If memory is still tight, reduce the window with `--memory`.
+- **Leave enough headroom** for the applications you keep open; if the desktop
+  becomes sluggish, reduce the window with `--memory`.
+- **Have a swap file or partition** so the kernel can move idle application
+  memory out of the way instead of only shrinking the file cache.
+- **Avoid `vm.swappiness=0`.** It defers swapping until the file cache is nearly
+  exhausted. Other values, including distribution defaults, are fine.
 
 Check the current settings with:
 

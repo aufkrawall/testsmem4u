@@ -4,7 +4,11 @@
 
 - User decision: do not cap default sizing by available memory and do not lower
   worker priority; users are expected to configure swap sensibly. README now
-  explains swap/swappiness for desktop use with the locked 85% default window.
+  explains headroom/swap for desktop use with the locked 85% default window.
+- Swappiness guidance deliberately only warns against 0: since Linux 5.8 reclaim
+  balances anon/file by refault cost (and MGLRU uses refaults), so moderate low
+  values differ little from defaults; zram distros use 100-180. Reasoned from
+  kernel reclaim design, not measured on a desktop.
 - Corrected the stale README claim that Linux never elevates; `main.cpp` relaunches
   through `sudo` unless `--no-elevation` (verified in source).
 
