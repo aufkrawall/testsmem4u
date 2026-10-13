@@ -25,9 +25,14 @@ public:
         return result;
     }
 
+    void setPhase(const char* phase) noexcept { phase_.store(phase, std::memory_order_relaxed); }
+    const char* phase() const noexcept { return phase_.load(std::memory_order_relaxed); }
+
 private:
     TestResult totals_;
     std::atomic<uint64_t> bytes_{0}, hard_{0}, soft_{0}, unverified_{0};
+    // Phase names are static string literals, so sampled pointers stay valid.
+    std::atomic<const char*> phase_{"Starting"};
 };
 
 // Bind all nested kernels on this worker to the same slot without changing the
@@ -44,6 +49,10 @@ public:
         if (!current || current->owner_ != owner) return false;
         current->counters_.add(delta);
         return true;
+    }
+
+    static void setPhase(const void* owner, const char* phase) noexcept {
+        if (current && current->owner_ == owner) current->counters_.setPhase(phase);
     }
 
 private:

@@ -55,6 +55,7 @@ TestResult runMarch(TestContext& ctx, const MemoryRegion& region,
     // Forward read/write complement, backward read/write original, final read.
     // Direction applies inside each SIMD block as well as between blocks.
     for (int phase = 0; phase < 3 && !ctx.shouldStop(); ++phase) {
+        testPhase(ctx, phase == 0 ? "March forward" : phase == 1 ? "March backward" : "March verify", region);
         uint64_t state = phase == 1 ? end_seed : seed;
         for (size_t done = 0; done < count && !ctx.shouldStop(); done += march_words) {
             const size_t n = std::min(march_words, count - done);

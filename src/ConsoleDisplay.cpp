@@ -127,20 +127,22 @@ std::string ConsoleDisplay::formatTime(uint64_t total_seconds) {
     return ss.str();
 }
 
-std::string ConsoleDisplay::formatStatus(const StatusInfo& info) {
+std::string ConsoleDisplay::formatStatus(const StatusInfo& info, size_t max_width) {
     std::ostringstream ss;
     
     double gb = info.bytes_tested / (1024.0 * 1024.0 * 1024.0);
     
-    // Keep the error count and elapsed time visible even for long test names.
-    ss << "Err: " << info.errors << " | Min C" << info.cycle << "/";
-    if (info.total_cycles > 0) ss << info.total_cycles;
-    else ss << "inf";
-    ss << " T" << info.test_idx << "/" << info.total_tests;
-    ss << " | " << formatTime(info.elapsed_seconds);
+    // Preserve tested bytes, errors and time before adding coverage/test names.
+    ss << "Err: " << info.errors << " | " << formatTime(info.elapsed_seconds);
     ss << " | " << std::fixed << std::setprecision(2) << gb << " GiB";
     std::string result = ss.str();
-    const size_t width = static_cast<size_t>(console_width_ - 2);
+    std::ostringstream coverage;
+    coverage << " | Min C" << info.cycle << "/";
+    if (info.total_cycles > 0) coverage << info.total_cycles;
+    else coverage << "inf";
+    coverage << " T" << info.test_idx << "/" << info.total_tests;
+    if (result.size() + coverage.str().size() <= max_width) result += coverage.str();
+    const size_t width = max_width;
     if (result.size() + 3 < width) {
         result += " | ";
         const size_t available = width - result.size();
@@ -154,7 +156,7 @@ std::string ConsoleDisplay::formatStatus(const StatusInfo& info) {
 void ConsoleDisplay::updateStatus(const StatusInfo& info) {
     std::lock_guard<std::mutex> lock(mutex_);
     
-    std::string status = formatStatus(info);
+    std::string status = formatStatus(info, static_cast<size_t>(console_width_ - 2));
     
     if (!status_active_) {
         std::cout << "\n";

@@ -39,6 +39,7 @@ public:
     void updateProgressLine(const std::string& line);
     
     void updateStatus(const StatusInfo& info);
+    static std::string formatStatus(const StatusInfo& info, size_t max_width);
     
     void clearStatus();
     
@@ -63,8 +64,7 @@ private:
     bool initialized_ = false;
 
     void detectConsoleWidth();
-    std::string formatStatus(const StatusInfo& info);
-    std::string formatTime(uint64_t total_seconds);
+    static std::string formatTime(uint64_t total_seconds);
 };
 
 }

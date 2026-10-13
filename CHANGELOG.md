@@ -6,8 +6,13 @@
 
 - **Live tested-memory progress:** long test invocations now publish verified bytes and observed errors during testing instead of leaving the displayed total unchanged until all internal repetitions finish. Separate worker counters preserve exact totals through nested retention work, configured sub-blocks, cancellation, and worker exceptions.
 - **Final test totals:** console results and the persistent log now report the exact verified-byte total and completed cycles, including partial work from a stopped run. The console explains that repeated verification reads contribute to the total.
+- **Narrow-terminal progress:** tested-memory totals remain visible alongside errors and elapsed time when cycle details or long test names exceed the terminal width.
+- **Progress monitor failures:** exceptions in status rendering or progress diagnostics now stop and join the workers and preserve collected results instead of terminating the process.
 
 ### Improved
+
+- **Long-test diagnostics:** `--debug` records bounded progress snapshots every ten seconds with verified-byte deltas and up to four workers' test positions, phases, and time since their last verified-byte change. Fill, verification, residency, and disturbance phases distinguish normal long work from a possible stall without adding clocks or logging to hot verification blocks.
+- **Regression coverage:** added deterministic progress, cancellation, worker/monitor exception, nested accounting, multi-terabyte counter, diagnostic cadence, and narrow-terminal tests across baseline and AVX2 paths.
 
 - **Agent instructions baseline:** merged upstream prompt-template improvements into `AGENTS.md` covering economical diagnostic logging format, test-app and background process lifecycle management, toolchain substitution guardrails, direct artifact/change verification rigor, concise bullet-point commit messages, and small reviewable commits.
 

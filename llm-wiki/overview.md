@@ -12,6 +12,7 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `src/TestEngine.cpp`: allocation, dispatch, independent worker scheduling, and monitoring.
 - `include/PreparationStatus.h`: owns and joins the preparation display thread, including exception paths.
 - `include/TestProgress.h`: separate worker counters and scoped thread-local binding for nested kernels; `VerificationProgress` in `TestEngineInternal.h` publishes verified blocks and error deltas once.
+- `include/ProgressDiagnostics.h`: monitor-owned byte/age sampling and capped periodic debug summaries; worker phases are atomic pointers to static labels.
 - `src/TestPatterns.cpp`, `src/TestMarch.cpp`, `src/TestMemoryTraffic.cpp`, `src/TestModulo.cpp`,
   `src/TestRowHammer.cpp`: algorithm units; `src/simd_verify.cpp` owns first-observation march kernels.
 - `src/Platform.cpp`: Platform-specific API integration (CPU topology detection, memory locking, memory allocation, privilege escalation).
@@ -107,11 +108,13 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   allocator/display exceptions, and transactional config load statuses.
 - `tests/test_progress_regressions.h`: live publication across all 14 algorithms,
   nested/sub-block accounting, deterministic peer observation, cancellation,
-  exceptions after verification/mismatch, and synthetic multi-terabyte totals.
+  exceptions after verification/mismatch, monitor exceptions, virtual-clock
+  diagnostic cadence/caps, narrow status formatting and synthetic multi-terabyte totals.
 - `tests/test_cli.py` and `tests/test_build.py`: real configuration resolution,
   database generation, and fail-closed analysis (including zero-exit diagnostics).
 
-Last verified: 2026-10-13 for native progress/results regressions; 2026-09-30 for
-other reviewed runtime/build paths. Other details retain their earlier dates.
+Last verified: 2026-10-13 for Windows/WSL baseline+AVX2 progress/results tests,
+ASan/UBSan, strict native analysis and all nine release cross-builds; 2026-09-30
+for other reviewed runtime paths. Other details retain their earlier dates.
 Stale risk: Medium for hardware effectiveness and historical lint claims; see
 [memory testing](memory-testing.md) and [the recent review](log/recent.md).

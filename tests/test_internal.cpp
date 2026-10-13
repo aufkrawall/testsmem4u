@@ -10,6 +10,7 @@
 #include "DisturbanceWindow.h"
 #include "TestEngineInternal.h"
 #include "PreparationStatus.h"
+#include "ProgressDiagnostics.h"
 #include <future>
 #include <stdexcept>
 #include <array>
@@ -699,6 +700,8 @@ int main() try {
     testLiveProgressAndCancellation();
     testAllKernelProgress();
     testSubBlockAndConcurrentProgress();
+    testProgressDiagnosticsAndStatus();
+    testMonitorExceptionCleanup();
 
     // End-to-end tests with real memory allocation
     testSimpleEndToEnd();

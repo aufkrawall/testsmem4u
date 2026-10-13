@@ -135,6 +135,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     std::vector<std::pair<uint64_t, uint64_t>> errors;
     errors.reserve(lanes);
     const size_t width = std::min(lanes, count);
+    testPhase(ctx, "Random checks", region);
     for (uint64_t done = 0; done < iterations && !ctx.shouldStop();) {
         const size_t n = static_cast<size_t>(std::min<uint64_t>(width, iterations - done));
         // Disjoint address bands guarantee no duplicate outstanding writes.

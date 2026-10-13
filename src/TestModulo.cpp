@@ -25,6 +25,7 @@ TestResult TestEngine::runModulo20(TestContext& ctx, const MemoryRegion& region,
         const uint64_t pattern = polarity ? ~config.pattern_param0 : config.pattern_param0;
         const uint64_t errors_before = res.total_errors();
         for (size_t offset = 0; offset < std::min(stride, count) && !ctx.shouldStop(); ++offset) {
+            testPhase(ctx, "Modulo fill", region);
             for (size_t k = 0; k < period; ++k) expected[k] = k % stride == offset ? pattern : ~pattern;
             simd::generate_pattern_uniform(ptr, count, pattern, true);
             simd::flush_cache_region(ptr, region.size);
@@ -34,6 +35,7 @@ TestResult TestEngine::runModulo20(TestContext& ctx, const MemoryRegion& region,
             // is fetched with the line and written back with the value that was
             // fetched: this checks that complement writes into the same burst and
             // neighbouring bursts do not disturb it, not that its row stays closed.
+            testPhase(ctx, "Modulo disturb", region);
             for (uint32_t repeat = 0; repeat < repeats && !ctx.shouldStop(); ++repeat) {
                 for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
                     const size_t end = std::min(count, i + block);

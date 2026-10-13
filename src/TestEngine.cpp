@@ -8,6 +8,7 @@
 #include "DisturbanceWindow.h"
 #include "PreparationStatus.h"
 #include "TestEngineInternal.h"
+#include "ProgressDiagnostics.h"
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -18,6 +19,7 @@
 #include <condition_variable>
 #include <array>
 #include <cstring>
+#include <optional>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -465,7 +467,13 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 
     ConsoleDisplay::get().setTestingActive(true);
 
-    std::thread monitor([&]() {
+    const uint64_t initial_bytes = ctx.progressSnapshot().bytes_tested;
+    auto monitor_work = [&]() {
+#ifdef TESTSMEM4U_TESTING
+        if (ctx.monitor_hook) ctx.monitor_hook();
+#endif
+        std::optional<ProgressDiagnostics> diagnostics;
+        if (config.debug_mode) diagnostics.emplace(threads, start, initial_bytes);
         auto last_update = std::chrono::steady_clock::now();
 
         while (!ctx.shouldStop()) {
@@ -492,6 +500,21 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                 std::chrono::duration_cast<std::chrono::seconds>(now - start).count());
 
             ConsoleDisplay::get().updateStatus(info);
+            if (diagnostics) {
+                const auto diagnostic = diagnostics->update(now, totals, ctx.worker_progress, progress, seq.size());
+                if (!diagnostic.empty()) LOG_DEBUG("%s", diagnostic.c_str());
+            }
+        }
+    };
+    std::thread monitor([&]() {
+        try {
+            monitor_work();
+        } catch (const std::exception& error) {
+            LOG_ERROR("Progress monitor failed: %s", error.what());
+            ctx.setInfrastructureFailure("Progress monitor failed: " + std::string(error.what()));
+        } catch (...) {
+            LOG_ERROR("Progress monitor failed with an unknown exception.");
+            ctx.setInfrastructureFailure("Progress monitor failed with an unknown exception.");
         }
         ConsoleDisplay::get().clearStatus();
     });
@@ -515,6 +538,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                               my_region.base_offset_bytes, my_region.size, assignment.target.weight);
                     uint64_t cycle = 0;
                     while (!ctx.shouldStop()) {
+                        testPhase(ctx, "Memory residency", my_region);
                         if (!Platform::checkMemoryResident(my_region.base, my_region.size)) {
                             ctx.setInfrastructureFailure("Worker memory residency check failed.");
                             break;

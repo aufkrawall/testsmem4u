@@ -22,6 +22,7 @@ struct TestContext {
 #ifdef TESTSMEM4U_TESTING
     std::function<void(const char*, const MemoryRegion&)> phase_hook;
     std::function<std::chrono::steady_clock::time_point()> retention_clock;
+    std::function<void()> monitor_hook;
 #endif
     std::atomic<uint64_t> total_hard_errors{0};
     std::atomic<uint64_t> total_soft_errors{0};

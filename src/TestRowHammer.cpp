@@ -81,9 +81,11 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         const uint64_t aggr_toggle0 = ~victim_fill;
         const uint64_t aggr_toggle1 =  victim_fill;
 
+        testPhase(ctx, "RowHammer fill", region);
         generate_pattern_uniform(ptr, count, victim_fill, true);
         simd::flush_cache_region(ptr, region.size);
 
+        testPhase(ctx, "RowHammer verify initial", region);
         size_t init_block = size_t{256} * 1024;
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += init_block) {
             size_t n = std::min(init_block, count - i);
@@ -115,6 +117,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
 
                 // A new aggressor may previously have been a victim. Check it
                 // before overwriting so later points cannot erase an earlier flip.
+                testPhase(ctx, "RowHammer before reuse", region);
                 for (size_t idx : {idxA, idxC}) {
                     simd::flush_cache_region(ptr + idx, sizeof(uint64_t));
                     TestEngine::verifyAndReport(region, ptr + idx, 1, idx, 0, victim_fill, 0,
@@ -129,6 +132,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
                               i, points_for_stride, idxA, idxB, idxC, row_stride_elements);
                 }
 
+                testPhase(ctx, "RowHammer disturb", region);
                 for (size_t k = 0; k < hammer_iterations && !ctx.shouldStop(); ++k) {
                     uint64_t pattern = (k & 1) ? aggr_toggle1 : aggr_toggle0;
 #if defined(__x86_64__) || defined(_M_X64)
@@ -169,6 +173,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         }
 
         simd::flush_cache_region(ptr, region.size);
+        testPhase(ctx, "RowHammer final verify", region);
         size_t block = size_t{256} * 1024;
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);

@@ -1,5 +1,29 @@
 # Recent Log
 
+## 2026-10-13 - Add bounded progress diagnostics and robust status display
+
+- Debug mode adds periodic `Progress:` summaries with aggregate deltas/errors and
+  the four least-recently advancing workers' positions, phases, bytes and idle ages.
+  Extra workers are counted, phase names capped, and sampling/logging stays in the
+  monitor. Workers publish static phase pointers at boundaries; no hot-loop clocks,
+  shared byte-counter contention, sleeps or algorithm changes were introduced.
+- Narrow status lines prioritize verified bytes, errors and elapsed time. Monitor
+  exceptions now log an infrastructure failure and stop/join workers with exact
+  collected totals. Virtual time checks diagnostic cadence/caps/ages; a handshake
+  reproduces monitor failure after actual verification.
+- Windows and WSL Linux baseline/AVX2 suites, all 17 Python regressions,
+  ASan/UBSan for both native ISA runners, strict clang-tidy and all nine release
+  builds pass. Rebuilt native release binaries after sanitizer runs so `dist/`
+  does not retain a sanitizer-dependent baseline application.
+- Actual Windows baseline/AVX2 CLI tests show increasing live totals during a
+  single 150-repeat march invocation and exactly 30,198,988,800 bytes on completion;
+  Linux CLI results also report exact bytes/cycles. All runs are bounded and exited.
+- A 300-repeat baseline CLI run additionally exercises the real periodic debug
+  snapshot during a march and finishes with exactly 60,397,977,600 bytes, one cycle
+  and zero errors. This extends the earlier short smoke only to verify integration.
+- README describes totals, diagnostics and existing resource controls. Unknown
+  original Linux warning/long-run behavior remains an open reproduction question.
+
 ## 2026-10-13 - Fix live progress and final verified-byte results
 
 - Leaf kernels publish completed verification blocks and error deltas to separate

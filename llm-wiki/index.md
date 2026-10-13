@@ -1,7 +1,7 @@
 # LLM Wiki Index
 
-- [Overview](overview.md): architecture, toolchain split, build/test entry points, fail-closed configuration and static analysis. Verified runtime/build fixes 2026-09-30; low stale risk for tested software paths, medium for historical clean-analysis claims.
-- [Memory testing](memory-testing.md): worker scheduling, algorithms, live progress accounting, regression coverage, local measurements, and reporting fixes. Native reporting verified 2026-10-13; other runtime paths 2026-09-30; original long-run stall/Linux warning remain unverified.
+- [Overview](overview.md): architecture, toolchain split, build/test entry points, fail-closed configuration and static analysis. Progress/build checks verified 2026-10-13; earlier runtime fixes 2026-09-30; medium stale risk for historical clean-analysis claims.
+- [Memory testing](memory-testing.md): worker scheduling, algorithms, live progress accounting/diagnostics, regression coverage, local measurements, and reporting fixes. Windows/WSL baseline+AVX2 reporting verified 2026-10-13; original long-run stall/Linux warning remain unverified.
 - [Debug tools](debug-tools.md): local tool inventory, discovery via `tools/discover-debug-tools.ps1`, MSVC and SDK debugger paths. Verified 2026-09-30; low stale risk.
 - [Security audit debug tools](debug-tools-security-audit.md): native binary hardening, PE/COFF checks, symbol/dump analysis, and runtime tracing tools. Verified 2026-09-30; low stale risk.
 - [Changelog guidelines](changelog-guidelines.md): continuous unreleased changelog updates, bold anchors, Keep a Changelog categories, release note parity. Verified 2026-09-30; low stale risk.

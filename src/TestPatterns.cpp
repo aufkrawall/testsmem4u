@@ -108,6 +108,7 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
         simd::flush_cache_region(ptr, region.size);
 
         testPhase(ctx, "Simple filled", region);
+        testPhase(ctx, "Simple verify", region);
 
         // Verify in blocks (2MB chunks)
         size_t block = size_t{256} * 1024;
@@ -142,6 +143,7 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
         generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt, word_start);
 
         simd::flush_cache_region(ptr, region.size);
+        testPhase(ctx, "Mirror verify initial", region);
 
         for (size_t i = 0; i < count; i += block) {
             if (ctx.shouldStop()) break;
@@ -153,11 +155,13 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
         }
         if (stop && ctx.shouldStop()) break;
 
+        testPhase(ctx, "Mirror invert", region);
         invert_array(ptr, count, use_nt);
 
         simd::flush_cache_region(ptr, region.size);
 
         // Inverted value: ~(param0 ^ (idx * param1)) = (~param0) ^ (idx * param1)
+        testPhase(ctx, "Mirror verify inverted", region);
         // This is equivalent to XOR mode (pattern_mode=1) with param0 inverted
         for (size_t i = 0; i < count; i += block) {
             if (ctx.shouldStop()) break;
@@ -298,8 +302,10 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
         uint64_t pattern = 1ULL << bit;
         if (invert) pattern = ~pattern;
 
+        testPhase(ctx, "Walking fill", region);
         simd::generate_pattern_uniform(ptr, count, pattern, true);
         simd::flush_cache_region(ptr, region.size);
+        testPhase(ctx, "Walking verify", region);
 
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             size_t n = std::min(block, count - i);

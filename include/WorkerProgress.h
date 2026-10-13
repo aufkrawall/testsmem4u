@@ -19,6 +19,10 @@ public:
         positions_[worker].store(completed_tests, std::memory_order_release);
     }
 
+    uint64_t completedTests(size_t worker) const {
+        return positions_[worker].load(std::memory_order_acquire);
+    }
+
     uint64_t minimum() const {
         uint64_t result = std::numeric_limits<uint64_t>::max();
         for (const auto& position : positions_) {

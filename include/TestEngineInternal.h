@@ -10,7 +10,9 @@ namespace testsmem4u {
 class VerificationProgress {
 public:
     VerificationProgress(TestContext& ctx, TestResult& result, const MemoryRegion& region)
-        : ctx_(ctx), result_(result), region_(region) {}
+        : ctx_(ctx), result_(result), region_(region) {
+        ProgressBinding::setPhase(&ctx, "Fill/prepare");
+    }
     ~VerificationProgress() { publish(0); }
     VerificationProgress(const VerificationProgress&) = delete;
     VerificationProgress& operator=(const VerificationProgress&) = delete;
@@ -120,10 +122,11 @@ inline void classifyAndLogErrors(const MemoryRegion& region, const uint64_t* ptr
 
 
 inline void testPhase(TestContext& ctx, const char* phase, const MemoryRegion& region) {
+    ProgressBinding::setPhase(&ctx, phase);
 #ifdef TESTSMEM4U_TESTING
     if (ctx.phase_hook) ctx.phase_hook(phase, region);
 #else
-    (void)ctx; (void)phase; (void)region;
+    (void)region;
 #endif
 }
 } // namespace testsmem4u

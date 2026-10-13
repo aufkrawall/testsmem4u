@@ -158,6 +158,18 @@ whole sequence. Faster workers continue genuine tests until all regions finish t
 requested cycle count. Stop and infrastructure failures never count incomplete
 cycles. Debug logs identify each worker's region, test transitions, and duration.
 
+The live byte count includes completed verification blocks from tests that are
+still running. Final results and `testsmem4u.log` record the exact verified-byte
+total and complete-cycle count, including completed checks from a stopped run.
+`--debug` adds progress snapshots every ten seconds: aggregate byte deltas and up
+to four workers' positions, phases, and time since their byte counts last advanced.
+A fill or disturbance phase can perform useful work before the next verification;
+an unchanged verified-byte count alone does not establish that a worker is stuck.
+
+Defaults use all available CPU targets and 85% of total physical RAM. For concurrent
+desktop use, select fewer workers with `--cores` and a smaller window with
+`--memory` to leave more resources for other applications.
+
 `RefreshStable` preserves the configured untouched dwell for each half and both
 polarities, with write/verify testing on the other half throughout the dwell.
 This takes at least four dwell intervals per invocation. It adds no compute-only

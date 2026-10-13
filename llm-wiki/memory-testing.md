@@ -15,6 +15,9 @@ long-run stalls; low for tested native progress/accounting paths.
 - `include/TestProgress.h`, `TestContext` and `VerificationProgress` in
   `include/TestEngineInternal.h`: live per-worker totals, scoped binding, and
   leaf-only verified-byte/error publication; joined totals are exact.
+- `include/ProgressDiagnostics.h`: monitor-owned progress ages and periodic,
+  capped snapshots; `src/ConsoleDisplay.cpp::formatStatus` preserves primary fields
+  before coverage/test-name details on narrow terminals.
 - `include/DisturbanceWindow.h`: flags test invocations that overlapped another
   worker's RowHammer so their errors can be annotated.
 - `src/TestPatterns.cpp`: SimpleTest, MirrorMove, MirrorMove128, walking bits,
@@ -147,6 +150,12 @@ is shared across available strides rather than silently expanded to one per stri
 - Live progress includes completed verification blocks from currently running
   invocations. CLI results and the log also include exact final bytes and completed
   cycles, including partial work from cancellation or worker exceptions.
+- `--debug` adds one `Progress:` snapshot per ten seconds (subject to UI sampling):
+  aggregate verified bytes/delta/errors, worker count, and up to four workers'
+  cycle/test position, byte count, phase and idle verified-byte age. The four
+  least-recently advancing workers are shown first; omitted workers are counted.
+  Phase labels are capped at 32 characters and only static literals are published.
+  Idle ages are approximate monitor observations, not hang warnings.
 - Bounded mismatch samples retain exact aggregate counts. Destructive march errors
   are unverified observations; other sampled errors can be classified by rereading.
 - Memory-lock allocation contracts are still fail-closed. On Windows the existing
@@ -185,6 +194,10 @@ Accounting invariants:
 - Byte totals are verified reads, not writes, unique RAM coverage or bus traffic.
   Fill/flush/disturbance work can legitimately precede the next verified-byte change.
   Completed cycles still require every worker region; partial cycles are uncredited.
+- Diagnostics are allocated/sampled only with debug mode enabled. Workers publish
+  phase labels at algorithm boundaries without locks, clocks or per-block logging.
+  Monitor exceptions are logged as infrastructure failures, stop peers, and retain
+  completed work through normal joining/folding. Test-only hooks reproduce this.
 
 Baseline/AVX2 regressions inspect live progress at march phase boundaries (150
 internal repetitions), cancel at the tenth forward pass, and throw after a
@@ -200,14 +213,25 @@ cycle in console/log output. Baseline/AVX2 suites and all 17 Python regressions 
 Local fixtures/binaries/logs remain ignored under `build/review/progress-report/`.
 Synthetic large counters do not replace a multi-terabyte endurance run.
 
+Final verification on 2026-10-13: Windows and WSL Linux baseline/AVX2 suites,
+17 Python regressions, both ASan/UBSan ISA runners and strict clang-tidy pass;
+all nine release targets cross-build. AVX-512/ARM remain cross-build only.
+Actual Windows baseline/AVX2 CLI runs (64 MiB, one worker, 150 internal march
+repetitions) show multiple increasing live totals before the single invocation
+returns, then exactly 30,198,988,800 verified bytes and one complete cycle with
+zero errors. A Linux baseline CLI run confirms final bytes/cycles too.
+An extended 300-repeat baseline CLI run also exercises the real ten-second debug
+snapshot during a march and ends with exactly 60,397,977,600 verified bytes.
+
 Limits: the original preset/version, hardware, elapsed stall duration, and Linux
 warning are unknown. Actual long-run kernel failure, scheduler starvation, or
 memory pressure on the reporter's machine is unverified. Current defaults use all
 available CPU targets and 85% of total physical RAM (`src/main.cpp::makeDefaultConfig`
 and `getSizingBaselineRAM`); process priority remains normal
 (`src/Platform.cpp::confirmNormalProcessPriority`). These choices can compete with
-other workloads, but this investigation did not reproduce desktop unresponsiveness
-or diagnose the unspecified Linux complaint. No Linux runtime reproduction was run.
+other workloads. WSL regressions and a bounded Linux CLI run pass, but desktop
+unresponsiveness, a permanent long-run stall and the original unspecified Linux
+complaint have not been reproduced or diagnosed.
 
 ## Validation and measurements
 
