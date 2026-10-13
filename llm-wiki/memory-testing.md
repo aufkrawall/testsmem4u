@@ -410,7 +410,7 @@ Limits: the original preset/version, hardware, elapsed stall duration, and Linux
 warning are unknown. Actual long-run kernel failure, scheduler starvation, or
 memory pressure on the reporter's machine is unverified. Current defaults use all
 available CPU targets and 85% of total physical RAM (`src/RunConfiguration.cpp::makeDefaultConfig`
-and `getSizingBaselineRAM`); process priority remains normal
+and `src/ConfigWizard.cpp::getSizingBaselineRAM`); process priority remains normal
 (`src/Platform.cpp::confirmNormalProcessPriority`). These choices can compete with
 other workloads. WSL regressions and a bounded Linux CLI run pass, but desktop
 unresponsiveness, a permanent long-run stall and the original unspecified Linux

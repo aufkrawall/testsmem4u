@@ -1,6 +1,6 @@
 # LLM Wiki Index
 
-- [Overview](overview.md): architecture, toolchain split, build/test entry points, fail-closed configuration and static analysis. Progress/build checks and Linux hugepage signal restoration (WSL) verified 2026-10-13; earlier runtime fixes 2026-09-30; medium stale risk for historical clean-analysis claims.
+- [Overview](overview.md): architecture, toolchain split, build/test entry points, fail-closed configuration and static analysis. Current allocation ownership, shared wizard policies and progress/build checks verified 2026-10-13; earlier runtime fixes 2026-09-30; medium stale risk for historical clean-analysis claims.
 - [Memory testing](memory-testing.md): shared wizard policies, page-allocation defaults/limits, worker scheduling, algorithms, live progress, failure recovery, regression coverage and measurements. Native baseline+AVX2 contracts, Linux THP/strict-lock fallbacks, Windows preparation, wizard/CLI parity, sanitizers and all nine release artifacts verified 2026-10-13; hardware effectiveness and the original long-run stall remain open.
 - [Debug tools](debug-tools.md): local tool inventory, discovery via `tools/discover-debug-tools.ps1`, MSVC and SDK debugger paths. Verified 2026-09-30; low stale risk.
 - [Security audit debug tools](debug-tools-security-audit.md): native binary hardening, PE/COFF checks, symbol/dump analysis, and runtime tracing tools. Verified 2026-09-30; low stale risk.
