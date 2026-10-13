@@ -96,7 +96,7 @@ public:
 private:
     static bool tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t min_required_bytes);
     static bool tryAllocateLargePages(MemoryRegion& region, size_t size);
-    static bool tryAllocateLargePagesChunked(MemoryRegion& region, size_t size);
+    static bool tryAllocateLargePagesChunked(MemoryRegion& region, size_t size, bool allow_hybrid = true);
     static bool tryAllocateStandard(MemoryRegion& region, size_t size);
 #else
 private:

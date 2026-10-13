@@ -114,7 +114,7 @@ The executable now supports the following high-value operator options:
 - --halt-on-error or --no-halt-on-error to control stop behavior.
 - --locked-memory or --no-locked-memory to control memory locking.
 - --large-pages or --no-large-pages to control large-page preference.
-- --aggressive-defrag to permit system-wide cache cleanup and memory compaction; off by default.
+- --aggressive-defrag to permit system-wide cache cleanup and memory compaction after ordinary large-page attempts fail; off by default.
 - --show-config and --dry-run for validation and inspection.
 - --yes or --non-interactive to suppress prompts and exit pauses.
 - --no-elevation to prevent Administrator/root relaunch.

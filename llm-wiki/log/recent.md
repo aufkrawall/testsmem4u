@@ -1,5 +1,26 @@
 # Recent Log
 
+## 2026-10-13 - Preserve Windows LP defaults with bounded preparation
+
+- Native large pages remain the first choice. Chunk fallback uses exact-size
+  divisors; incompatible small windows retain their footprint via native pages.
+  Owned mapping scopes release partial allocations on exceptions and preserve
+  the original size for explicitly permitted pageable fallback after lock failure.
+- Aggressive mode tries ordinary full large pages before one system-wide
+  preparation/retry; no fixed waits remain. Replaced the incorrect cache-limit
+  toggle with the documented cache working-set flush, preserving limit policy.
+  Aggregate memory probes no longer imply a broken syscall when concurrent
+  allocation masks availability changes; failure/rollback diagnostics are bounded.
+- Windows baseline/AVX2 and all 17 Python regressions pass, including new direct,
+  exact chunk, hybrid, strict/pageable fallback, small-window and exception cleanup
+  fixtures. Cleanup checks record successful free/unmap calls while ownership is
+  held, rather than querying addresses that another allocation could reuse.
+  Preparation is replaced with a counter; actual global cache flushing
+  was deliberately not tested on the active desktop. Strict native analysis
+  passes the changed Windows unit in all ISA profiles and the runner. WSL
+  baseline/AVX2 fixtures also pass. Removing partial-chunk cleanup in an ignored
+  mutation build makes all three owned-chunk regressions fail (exit 1).
+
 ## 2026-10-13 - Use process-owned Linux huge pages and measure coverage
 
 - Linux defaults now try compatible existing HugeTLB, then naturally aligned

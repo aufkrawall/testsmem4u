@@ -205,9 +205,9 @@ void printUsage() {
     std::cout << "      --no-large-pages     Disable large pages / hugepages\n";
     std::cout << "      --show-config        Print the resolved configuration before execution\n";
     std::cout << "      --dry-run            Validate inputs, print config, and exit\n";
-    std::cout << "      --aggressive-defrag  Enable system-wide memory defragmentation (standby list purge,\n";
-    std::cout << "                             working set trim, file cache disable). May impact other\n";
-    std::cout << "                             running processes. Off by default.\n\n";
+    std::cout << "      --aggressive-defrag  Permit system-wide cache cleanup/compaction when full\n";
+    std::cout << "                             large-page coverage is unavailable. May affect other\n";
+    std::cout << "                             applications. Off by default.\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << kProgramName << " --yes --preset default.cfg\n";
     std::cout << "  " << kProgramName << " --memory 80% --cycles 5 --show-config\n";

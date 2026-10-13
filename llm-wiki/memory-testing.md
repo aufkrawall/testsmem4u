@@ -54,6 +54,18 @@ locking is strict. Aggressive preparation remains opt-in.
 
 - Windows uses its native page size and `GetLargePageMinimum` for large pages,
   retaining direct/chunked/hybrid allocation and fully locked standard fallback.
+  Chunk sizes must divide the requested window exactly; incompatible small
+  windows retain their size through native-page fallback. Partial/single mappings
+  are owned during preparation, so exceptions release them. Explicit pageable
+  fallback retains the original size after VirtualLock failure.
+  Aggressive mode first tries ordinary full LP allocation, then permits one cache
+  flush/working-set/standby preparation and retry with hybrid fallback. Cache
+  flushing uses `SetSystemFileCacheSize(SIZE_T_MAX, SIZE_T_MAX, 0)`, preserving
+  limit policy; the old HARD_DISABLE/HARD_ENABLE sequence changed limits and
+  could re-enable them at zero. See the
+  [documented cache API](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-setsystemfilecachesize).
+  No fixed sleeps remain. Address collisions are checked and rolled back in
+  bounded immediate attempts; physical contiguity is per native large page.
 - Linux tries an existing default-size HugeTLB pool only when the requested
   window is compatible with the actual `Hugepagesize`. HugeTLB is inherently
   non-swappable: no redundant `mlock` or memlock-limit dependency is imposed.
@@ -92,6 +104,15 @@ allocation. Linux-only process-local syscall fixtures exercise non-2-MiB HugeTLB
 redundant-mlock avoidance, incompatible 1 GiB defaults, unavailable huge pages/
 advice, strict lock failure plus unmapping, explicit pageable fallback and
 no-large-page advice. They never modify sysctls or impose timing assumptions.
+Windows syscall fixtures additionally check direct success without preparation,
+exact 18-MiB chunking, a 6-MiB LP prefix with locked native tail, exception rollback,
+strict lock failure, pageable fallback sizing and a small incompatible window.
+Fixtures simulate LP API success with releasable native mappings and replace
+preparation with a counter; they never change global caches or cache-limit policy.
+Cleanup fixtures record successful OS free/unmap calls while ownership is held,
+avoiding assumptions that freed virtual addresses remain unused afterwards.
+Actual cache flushing was not exercised on the active desktop; its request is
+verified against the documented API, while ordinary LP CLI allocation is exercised.
 
 2026-10-13 bounded 16 MiB, one-worker/cycle SimpleTest verification: Windows used
 full native large pages; WSL root (empty HugeTLB pool, THP `madvise`) used full THP

@@ -7,6 +7,132 @@
 #include <cerrno>
 #endif
 
+#ifdef _WIN32
+enum class WindowsFixtureMode : uint8_t { DIRECT, CHUNKED, HYBRID, THROW_CHUNK, FAIL_LOCK };
+WindowsFixtureMode g_windows_mode = WindowsFixtureMode::DIRECT;
+size_t g_windows_target = 0;
+size_t g_windows_largest_commit = 0;
+size_t g_windows_large_chunks = 0;
+uint32_t g_windows_preparations = 0;
+std::array<void*, 16> g_windows_owned{};
+std::array<bool, 16> g_windows_released{};
+
+size_t fixtureWindowsPageSize() { return size_t{2} * 1024 * 1024; }
+bool fixtureWindowsPrivilege() { return true; }
+bool fixtureWindowsWorkingSet(size_t, size_t) { return true; }
+bool fixtureWindowsLock(void*, size_t) { return g_windows_mode != WindowsFixtureMode::FAIL_LOCK; }
+void fixtureWindowsPreparation() { ++g_windows_preparations; }
+bool fixtureWindowsRelease(void* base) {
+    const bool freed = VirtualFree(base, 0, MEM_RELEASE) != 0;
+    for (size_t i = 0; i < g_windows_large_chunks; ++i) {
+        if (g_windows_owned[i] == base) g_windows_released[i] = freed;
+    }
+    return freed;
+}
+
+void* fixtureWindowsAllocate(void* base, size_t size, uint32_t flags, uint32_t protection) {
+    if ((flags & MEM_COMMIT) != 0) g_windows_largest_commit = std::max(g_windows_largest_commit, size);
+    if ((flags & MEM_LARGE_PAGES) != 0) {
+        if (g_windows_mode == WindowsFixtureMode::FAIL_LOCK ||
+            (base == nullptr && g_windows_mode != WindowsFixtureMode::DIRECT) ||
+            (base != nullptr && g_windows_mode == WindowsFixtureMode::HYBRID && g_windows_large_chunks >= 3)) {
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return nullptr;
+        }
+        if (base && g_windows_mode == WindowsFixtureMode::THROW_CHUNK && g_windows_large_chunks == 3) {
+            throw std::runtime_error("injected chunk allocation exception");
+        }
+        // Simulate API success with real, releasable native mappings; this test
+        // verifies allocation contracts and cleanup, not physical LP availability.
+        void* result = VirtualAlloc(base, size, flags & ~MEM_LARGE_PAGES, protection);
+        if (result && base && g_windows_large_chunks < g_windows_owned.size()) {
+            g_windows_owned[g_windows_large_chunks++] = result;
+        }
+        return result;
+    }
+    return VirtualAlloc(base, size, flags, protection);
+}
+
+class WindowsMemoryHookScope {
+    const platform_detail::WindowsMemoryHooks* previous_;
+public:
+    explicit WindowsMemoryHookScope(const platform_detail::WindowsMemoryHooks& hooks)
+        : previous_(platform_detail::setWindowsMemoryHooks(&hooks)) {}
+    ~WindowsMemoryHookScope() {
+        Platform::setAggressiveDefrag(false);
+        platform_detail::setWindowsMemoryHooks(previous_);
+    }
+};
+
+void resetWindowsFixture(WindowsFixtureMode mode, size_t target) {
+    g_windows_mode = mode;
+    g_windows_target = target;
+    g_windows_large_chunks = g_windows_largest_commit = 0;
+    g_windows_preparations = 0;
+    g_windows_owned.fill(nullptr);
+    g_windows_released.fill(false);
+}
+
+void testWindowsMemoryFallbacks() {
+    platform_detail::WindowsMemoryHooks hooks;
+    hooks.allocate = fixtureWindowsAllocate;
+    hooks.lock_memory = fixtureWindowsLock;
+    hooks.working_set = fixtureWindowsWorkingSet;
+    hooks.lock_privilege = fixtureWindowsPrivilege;
+    hooks.large_page_size = fixtureWindowsPageSize;
+    hooks.prepare_memory = fixtureWindowsPreparation;
+    hooks.free_memory = fixtureWindowsRelease;
+    WindowsMemoryHookScope scope(hooks);
+    const size_t size = size_t{18} * 1024 * 1024;
+    Platform::setAggressiveDefrag(true);
+    resetWindowsFixture(WindowsFixtureMode::DIRECT, size);
+    {
+        auto guard = Platform::allocateMemoryRAII(size, true, true);
+        expect(guard.valid() && guard.size() == size && guard.large_page_bytes() == size,
+               "Direct Windows LP success retains the requested footprint");
+        expect(g_windows_preparations == 0, "Aggressive Windows mode first tries ordinary allocation without global cleanup");
+    }
+    Platform::setAggressiveDefrag(false);
+    resetWindowsFixture(WindowsFixtureMode::CHUNKED, size);
+    {
+        auto guard = Platform::allocateMemoryRAII(size, true, true);
+        expect(guard.valid() && guard.size() == size && guard.large_page_bytes() == size && g_windows_large_chunks == 9,
+               "Windows chunk fallback uses exact-size large-page chunks");
+        expect(g_windows_largest_commit <= g_windows_target,
+               "Chunk fallback never rounds an 18-MiB window up to a 1-GiB allocation");
+    }
+    resetWindowsFixture(WindowsFixtureMode::HYBRID, size);
+    {
+        auto guard = Platform::allocateMemoryRAII(size, true, true);
+        expect(guard.valid() && guard.is_locked() && guard.size() == size &&
+               guard.large_page_bytes() == size_t{6} * 1024 * 1024,
+               "Hybrid Windows fallback reports only its real large-page prefix");
+    }
+    resetWindowsFixture(WindowsFixtureMode::THROW_CHUNK, size);
+    bool caught = false;
+    try {
+        auto guard = Platform::allocateMemoryRAII(size, true, true);
+    } catch (const std::runtime_error& error) {
+        caught = std::string(error.what()) == "injected chunk allocation exception";
+    }
+    expect(caught && g_windows_large_chunks == 3, "Injected chunk failure reaches the caller after partial allocation");
+    for (size_t i = 0; i < g_windows_large_chunks; ++i) {
+        expect(g_windows_released[i],
+               "Chunk exception rolls back every committed mapping");
+    }
+    resetWindowsFixture(WindowsFixtureMode::FAIL_LOCK, size);
+    auto failed = Platform::allocateMemoryRAII(size, false, true);
+    expect(!failed.valid(), "Windows strict lock failure never returns pageable memory");
+    auto pageable = Platform::allocateMemoryRAII(size, false, true, true);
+    expect(pageable.valid() && !pageable.is_locked() && pageable.size() == size,
+           "Explicit Windows pageable fallback retains its original requested size");
+    resetWindowsFixture(WindowsFixtureMode::DIRECT, size_t{1024} * 1024);
+    auto small = Platform::allocateMemoryRAII(size_t{1024} * 1024, true, false);
+    expect(small.valid() && small.size() == size_t{1024} * 1024 && !small.is_large_pages(),
+           "Small Windows windows fall back instead of growing to the large-page minimum");
+}
+#endif
+
 void testMemoryPageContracts() {
     using namespace memory_pages;
     size_t aligned = 0;
@@ -96,6 +222,7 @@ uint32_t g_fixture_lock_calls = 0;
 int g_fixture_advice = 0;
 uint8_t* g_fixture_base = nullptr;
 size_t g_fixture_size = 0;
+bool g_fixture_unmapped = false;
 
 size_t fixtureHugeSize() { return g_fixture_huge_size; }
 void* fixtureHugeMap(size_t size) {
@@ -117,8 +244,14 @@ int fixtureAdviceFailure(void* base, size_t size, int advice) {
     g_fixture_advice = advice;
     g_fixture_base = static_cast<uint8_t*>(base);
     g_fixture_size = size;
+    g_fixture_unmapped = false;
     errno = EINVAL;
     return -1;
+}
+int fixtureUnmap(void* base, size_t size) {
+    const int result = munmap(base, size);
+    if (base == g_fixture_base && size == g_fixture_size && result == 0) g_fixture_unmapped = true;
+    return result;
 }
 
 class LinuxMemoryHookScope {
@@ -136,6 +269,7 @@ void testLinuxMemoryFallbacks() {
     hooks.map_huge = fixtureHugeMap;
     hooks.lock_memory = fixtureLockFailure;
     hooks.advise_memory = fixtureAdviceFailure;
+    hooks.unmap_memory = fixtureUnmap;
     LinuxMemoryHookScope scope(hooks);
     g_fixture_huge_size = size_t{8} * 1024 * 1024;
     g_fixture_lock_calls = g_fixture_map_calls = 0;
@@ -163,9 +297,7 @@ void testLinuxMemoryFallbacks() {
     g_fixture_lock_calls = 0;
     auto failed = Platform::allocateMemoryRAII(g_fixture_huge_size, true, true);
     expect(!failed.valid() && g_fixture_lock_calls == 1, "Failed strict mlock aborts without accepting pageable memory");
-    std::vector<unsigned char> resident(g_fixture_size / Platform::getNativePageSize());
-    errno = 0;
-    expect(mincore(g_fixture_base, g_fixture_size, resident.data()) != 0 && errno == ENOMEM,
+    expect(g_fixture_unmapped,
            "Failed strict allocation unmaps its entire anonymous mapping");
     auto unlocked = Platform::allocateMemoryRAII(g_fixture_huge_size, true, true, true);
     expect(unlocked.valid() && !unlocked.is_locked(), "Explicit allow-swappable fallback reports unlocked memory honestly");

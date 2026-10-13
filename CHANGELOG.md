@@ -8,11 +8,14 @@
 
 ### Fixed
 
+- **Windows allocation footprint and recovery:** chunked large-page fallback keeps the requested size instead of rounding small windows up to much larger chunks. Partial allocations are released on exceptions, and an explicitly allowed pageable fallback retains its original size after a lock failure.
+- **Windows cache preparation:** aggressive preparation flushes the file-cache working set with the documented API instead of toggling cache limits and potentially leaving hard limits enabled at zero.
 - **Native page sizes:** allocation and worker partitioning use the OS base page size; HugeTLB allocation uses its actual default size and does not silently expand a small window to a 1 GiB huge page.
 - **HugeTLB lock status:** inherently non-swappable HugeTLB mappings no longer require a redundant successful `mlock()` to satisfy strict locked-memory testing.
 
 ### Changed
 
+- **Windows aggressive preparation:** ordinary full large-page attempts now run first. Only failure permits one system-wide preparation and retry; allocation no longer relies on fixed sleeps or increasing delays.
 - **Linux huge-page preparation:** automatic huge-page provisioning uses process-owned transparent pages instead of changing the persistent HugeTLB pool, preventing reservations from remaining after a kill or overwriting concurrent pool changes. Preconfigured HugeTLB pools remain supported; `--aggressive-defrag` retains optional cache dropping, compaction and one process-local collapse attempt without fixed delays.
 
 ## 1.8 - 2026-10-13

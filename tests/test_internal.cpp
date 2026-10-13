@@ -6,7 +6,10 @@
 #include "testsmem4u.h"
 #include "Platform.h"
 #include "PlatformMemoryInternal.h"
-#ifndef _WIN32
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <cerrno>
 #endif
@@ -714,6 +717,8 @@ int main() try {
     testMemoryPageContracts();
 #ifndef _WIN32
     testLinuxMemoryFallbacks();
+#else
+    testWindowsMemoryFallbacks();
 #endif
     testLiveProgressAndCancellation();
     testAllKernelProgress();

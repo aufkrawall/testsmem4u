@@ -80,10 +80,18 @@ void* mapHuge(size_t size) {
                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 }
 
+int unmapMemory(void* base, size_t size) {
+#ifdef TESTSMEM4U_TESTING
+    const auto* hooks = g_memory_hooks.load(std::memory_order_acquire);
+    if (hooks && hooks->unmap_memory) return hooks->unmap_memory(base, size);
+#endif
+    return munmap(base, size);
+}
+
 struct MappingCleanup {
     uint8_t* base;
     size_t size;
-    ~MappingCleanup() { if (base) munmap(base, size); }
+    ~MappingCleanup() { if (base) unmapMemory(base, size); }
 };
 
 uint8_t* mapAligned(size_t size, size_t alignment) {
