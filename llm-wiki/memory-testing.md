@@ -1,7 +1,8 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-10-13 for page-allocation defaults, native kernel contracts, performance and progress/result reporting; 2026-09-30 for other
-runtime paths. Stale risk: medium for hardware effectiveness and unobserved
+Last verified: 2026-10-14 for Linux lock-before-prefault ordering; 2026-10-13 for
+page-allocation defaults, native kernel contracts, performance and progress/result
+reporting; 2026-09-30 for other runtime paths. Stale risk: medium for hardware effectiveness and unobserved
 long-run stalls; low for tested native progress/accounting paths.
 
 ## Sources and responsibilities
@@ -79,9 +80,12 @@ base pages cap worker counts as well as partition boundaries.
   window is compatible with the actual `Hugepagesize`. HugeTLB is inherently
   non-swappable: no redundant `mlock` or memlock-limit dependency is imposed.
 - Linux fallback mappings are naturally aligned for the native PMD-sized THP
-  target, receive `MADV_HUGEPAGE` before write-prefaulting, then `mlock` when
-  requested. Unsupported advice or unavailable THPs still allow valid locked
-  native pages. `--no-large-pages` skips HugeTLB and requests `MADV_NOHUGEPAGE`.
+  target and receive `MADV_HUGEPAGE` before attempting requested `mlock` locking.
+  Strict lock failures stop before manual write-prefaulting; accepted locked,
+  unlocked and explicitly permitted pageable mappings are still write-prefaulted
+  before coverage/residency checks. Unsupported advice or unavailable THPs still
+  allow valid locked native pages. `--no-large-pages` skips HugeTLB and requests
+  `MADV_NOHUGEPAGE`.
 - Linux automatic huge-page allocation is now process-owned THP, replacing the
   previous persistent-pool reservation mechanism. No code writes or restores
   `nr_hugepages`, so SIGKILL/OOM and concurrent administrators cannot strand or
@@ -114,7 +118,11 @@ normalization, exact/bounded/unknown/malformed smaps totals and fresh native
 allocation. Linux-only process-local syscall fixtures exercise non-2-MiB HugeTLB,
 redundant-mlock avoidance, incompatible 1 GiB defaults, unavailable huge pages/
 advice, strict lock failure plus unmapping, explicit pageable fallback and
-no-large-page advice. They never modify sysctls or impose timing assumptions.
+no-large-page advice. The lock-failure hook uses `mincore` to require zero resident
+test pages at the lock attempt; it failed before moving prefaulting after the lock
+decision. An accepted pageable fallback must still be fully resident. These checks
+never modify sysctls or impose timing assumptions. Allocation diagnostics report
+`before-prefault=yes` at the lock attempt and `prefault-skipped=yes` on strict abort.
 `tests/test_config_wizard.h` drives real wizard streams/preset resolution and
 checks defaults, saved policies, explicit settings and invalid/infinite cycles;
 `tests/test_cli.py` checks real default/override normalization and saved policies.

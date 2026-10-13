@@ -204,7 +204,9 @@ Linux has two supported huge-page mechanisms:
   are inherently non-swappable. The program does not reserve or restore a pool.
 - **Transparent huge pages (THP):** the automatic fallback when HugeTLB cannot
   satisfy the request. The allocator aligns the mapping for the native PMD huge-page
-  size, requests `MADV_HUGEPAGE`, populates it and locks it with `mlock`. THP size
+  size, requests `MADV_HUGEPAGE`, attempts requested `mlock` locking and then
+  write-prefaults accepted mappings. Strict lock failures stop before the program
+  explicitly touches the whole window. THP size
   varies with architecture/kernel configuration; 2 MiB is common on x86-64.
 
 After the wizard resolves the final page preference, startup checks the global THP

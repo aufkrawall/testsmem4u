@@ -277,6 +277,8 @@ int g_fixture_advice = 0;
 uint8_t* g_fixture_base = nullptr;
 size_t g_fixture_size = 0;
 bool g_fixture_unmapped = false;
+bool g_fixture_residency_checked = false;
+size_t g_fixture_resident_pages_before_lock = 0;
 
 size_t fixtureHugeSize() { return g_fixture_huge_size; }
 void* fixtureHugeMap(size_t size) {
@@ -289,8 +291,12 @@ void* fixtureHugeUnavailable(size_t) {
     errno = ENOMEM;
     return MAP_FAILED;
 }
-int fixtureLockFailure(const void*, size_t) {
+int fixtureLockFailure(const void* base, size_t size) {
     ++g_fixture_lock_calls;
+    std::vector<unsigned char> residency(size / Platform::getNativePageSize());
+    g_fixture_residency_checked = mincore(const_cast<void*>(base), size, residency.data()) == 0;
+    g_fixture_resident_pages_before_lock = static_cast<size_t>(std::count_if(
+        residency.begin(), residency.end(), [](unsigned char page) { return (page & 1) != 0; }));
     errno = ENOMEM;
     return -1;
 }
@@ -351,10 +357,14 @@ void testLinuxMemoryFallbacks() {
     g_fixture_lock_calls = 0;
     auto failed = Platform::allocateMemoryRAII(g_fixture_huge_size, true, true);
     expect(!failed.valid() && g_fixture_lock_calls == 1, "Failed strict mlock aborts without accepting pageable memory");
+    expect(g_fixture_residency_checked && g_fixture_resident_pages_before_lock == 0,
+           "Strict mlock rejection occurs before any anonymous test pages are prefaulted");
     expect(g_fixture_unmapped,
            "Failed strict allocation unmaps its entire anonymous mapping");
     auto unlocked = Platform::allocateMemoryRAII(g_fixture_huge_size, true, true, true);
     expect(unlocked.valid() && !unlocked.is_locked(), "Explicit allow-swappable fallback reports unlocked memory honestly");
+    expect(unlocked.valid() && Platform::checkMemoryResident(unlocked.base(), unlocked.size()),
+           "Explicit pageable fallback still materializes all pages after the failed lock attempt");
     g_fixture_map_calls = 0;
     auto standard = Platform::allocateMemoryRAII(g_fixture_huge_size, false, false);
     expect(standard.valid() && g_fixture_map_calls == 0 && g_fixture_advice == MADV_NOHUGEPAGE,

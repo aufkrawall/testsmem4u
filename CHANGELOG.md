@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- **Linux strict-lock startup:** lock-limit or permission failures are rejected before explicitly populating the entire test window, avoiding unnecessary memory pressure for runs that cannot satisfy strict locking. Accepted locked and pageable mappings still receive write-prefaulting before tests start.
 - **Unattended Linux startup no longer waits on the THP offer:** when the startup countdown expires without opening the configuration, a disabled THP policy is reported with instructions instead of blocking indefinitely on a `[Y/n]` prompt. The offer still appears after the operator opens the wizard. Confirmations now accept surrounding whitespace, CRLF input and any letter case, and setup diagnostics no longer appear twice on the console.
 - **THP inspection on kernels without `hpage_pmd_size`:** such kernels are treated as global-policy-only, so an already enabled THP policy is no longer reported as "could not determine" on every large-page run. The allocator and THP setup now share one page-size parser, so both select the same huge-page size.
 - **Windows hybrid rollback:** when locking a native tail chunk fails during hybrid large-page allocation, that chunk is now released through the same owned cleanup as the others, so release failures are reported instead of silently leaking the chunk. The diagnostic names the lock failure instead of an unavailable address.

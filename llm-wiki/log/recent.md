@@ -1,5 +1,26 @@
 # Recent Log
 
+## 2026-10-14 - Reject strict Linux lock failures before prefaulting
+
+- Anonymous allocation now applies THP advice, attempts requested `mlock`, then
+  write-prefaults accepted mappings. Strict lock rejection no longer explicitly
+  populates a large window first; accepted locked/unlocked/pageable mappings still
+  receive private writable pages. HugeTLB allocation remains inherently locked.
+- The Linux failure hook checks `mincore` at the lock attempt and requires zero
+  resident test pages. This regression failed on the previous production code and
+  passes after the fix; accepted pageable fallback is also checked for residency.
+  Debug logs identify the pre-prefault lock attempt and skipped prefault on abort.
+- Bounded real CLI verification with a child-only zero memlock limit: the 16 MiB
+  strict rejection dropped from 4,313 to 213 minor faults and skips prefaulting.
+  Locked THP and unlocked 16 MiB runs each complete one cycle with exactly
+  16,777,216 bytes verified and zero errors; THP coverage remains full.
+- Windows/WSL baseline+AVX2 suites, 20 native Python checks (one Linux-only skip),
+  all 11 Linux CLI checks and all five Linux release cross-builds pass. ELF machine
+  types and new diagnostic strings were inspected. Strict native static analysis
+  passes all production units and the test runner; wiki links/ordering were checked.
+  ARM/AVX-512 runtime behavior,
+  real THP sysfs writes and system-wide preparation were not exercised.
+
 ## 2026-10-13 - Review fixes for the large-page/THP range (4dac99d..0098097)
 
 - THP offer: an expired startup countdown previously reached a blocking `[Y/n]`

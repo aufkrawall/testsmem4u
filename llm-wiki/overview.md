@@ -75,7 +75,9 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   Non-regular files are rejected before opening; this avoids directory-as-EOF
   behavior in libc++ and blocking reads from FIFOs. The bool `loadConfig` API remains.
 - Linux unlocked allocations write once per native page before residency checks;
-  the native mapping scope owns it throughout prefaulting/logging before ownership
+  requested strict locking is attempted before those writes, so lock-limit or
+  permission rejection does not first populate the whole test window.
+  The native mapping scope owns it throughout prefaulting/logging before ownership
   transfers to `MemoryGuard`. Strict checks
   remain active. Preparation display completion wakes immediately, and allocation
   or display exceptions cannot destroy a joinable preparation thread.
@@ -144,7 +146,8 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `tests/test_cli.py` and `tests/test_build.py`: real configuration resolution,
   database generation, and fail-closed analysis (including zero-exit diagnostics).
 
-Last verified: 2026-10-13 for Windows/WSL baseline+AVX2 progress/results tests,
+Last verified: 2026-10-14 for Linux strict-lock failure ordering; 2026-10-13
+for Windows/WSL baseline+AVX2 progress/results tests,
 ASan/UBSan, strict native analysis and all nine release cross-builds; 2026-09-30
 for other reviewed runtime paths. Other details retain their earlier dates.
 Stale risk: Medium for hardware effectiveness and historical lint claims; see

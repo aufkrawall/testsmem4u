@@ -248,9 +248,11 @@ bool Platform::allocateNativeMemory(MemoryRegion& region, size_t size, bool try_
         LOG_DEBUG("Allocation: %s unavailable error=%d; native-page fallback remains valid",
                   try_large_pages ? "MADV_HUGEPAGE" : "MADV_NOHUGEPAGE", errno);
     }
-    prefault(base, size);
     bool locked = false;
     if (try_lock) {
+        // Reject strict lock-limit/permission failures before explicitly touching
+        // the whole window. THP advice is already in place for mlock's faults.
+        LOG_DEBUG("Allocation: attempting mlock bytes=%zu before-prefault=yes strict=%s", size, allow_swappable ? "no" : "yes");
         locked = lockMemory(base, size) == 0;
         if (!locked) {
             const int error = errno;
@@ -258,7 +260,7 @@ bool Platform::allocateNativeMemory(MemoryRegion& region, size_t size, bool try_
             const bool have_limit = getrlimit(RLIMIT_MEMLOCK, &limit) == 0;
             const unsigned long long memlock = have_limit ? static_cast<unsigned long long>(limit.rlim_cur) : 0ULL;
             if (!allow_swappable) {
-                LOG_ERROR("Allocation: mlock failed bytes=%zu error=%d memlock-limit=%llu strict=yes", size, error, memlock);
+                LOG_ERROR("Allocation: mlock failed bytes=%zu error=%d memlock-limit=%llu strict=yes prefault-skipped=yes", size, error, memlock);
                 return false;
             }
             // Explicitly permitted pageable fallback: the run continues unlocked.
@@ -266,6 +268,9 @@ bool Platform::allocateNativeMemory(MemoryRegion& region, size_t size, bool try_
                      size, error, memlock);
         }
     }
+    // Accepted mappings still need private writable pages, including explicitly
+    // permitted pageable fallbacks, before coverage and residency checks.
+    prefault(base, size);
     MemoryRegion observed;
     observed.base = base;
     observed.size = size;
