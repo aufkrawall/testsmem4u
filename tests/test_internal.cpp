@@ -643,6 +643,7 @@ void testRunResultMerge() {
 
 #include "test_engine_existing.h"
 #include "test_engine_regressions.h"
+#include "test_performance_regressions.h"
 #include "test_runtime_regressions.h"
 #include "test_progress_regressions.h"
 
@@ -694,6 +695,7 @@ int main() try {
     testErrorClassification();
 
     testEngineRegressions();
+    testUniformMarchSpecialization();
     testIndependentWorkerExecution();
     testPreparationExceptionCleanup();
     testFreshUnlockedRun();

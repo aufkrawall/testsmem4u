@@ -25,6 +25,8 @@ long-run stalls; low for tested native progress/accounting paths.
 - `src/TestMarch.cpp`: LFSR verification and moving-inversion variants.
 - `src/simd_verify.cpp`, `include/MemoryTestKernels.h`: first-observation comparison,
   SIMD read/replace in either direction, and forward/inverse LFSR recurrence.
+- `src/simd_patterns_verify.cpp`, `include/SimdPatternMath.h`: existing address,
+  uniform and pair verifiers, separated from pattern writers to keep files bounded.
 - `src/TestMemoryTraffic.cpp`: active retention, batched random access, block moves.
 - `src/TestModulo.cpp`: Modulo-20 protected-word coupling test.
 - `src/TestRowHammer.cpp`: heuristic multi-stride disturbance test.
@@ -100,6 +102,21 @@ march coverage, not a claim to control individual physical DRAM transactions. A
 destructive mismatch is recorded as unverified, since rereading after intentionally
 overwriting the cell cannot classify the original observation as persistent or
 transient. It remains an error and honors halt-on-error. Zero is a valid pattern.
+
+Uniform marches use `verify_uniform_words`: the pattern/complement remain in
+registers, with separate read/replace and direction specializations. No expected
+table is populated or read for a uniform chunk. The vector-grain traversal,
+first loaded mismatch values, sample order/caps and scalar tails match
+`verify_words`; `tests/test_performance_regressions.h` compares those contracts
+directly and injects faults at all three real uniform-march boundaries.
+
+On x86, CLFLUSHOPT region and address-batch loops run entirely inside a function
+compiled for that instruction. Capability dispatch is outside the loop and each
+operation ends with MFENCE. This removes per-line calls/VZEROUPPER observed in
+the v1.7 ThinLTO binary. Region flushing aligns the start down to cover every
+intersecting cache line; a zero-byte range still fences without flushing. This
+does not remove algorithm flushes or claim control over physical DRAM ordering.
+Per-march summaries identify the selected pattern path; no per-flush logging is added.
 
 BlockMove uses an address-dependent odd-stride pattern. It verifies both copies,
 poisons the return destination, copies in both directions, and checks odd tails.

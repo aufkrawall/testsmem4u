@@ -6,6 +6,87 @@
 
 namespace testsmem4u::simd {
 
+namespace {
+
+template <bool march, bool reverse>
+size_t verifyUniform(uint64_t* memory, uint64_t expected, size_t count,
+                     std::vector<std::pair<uint64_t, uint64_t>>& errors, size_t max_samples) {
+    size_t found = 0;
+    auto record = [&](size_t offset, uint64_t actual) {
+        if (actual != expected) {
+            ++found;
+            if (errors.size() < max_samples) errors.emplace_back(offset, actual);
+        }
+    };
+#if defined(__AVX512F__)
+    constexpr size_t width = 8;
+    const __m512i want = _mm512_set1_epi64(static_cast<long long>(expected));
+    const __m512i replacement = _mm512_set1_epi64(static_cast<long long>(~expected));
+#elif defined(__AVX2__)
+    constexpr size_t width = 4;
+    const __m256i want = _mm256_set1_epi64x(static_cast<long long>(expected));
+    const __m256i replacement = _mm256_set1_epi64x(static_cast<long long>(~expected));
+#elif defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
+    constexpr size_t width = 2;
+    const __m128i want = _mm_set1_epi64x(static_cast<long long>(expected));
+    const __m128i replacement = _mm_set1_epi64x(static_cast<long long>(~expected));
+#else
+    constexpr size_t width = 1;
+#endif
+    size_t done = 0;
+    for (; count - done >= width; done += width) {
+        const size_t offset = reverse ? count - done - width : done;
+        alignas(64) uint64_t observed[width];
+        bool mismatch;
+#if defined(__AVX512F__)
+        const __m512i actual = _mm512_loadu_si512(memory + offset);
+        mismatch = _mm512_cmpneq_epi64_mask(actual, want) != 0;
+        if (mismatch) _mm512_store_si512(observed, actual);
+        if constexpr (march) _mm512_storeu_si512(memory + offset, replacement);
+#elif defined(__AVX2__)
+        const __m256i actual = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(memory + offset));
+        mismatch = _mm256_movemask_epi8(_mm256_cmpeq_epi64(actual, want)) != -1;
+        if (mismatch) _mm256_store_si256(reinterpret_cast<__m256i*>(observed), actual);
+        if constexpr (march) _mm256_storeu_si256(reinterpret_cast<__m256i*>(memory + offset), replacement);
+#elif defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
+        const __m128i actual = _mm_loadu_si128(reinterpret_cast<const __m128i*>(memory + offset));
+        mismatch = _mm_movemask_epi8(_mm_cmpeq_epi32(actual, want)) != 0xFFFF;
+        if (mismatch) _mm_store_si128(reinterpret_cast<__m128i*>(observed), actual);
+        if constexpr (march) _mm_storeu_si128(reinterpret_cast<__m128i*>(memory + offset), replacement);
+#else
+        observed[0] = *static_cast<volatile uint64_t*>(memory + offset);
+        mismatch = observed[0] != expected;
+        if constexpr (march) memory[offset] = ~expected;
+#endif
+        if (mismatch) {
+            for (size_t lane = 0; lane < width; ++lane) {
+                const size_t k = reverse ? width - lane - 1 : lane;
+                record(offset + k, observed[k]);
+            }
+        }
+    }
+    for (; done < count; ++done) {
+        const size_t offset = reverse ? count - done - 1 : done;
+        const uint64_t actual = *static_cast<volatile uint64_t*>(memory + offset);
+        if constexpr (march) memory[offset] = ~expected;
+        record(offset, actual);
+    }
+    return found;
+}
+
+} // namespace
+
+size_t verify_uniform_words(uint64_t* memory, uint64_t expected, size_t count,
+                            std::vector<std::pair<uint64_t, uint64_t>>& errors,
+                            bool march, bool reverse, size_t max_samples) {
+    if (march) {
+        return reverse ? verifyUniform<true, true>(memory, expected, count, errors, max_samples)
+                       : verifyUniform<true, false>(memory, expected, count, errors, max_samples);
+    }
+    return reverse ? verifyUniform<false, true>(memory, expected, count, errors, max_samples)
+                   : verifyUniform<false, false>(memory, expected, count, errors, max_samples);
+}
+
 uint64_t fill_lfsr(uint64_t* memory, size_t count, uint64_t seed) {
     // The LFSR recurrence is serial, so generation (not store width) bounds
     // throughput; 8-byte MOVNTI stores combine into full lines in the WC buffers.

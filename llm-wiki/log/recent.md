@@ -1,5 +1,18 @@
 # Recent Log
 
+## 2026-10-13 - Remove cache-flush and uniform-march overhead
+
+- Complete CLFLUSHOPT region/batch loops have one dispatch and a final MFENCE;
+  the shipped v1.7 per-line helper calls are removed. Unaligned x86 ranges now
+  include both boundary lines. Algorithm flush boundaries remain unchanged.
+- Uniform marches use register patterns with dedicated direction/replacement
+  paths. Generic-kernel equivalence tests cover unaligned inputs, tails, zero/all-one
+  patterns, mismatch observations and capped samples; real phase faults are caught.
+- Existing pattern verifiers move to their own translation unit; shared AVX2
+  multiplication remains one helper. This keeps SIMD source files below 800 lines.
+- Native baseline/AVX2 and all 17 Python regressions pass. Measurements and wider
+  validation are recorded as they complete; power/detection gains are unverified.
+
 ## 2026-10-13 - Add bounded progress diagnostics and robust status display
 
 - Debug mode adds periodic `Progress:` summaries with aggregate deltas/errors and

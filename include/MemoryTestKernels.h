@@ -11,6 +11,13 @@ size_t verify_words(uint64_t* memory, const uint64_t* expected, size_t count,
                     bool march = false, bool reverse = false,
                     size_t max_samples = MAX_ERROR_SAMPLES_PER_BLOCK);
 
+// Uniform march/read specialization: expected data stays in registers rather
+// than being written to and loaded from a per-block expected-value table.
+size_t verify_uniform_words(uint64_t* memory, uint64_t expected, size_t count,
+                            std::vector<std::pair<uint64_t, uint64_t>>& errors,
+                            bool march = false, bool reverse = false,
+                            size_t max_samples = MAX_ERROR_SAMPLES_PER_BLOCK);
+
 inline uint64_t lfsrNext(uint64_t value) {
     return (value >> 1) ^ ((0ULL - (value & 1)) & 0xD800000000000000ULL);
 }

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- **Unaligned x86 cache flushes:** region flushing covers both boundary cache lines when a range starts or ends inside a line.
 - **Live tested-memory progress:** long test invocations now publish verified bytes and observed errors during testing instead of leaving the displayed total unchanged until all internal repetitions finish. Separate worker counters preserve exact totals through nested retention work, configured sub-blocks, cancellation, and worker exceptions.
 - **Final test totals:** console results and the persistent log now report the exact verified-byte total and completed cycles, including partial work from a stopped run. The console explains that repeated verification reads contribute to the total.
 - **Narrow-terminal progress:** tested-memory totals remain visible alongside errors and elapsed time when cycle details or long test names exceed the terminal width.
@@ -11,6 +12,8 @@
 
 ### Improved
 
+- **Useful memory throughput:** region cache flushes dispatch once instead of calling a helper for every cache line, and uniform moving inversions keep expected patterns in registers. Verification preserves the original observed errors, vector traversal, replacement writes, and byte accounting; no filler load or reduced test coverage was added.
+- **Kernel diagnostics:** per-march summaries identify register-pattern uniform marches separately from LFSR table verification.
 - **Long-test diagnostics:** `--debug` records bounded progress snapshots every ten seconds with verified-byte deltas and up to four workers' test positions, phases, and time since their last verified-byte change. Fill, verification, residency, and disturbance phases distinguish normal long work from a possible stall without adding clocks or logging to hot verification blocks.
 - **Regression coverage:** added deterministic progress, cancellation, worker/monitor exception, nested accounting, multi-terabyte counter, diagnostic cadence, and narrow-terminal tests across baseline and AVX2 paths.
 

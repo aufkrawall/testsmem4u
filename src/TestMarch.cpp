@@ -21,14 +21,14 @@ uint64_t fillLfsr(TestContext& ctx, uint64_t* ptr, size_t count, uint64_t seed) 
 // A march has already overwritten the cell. Re-reading it cannot classify the
 // original mismatch as persistent/transient; preserve and count the observation.
 void reportMarchErrors(const MemoryRegion& region, uint64_t* ptr, size_t offset,
-                       const uint64_t* expected,
+                       const uint64_t* expected, uint64_t uniform,
                        const std::vector<std::pair<uint64_t, uint64_t>>& errors,
                        size_t found, TestResult& res, TestContext& ctx, bool stop) {
     res.unverified_errors += found;
     for (const auto& error : errors) {
         LOG_ERROR_DETAIL("March (observed before overwrite)",
                          reportAddress(region, ptr + offset + error.first),
-                         expected[error.first], error.second);
+                         expected ? expected[error.first] : uniform, error.second);
     }
     if (found && stop) ctx.requestStop();
 }
@@ -60,10 +60,8 @@ TestResult runMarch(TestContext& ctx, const MemoryRegion& region,
         for (size_t done = 0; done < count && !ctx.shouldStop(); done += march_words) {
             const size_t n = std::min(march_words, count - done);
             const size_t offset = phase == 1 ? count - done - n : done;
-            for (size_t j = 0; j < n; ++j) {
-                if (!lfsr) {
-                    expected[j] = phase == 1 ? ~seed : seed;
-                } else if (phase == 1) {
+            for (size_t j = 0; lfsr && j < n; ++j) {
+                if (phase == 1) {
                     state = simd::lfsrPrevious(state);
                     expected[n - j - 1] = ~state;
                 } else {
@@ -72,13 +70,17 @@ TestResult runMarch(TestContext& ctx, const MemoryRegion& region,
                 }
             }
             errors.clear();
-            const size_t found = simd::verify_words(ptr + offset, expected.data(), n,
-                                                     errors, phase != 2, phase == 1);
+            const uint64_t uniform = phase == 1 ? ~seed : seed;
+            const size_t found = lfsr ? simd::verify_words(ptr + offset, expected.data(), n,
+                                                          errors, phase != 2, phase == 1)
+                                      : simd::verify_uniform_words(ptr + offset, uniform, n,
+                                                                  errors, phase != 2, phase == 1);
             if (phase != 2) {
-                reportMarchErrors(region, ptr, offset, expected.data(), errors, found, res, ctx, stop);
+                reportMarchErrors(region, ptr, offset, lfsr ? expected.data() : nullptr,
+                                  uniform, errors, found, res, ctx, stop);
             } else {
                 classifyAndLogErrors(region, ptr, errors, found, offset,
-                                     [&](size_t k) { return expected[k - offset]; },
+                                     [&](size_t k) { return lfsr ? expected[k - offset] : uniform; },
                                      res, ctx, "March (Final)", stop);
             }
             progress.addBytes(n * sizeof(uint64_t));
@@ -87,7 +89,7 @@ TestResult runMarch(TestContext& ctx, const MemoryRegion& region,
         testPhase(ctx, phase == 0 ? "March inverted" : "March restored", region);
     }
     LOG_DEBUG("March(%s seed=0x%016llx): offset=%zu words=%zu errors=%llu (unverified=%llu) in %.3fs%s",
-              lfsr ? "LFSR" : "uniform", static_cast<unsigned long long>(seed),
+              lfsr ? "LFSR-table" : "uniform-register", static_cast<unsigned long long>(seed),
               region.base_offset_bytes, count,
               static_cast<unsigned long long>(res.total_errors()),
               static_cast<unsigned long long>(res.unverified_errors),

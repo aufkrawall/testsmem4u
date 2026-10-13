@@ -45,6 +45,10 @@ void sfence();
 // Cache Management
 void flush_cache_line(void* ptr);
 
+// Flush a batch with one capability dispatch and one fence. Entries may share
+// a cache line; callers must finish all stores before calling this function.
+void flush_cache_lines(void* const* lines, size_t count);
+
 // Flush entire memory region from cache - essential for true RAM testing
 // This ensures subsequent reads come from DRAM, not CPU cache
 void flush_cache_region(void* ptr, size_t bytes);
