@@ -1,5 +1,6 @@
 #include "TestEngine.h"
 #include "RunConfiguration.h"
+#include "HugePageSetup.h"
 #include "Logger.h"
 #include "Platform.h"
 #include "ConfigManager.h"
@@ -465,7 +466,7 @@ int main(int argc, char* argv[]) {
         ConsoleDisplay::get().printLine("[!] 'Lock Pages in Memory' privilege (SeLockMemoryPrivilege) is MISSING.");
         ConsoleDisplay::get().printLine("    Locked memory and large-page allocations may fail or fall back.");
         ConsoleDisplay::get().printLine("    Do you want to grant this privilege to the current user now?");
-        ConsoleDisplay::get().printLine("    (Requires 'Yes' and then a Sign-out/Reboot to take effect)");
+        ConsoleDisplay::get().printLine("    Recommended for large pages. Sign out and sign back in after granting it; a reboot is not required.");
         
         if (automation_mode) {
             ConsoleDisplay::get().printLine("    Direct/non-interactive mode: skipping automatic privilege grant.");
@@ -478,7 +479,7 @@ int main(int argc, char* argv[]) {
                 if (Platform::grantMemoryLockPrivilege()) {
                     ConsoleDisplay::get().printLine("");
                     ConsoleDisplay::get().printLine("[+] Privilege granted successfully!");
-                    ConsoleDisplay::get().printLine("    PLEASE SIGN OUT AND SIGN BACK IN for the changes to take effect.");
+                    ConsoleDisplay::get().printLine("    PLEASE SIGN OUT AND SIGN BACK IN for the changes to take effect. A reboot is not required.");
                     ConsoleDisplay::get().printLine("    The program will now exit.");
                     Logger::get().deinit();
                     return 0;
@@ -526,6 +527,11 @@ int main(int argc, char* argv[]) {
             }
         }
     }
+
+#ifndef _WIN32
+    // Inspect the final wizard/config selection before any test allocation.
+    runLinuxHugePageSetup(config.use_large_pages, !automation_mode, isPrivileged(), std::cin, std::cout);
+#endif
 
     reportMemoryWindowAdjustment(requested_window_mb, config.memory_window_mb);
     config.debug_mode = cli.debug;

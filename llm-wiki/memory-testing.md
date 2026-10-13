@@ -136,7 +136,10 @@ allocation success, throughput gains, ARM runtime behavior or hardware efficacy.
 ## THP policy setup component
 
 Sources: `include/HugePageSetup.h`, `src/HugePageSetup.cpp`,
-`tests/test_huge_page_setup.h`. Startup integration is a separate follow-up.
+`tests/test_huge_page_setup.h`, `src/main.cpp::main`. Linux startup invokes setup
+after final wizard/config resolution and before allocation; dry runs return before
+elevation/setup. Windows retains its earlier privilege offer and now explicitly
+recommends it, explaining that sign-out/sign-in suffices without a reboot.
 
 - Policy inspection parses the bracketed active sysfs value, rejecting unknown,
   duplicate, malformed or oversized input. It resolves the native PMD-size
@@ -157,6 +160,7 @@ Sources: `include/HugePageSetup.h`, `src/HugePageSetup.cpp`,
 - `ThpPolicyAccess` injects synthetic controls for portable deterministic tests.
   `NativeThpPolicyAccess` additionally has ordinary temporary-directory fixtures
   that verify bounded reads, native non-2-MiB paths and exact output bytes.
+  A Linux `/dev/full` fixture verifies buffered flush failure propagation.
   Tests never change real sysfs/process policy. Stable `THP setup:` diagnostics
   record parsed modes, decision, control and errno without raw sysfs contents.
 

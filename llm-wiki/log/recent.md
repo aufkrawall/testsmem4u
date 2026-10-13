@@ -1,5 +1,33 @@
 # Recent Log
 
+## 2026-10-13 - Integrate huge-page setup and expand operator documentation
+
+- Linux invokes THP policy setup after final wizard/config resolution and before
+  allocation. Disabled effective policy receives an interactive root `[Y/n]`
+  recommendation for runtime `madvise`; direct/dry/no-large-page modes never write
+  policy. Windows explicitly recommends its privilege offer and explains the
+  next-login requirement without requiring a reboot.
+- README now details platform setup, elevation/account scope, HugeTLB/THP/native
+  allocation, policy inheritance/persistence, coverage, locking and aggressive
+  preparation. Removed stale reservation-restoration and missing CLI-report claims.
+- New Linux real-CLI regression inherits complete THP disabling only in the child
+  process, checks the diagnostic precedes allocation and checks page opt-out skips
+  preflight. It fails on the previous binary's missing diagnostic. The native
+  policy writer also propagates a real buffered `/dev/full` flush failure.
+- Final native/WSL baseline+AVX2 suites and native ASan/UBSan pass. All 19 existing
+  Python checks pass; the new Linux-only check is skipped on Windows. Strict native
+  analysis passes all units, with changed main/setup/runner rechecked after fixing
+  compact enum naming/size and non-throwing test-fixture cleanup. Kernel/THP sysfs
+  policies and HugeTLB reservations have not been changed during verification.
+- All nine release targets rebuilt after sanitizers; binary signatures/markers,
+  sizes and native absence of sanitizer imports were inspected. All 11 Linux CLI
+  tests pass, including the new before-allocation/process-disable regression;
+  all 20 native Python tests pass with that Linux-only check skipped. Real bounded
+  16 MiB runs still obtain full Windows large pages and Linux THP + mlock, verify
+  exactly 16,777,216 bytes and complete one cycle with zero errors. Final lifecycle
+  checks find no test processes; global/per-size THP policies and pool count are
+  unchanged. ARM/AVX-512 runtime behavior and real sysfs writes remain untested.
+
 ## 2026-10-13 - Add checked Linux THP setup component
 
 - Added native PMD-size/global policy inspection, inherited process-mode checks,

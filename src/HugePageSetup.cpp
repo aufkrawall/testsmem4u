@@ -19,28 +19,28 @@ namespace {
 
 const char* policyName(ThpPolicy policy) {
     switch (policy) {
-    case ThpPolicy::Always: return "always";
-    case ThpPolicy::Madvise: return "madvise";
-    case ThpPolicy::Never: return "never";
-    case ThpPolicy::Inherit: return "inherit";
+    case ThpPolicy::ALWAYS: return "always";
+    case ThpPolicy::MADVISE: return "madvise";
+    case ThpPolicy::NEVER: return "never";
+    case ThpPolicy::INHERIT: return "inherit";
     default: return "unknown";
     }
 }
 
 const char* controlName(ThpControl control) {
-    return control == ThpControl::Pmd ? "page-size-specific enabled" : "global enabled";
+    return control == ThpControl::PMD ? "page-size-specific enabled" : "global enabled";
 }
 
 ThpReadResult readFile(const std::string& path) {
     FILE* file = std::fopen(path.c_str(), "r");
-    if (!file) return {errno == ENOENT ? ThpReadStatus::Missing : ThpReadStatus::Failed, {}, errno};
+    if (!file) return {errno == ENOENT ? ThpReadStatus::MISSING : ThpReadStatus::READ_ERROR, {}, errno};
     std::array<char, 513> buffer{};
     const size_t count = std::fread(buffer.data(), 1, buffer.size(), file);
     int error = std::ferror(file) ? (errno != 0 ? errno : EIO) : 0;
     if (std::fclose(file) != 0 && error == 0) error = errno != 0 ? errno : EIO;
     if (count == buffer.size() && error == 0) error = EOVERFLOW;
-    if (error != 0) return {ThpReadStatus::Failed, {}, error};
-    return {ThpReadStatus::Ok, std::string(buffer.data(), count), 0};
+    if (error != 0) return {ThpReadStatus::READ_ERROR, {}, error};
+    return {ThpReadStatus::OK, std::string(buffer.data(), count), 0};
 }
 
 bool samePolicy(const ThpPolicySnapshot& first, const ThpPolicySnapshot& second) {
@@ -50,7 +50,7 @@ bool samePolicy(const ThpPolicySnapshot& first, const ThpPolicySnapshot& second)
 }
 
 void reportInspectionFailure(const ThpPolicySnapshot& snapshot, std::ostream& output) {
-    if (snapshot.availability == ThpAvailability::ProcessDisabled) {
+    if (snapshot.availability == ThpAvailability::PROCESS_DISABLED) {
         output << "[!] THP is disabled for this process by an inherited process policy.\n"
                << "    Launch from an environment that permits THP; OS policy setup cannot override this.\n";
     } else {
@@ -64,23 +64,23 @@ void reportInspectionFailure(const ThpPolicySnapshot& snapshot, std::ostream& ou
 } // namespace
 
 ThpPolicy parseThpPolicy(std::string_view text, bool allow_inherit) {
-    if (text.empty() || text.size() > 512) return ThpPolicy::Unknown;
+    if (text.empty() || text.size() > 512) return ThpPolicy::UNKNOWN;
     std::istringstream tokens{std::string(text)};
     std::array<bool, 5> seen{};
-    ThpPolicy selected = ThpPolicy::Unknown;
+    ThpPolicy selected = ThpPolicy::UNKNOWN;
     std::string token;
     while (tokens >> token) {
         const bool active = token.front() == '[';
         if (active) {
-            if (token.size() < 3 || token.back() != ']' || selected != ThpPolicy::Unknown) return ThpPolicy::Unknown;
+            if (token.size() < 3 || token.back() != ']' || selected != ThpPolicy::UNKNOWN) return ThpPolicy::UNKNOWN;
             token = token.substr(1, token.size() - 2);
         }
-        ThpPolicy policy = ThpPolicy::Unknown;
-        if (token == "always") policy = ThpPolicy::Always;
-        else if (token == "madvise") policy = ThpPolicy::Madvise;
-        else if (token == "never") policy = ThpPolicy::Never;
-        else if (allow_inherit && token == "inherit") policy = ThpPolicy::Inherit;
-        if (policy == ThpPolicy::Unknown || seen[static_cast<size_t>(policy)]) return ThpPolicy::Unknown;
+        ThpPolicy policy = ThpPolicy::UNKNOWN;
+        if (token == "always") policy = ThpPolicy::ALWAYS;
+        else if (token == "madvise") policy = ThpPolicy::MADVISE;
+        else if (token == "never") policy = ThpPolicy::NEVER;
+        else if (allow_inherit && token == "inherit") policy = ThpPolicy::INHERIT;
+        if (policy == ThpPolicy::UNKNOWN || seen[static_cast<size_t>(policy)]) return ThpPolicy::UNKNOWN;
         seen[static_cast<size_t>(policy)] = true;
         if (active) selected = policy;
     }
@@ -90,28 +90,28 @@ ThpPolicy parseThpPolicy(std::string_view text, bool allow_inherit) {
 NativeThpPolicyAccess::NativeThpPolicyAccess(std::string root) : root_(std::move(root)) {}
 
 ThpReadResult NativeThpPolicyAccess::controlPath(ThpControl control) const {
-    if (control == ThpControl::Global) return {ThpReadStatus::Ok, root_ + "/enabled", 0};
+    if (control == ThpControl::GLOBAL) return {ThpReadStatus::OK, root_ + "/enabled", 0};
     auto size = readFile(root_ + "/hpage_pmd_size");
-    if (size.status != ThpReadStatus::Ok) return {ThpReadStatus::Failed, {}, size.error};
+    if (size.status != ThpReadStatus::OK) return {ThpReadStatus::READ_ERROR, {}, size.error};
     const size_t end = size.text.find_first_of("\r\n");
     const auto number = std::string_view(size.text).substr(0, end);
     uint64_t bytes = 0;
     const auto parsed = std::from_chars(number.data(), number.data() + number.size(), bytes);
     if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || bytes < 1024 ||
         (bytes & (bytes - 1)) != 0 || (end != std::string::npos && size.text.find_first_not_of("\r\n", end) != std::string::npos)) {
-        return {ThpReadStatus::Failed, {}, EINVAL};
+        return {ThpReadStatus::READ_ERROR, {}, EINVAL};
     }
-    return {ThpReadStatus::Ok, root_ + "/hugepages-" + std::to_string(bytes / 1024) + "kB/enabled", 0};
+    return {ThpReadStatus::OK, root_ + "/hugepages-" + std::to_string(bytes / 1024) + "kB/enabled", 0};
 }
 
 ThpReadResult NativeThpPolicyAccess::read(ThpControl control) {
     const auto path = controlPath(control);
-    return path.status == ThpReadStatus::Ok ? readFile(path.text) : path;
+    return path.status == ThpReadStatus::OK ? readFile(path.text) : path;
 }
 
 int NativeThpPolicyAccess::writeMadvise(ThpControl control) {
     const auto path = controlPath(control);
-    if (path.status != ThpReadStatus::Ok) return path.error;
+    if (path.status != ThpReadStatus::OK) return path.error;
     FILE* file = std::fopen(path.text.c_str(), "w");
     if (!file) return errno != 0 ? errno : EIO;
     constexpr char value[] = "madvise\n";
@@ -132,29 +132,29 @@ int NativeThpPolicyAccess::processMode() {
 
 ThpPolicySnapshot inspectThpPolicy(ThpPolicyAccess& access) {
     ThpPolicySnapshot snapshot;
-    const auto global = access.read(ThpControl::Global);
+    const auto global = access.read(ThpControl::GLOBAL);
     snapshot.error = global.error;
-    if (global.status == ThpReadStatus::Missing) {
-        snapshot.availability = ThpAvailability::Unavailable;
+    if (global.status == ThpReadStatus::MISSING) {
+        snapshot.availability = ThpAvailability::UNAVAILABLE;
         return snapshot;
     }
-    if (global.status != ThpReadStatus::Ok) return snapshot;
+    if (global.status != ThpReadStatus::OK) return snapshot;
     snapshot.global = parseThpPolicy(global.text, false);
-    if (snapshot.global == ThpPolicy::Unknown) { snapshot.error = EINVAL; return snapshot; }
-    const auto pmd = access.read(ThpControl::Pmd);
+    if (snapshot.global == ThpPolicy::UNKNOWN) { snapshot.error = EINVAL; return snapshot; }
+    const auto pmd = access.read(ThpControl::PMD);
     snapshot.error = pmd.error;
-    if (pmd.status == ThpReadStatus::Failed) return snapshot;
-    snapshot.per_size = pmd.status == ThpReadStatus::Ok;
+    if (pmd.status == ThpReadStatus::READ_ERROR) return snapshot;
+    snapshot.per_size = pmd.status == ThpReadStatus::OK;
     if (snapshot.per_size) {
         snapshot.pmd = parseThpPolicy(pmd.text, true);
-        if (snapshot.pmd == ThpPolicy::Unknown) { snapshot.error = EINVAL; return snapshot; }
+        if (snapshot.pmd == ThpPolicy::UNKNOWN) { snapshot.error = EINVAL; return snapshot; }
     }
-    snapshot.effective = snapshot.per_size && snapshot.pmd != ThpPolicy::Inherit ? snapshot.pmd : snapshot.global;
+    snapshot.effective = snapshot.per_size && snapshot.pmd != ThpPolicy::INHERIT ? snapshot.pmd : snapshot.global;
     snapshot.process_mode = access.processMode();
     snapshot.error = snapshot.process_mode < 0 ? -snapshot.process_mode : 0;
-    if (snapshot.process_mode == 1) snapshot.availability = ThpAvailability::ProcessDisabled;
+    if (snapshot.process_mode == 1) snapshot.availability = ThpAvailability::PROCESS_DISABLED;
     else if (snapshot.process_mode == 0 || snapshot.process_mode == 3) {
-        snapshot.availability = snapshot.effective == ThpPolicy::Never ? ThpAvailability::Disabled : ThpAvailability::Ready;
+        snapshot.availability = snapshot.effective == ThpPolicy::NEVER ? ThpAvailability::DISABLED : ThpAvailability::READY;
     }
     return snapshot;
 }
@@ -162,21 +162,21 @@ ThpPolicySnapshot inspectThpPolicy(ThpPolicyAccess& access) {
 ThpSetupResult configureThpForRun(ThpPolicyAccess& access, bool use_large_pages,
                                 bool interactive, bool privileged,
                                 std::istream& input, std::ostream& output) {
-    if (!use_large_pages) return ThpSetupResult::Skipped;
+    if (!use_large_pages) return ThpSetupResult::SKIPPED;
     const auto initial = inspectThpPolicy(access);
     LOG_DEBUG("THP setup: global=%s PMD=%s per-size=%s effective=%s process-mode=%d error=%d",
               policyName(initial.global), policyName(initial.pmd), initial.per_size ? "yes" : "no",
               policyName(initial.effective), initial.process_mode, initial.error);
-    if (initial.availability == ThpAvailability::Ready) return ThpSetupResult::Ready;
-    if (initial.availability == ThpAvailability::Unavailable) {
+    if (initial.availability == ThpAvailability::READY) return ThpSetupResult::READY;
+    if (initial.availability == ThpAvailability::UNAVAILABLE) {
         output << "[!] Linux THP controls are unavailable. Existing HugeTLB and locked native-page fallback remain supported.\n";
-        return ThpSetupResult::Unavailable;
+        return ThpSetupResult::UNAVAILABLE;
     }
-    if (initial.availability != ThpAvailability::Disabled) {
+    if (initial.availability != ThpAvailability::DISABLED) {
         reportInspectionFailure(initial, output);
-        return ThpSetupResult::Failed;
+        return ThpSetupResult::SETUP_FAILED;
     }
-    const auto control = initial.per_size ? ThpControl::Pmd : ThpControl::Global;
+    const auto control = initial.per_size ? ThpControl::PMD : ThpControl::GLOBAL;
     output << "\n[!] Linux THP policy is 'never' for the huge-page size requested by this test.\n"
            << "    Recommended: use 'madvise' so allocations that request THP can receive huge pages.\n"
            << "    Setting: /sys/kernel/mm/transparent_hugepage/"
@@ -188,57 +188,57 @@ ThpSetupResult configureThpForRun(ThpPolicyAccess& access, bool use_large_pages,
     if (!interactive) {
         output << "    Direct/non-interactive mode: skipping automatic THP policy setup.\n";
         LOG_DEBUG("THP setup: disabled policy; skipped non-interactive write");
-        return ThpSetupResult::Skipped;
+        return ThpSetupResult::SKIPPED;
     }
     if (!privileged) {
         output << "    Automatic setup requires root. Relaunch with sudo to receive the setup offer.\n";
         LOG_DEBUG("THP setup: disabled policy; setup requires root");
-        return ThpSetupResult::NeedsPrivilege;
+        return ThpSetupResult::NEEDS_PRIVILEGE;
     }
     output << "    Enable 'madvise' now? [Y/n]: " << std::flush;
     std::string answer;
     if (!std::getline(input, answer)) {
         output << "    No answer received; leaving OS settings unchanged.\n";
         LOG_DEBUG("THP setup: input closed; no policy write");
-        return ThpSetupResult::Declined;
+        return ThpSetupResult::DECLINED;
     }
     if (!answer.empty() && answer != "y" && answer != "Y" && answer != "yes" && answer != "Yes" && answer != "YES") {
         output << "    Leaving OS settings unchanged; huge-page allocation remains best effort.\n";
         LOG_DEBUG("THP setup: offer declined; no policy write");
-        return ThpSetupResult::Declined;
+        return ThpSetupResult::DECLINED;
     }
     // A user may leave the prompt open while an administrator changes policy.
     // Recheck before writing; never restore an old snapshot over somebody else's settings.
     const auto current = inspectThpPolicy(access);
-    if (current.availability == ThpAvailability::Ready) {
+    if (current.availability == ThpAvailability::READY) {
         output << "    THP policy now permits this run; no setup change is needed.\n";
         LOG_DEBUG("THP setup: policy enabled externally before confirmation");
-        return ThpSetupResult::Ready;
+        return ThpSetupResult::READY;
     }
     if (!samePolicy(initial, current)) {
         output << "[!] THP policy changed while waiting for confirmation; leaving it unchanged. Rerun to inspect it again.\n";
         LOG_WARN("THP setup: policy changed before write; no policy write");
-        return ThpSetupResult::Failed;
+        return ThpSetupResult::SETUP_FAILED;
     }
     const int error = access.writeMadvise(control);
     if (error != 0) {
         output << "[!] Could not complete THP policy setup (error " << error << "). Check root access and writable sysfs.\n"
                << "    A write may have partially applied; inspect THP policy. Huge-page allocation remains best effort.\n";
         LOG_WARN("THP setup: write failed control=%s error=%d; no retry or restoration", controlName(control), error);
-        return ThpSetupResult::Failed;
+        return ThpSetupResult::SETUP_FAILED;
     }
     const auto verified = inspectThpPolicy(access);
-    const auto selected = control == ThpControl::Pmd ? verified.pmd : verified.global;
-    if (verified.availability != ThpAvailability::Ready || selected != ThpPolicy::Madvise) {
+    const auto selected = control == ThpControl::PMD ? verified.pmd : verified.global;
+    if (verified.availability != ThpAvailability::READY || selected != ThpPolicy::MADVISE) {
         output << "[!] THP policy write could not be verified. Another policy manager may have changed it; check THP settings.\n"
                << "    Huge-page allocation remains best effort.\n";
         LOG_WARN("THP setup: readback failed control=%s effective=%s process-mode=%d error=%d",
                  controlName(control), policyName(verified.effective), verified.process_mode, verified.error);
-        return ThpSetupResult::Failed;
+        return ThpSetupResult::SETUP_FAILED;
     }
     output << "[+] THP 'madvise' policy verified. Continuing this run; no reboot is required.\n";
     LOG_INFO("THP setup: control=%s policy=madvise verified=yes persistence=runtime", controlName(control));
-    return ThpSetupResult::Changed;
+    return ThpSetupResult::CHANGED;
 }
 
 ThpSetupResult runLinuxHugePageSetup(bool use_large_pages, bool interactive, bool privileged,

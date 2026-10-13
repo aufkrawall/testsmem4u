@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+### New
+
+- **Linux first-run huge-page setup:** interactive root runs detect disabled effective THP policy and recommend a default-Yes runtime `madvise` change. The offer explains its system-wide scope and temporary persistence; verified setup takes effect in the same run without a reboot. Direct runs and disabled large-page preference leave policy unchanged.
+
 ### Improved
 
 - **Huge-page setup coverage:** added checked Linux THP policy inspection and setup regression coverage for native-size overrides, inherited process restrictions, explicit consent, write/readback failures and concurrent policy changes.
+- **Large-page setup guidance:** Windows clearly recommends the required account privilege and explains that signing out and back in is sufficient. The README describes both platforms' setup, page mechanisms, fallbacks, persistence and aggressive preparation.
 - **Comparable configuration wizards:** Windows and Linux ask the same questions and default to 85% of RAM, all cores, three cycles, strict locking, large-page preference and halt-on-error. Saved wizard settings retain percentage/all-core policies for the next system instead of freezing resolved RAM/thread counts; explicit selections remain explicit.
 - **Linux huge-page defaults:** large-page preference now requests aligned transparent huge pages automatically when an existing HugeTLB pool cannot satisfy the window, while preserving strict memory locking and native-page fallback. Allocation and RowHammer diagnostics report measured huge-page coverage, including conservative bounds for partial worker slices.
 

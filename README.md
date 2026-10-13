@@ -30,7 +30,7 @@ Recent reliability work in this revision includes:
 - Clearer allocation reporting that distinguishes full large pages from hybrid large-page plus locked-page fallback.
 - Informational fallback guidance when the requested test size could not be covered entirely by large pages.
 - Infrastructure failures now return a configuration/runtime failure exit code instead of being reported like memory corruption.
-- Linux hugepage reservation cleanup is restored on normal process exit as well as successful hugepage runs.
+- Linux automatically requests process-owned transparent huge pages; kernel cleanup also handles forced termination without leaving a program-created HugeTLB reservation.
 
 ## Features
 
@@ -119,7 +119,7 @@ The executable now supports the following high-value operator options:
 - --yes or --non-interactive to suppress prompts and exit pauses.
 - --no-elevation to prevent Administrator/root relaunch.
 
-See cli-report.md for the full option reference, mode rules, exit codes, and examples.
+`--help` lists the complete option reference; runtime mode rules and exit codes appear below.
 
 ## Runtime Behavior
 
@@ -127,8 +127,8 @@ See cli-report.md for the full option reference, mode rules, exit codes, and exa
 - If launched interactively, it shows a 3-second countdown and opens the wizard if a key is pressed.
 - The wizard asks the same questions on Windows and Linux. Accepting defaults selects 85% of RAM, all cores, three cycles, locked memory, large-page preference and halt-on-error. Saved defaults use `MemoryWindowPercent=85`, `MemoryWindowMB=0` and `Cores=0`, so the next run resolves RAM and core counts for its current system; explicit MiB/thread selections are saved as requested.
 - If launched with run-specific CLI overrides, --yes, or non-interactive stdin, it skips prompts and runs in direct CLI mode.
-- On Windows, the program can offer to grant SeLockMemoryPrivilege when interactive and elevated.
-- On Linux, the program relaunches itself through `sudo` unless `--no-elevation` is given, so the test window can be locked in RAM. It warns when memory-lock or hugepage capability still appears limited.
+- On Windows, interactive startup recommends and offers to grant a missing `SeLockMemoryPrivilege`. After granting it, sign out and sign back in; a reboot is not required.
+- On Linux, the program relaunches itself through `sudo` unless `--no-elevation` is given, so the test window can be locked in RAM. After the wizard, it checks effective THP policy and offers a runtime `madvise` change when the requested huge-page size is disabled. See [large and huge pages](#large-and-huge-pages) for setup scope and persistence.
 - Binary variant selection is manual: run the `-v3` (AVX2) or `-v4` (AVX-512) binary that matches your CPU; the baseline binary works everywhere. A startup warning points out when a faster variant would fit your CPU.
 - If the run falls back from full large pages to locked standard pages, the console now explains that the test remains valid and how to improve large-page coverage for future runs.
 - Large pages and strict memory locking are preferred by default on both platforms. Windows tries native large pages, chunked/hybrid allocations and fully locked standard fallback. Linux first tries a compatible existing HugeTLB pool, then requests aligned transparent huge pages and locks the mapping. Allocation output reports actual large-page coverage; Linux THP coverage is a snapshot and can change under kernel memory management.
@@ -151,7 +151,110 @@ See cli-report.md for the full option reference, mode rules, exit codes, and exa
 - The current working directory matters for the default config.ini lookup, log file location, and preset discovery.
 - For scheduled tasks, shortcuts, or service-style launchers, prefer explicit --config and --preset paths.
 - If large pages are enabled, the effective memory window may be reduced to match large-page granularity.
-- Full large-page coverage is beneficial for throughput and RowHammer fidelity, but a fully locked fallback run is still valid for the rest of the suite.
+- Large pages can reduce address-translation overhead and provide physical contiguity within each page. A fully locked fallback run remains valid; large pages do not prove physical DRAM row/bank adjacency or RowHammer effectiveness.
+
+## Large and huge pages
+
+Both platforms prefer large pages and strict memory locking by default. The wizard
+defaults to **Yes** for both settings. Page preference is best effort: the allocator
+may obtain full coverage, partial coverage or locked native pages. Requested locking
+is strict; a failure to lock the test window stops the run instead of silently
+testing pageable memory. `--no-large-pages` disables the preference while retaining
+locking; `--no-locked-memory` explicitly allows an unlocked fallback.
+
+| Setup or allocation | Windows | Linux |
+| --- | --- | --- |
+| Initial elevation | Administrator through UAC | Root through `sudo` |
+| Setup offer when needed | Grant the account's **Lock Pages in Memory** right, default `[Y/n]` | Set disabled THP policy to **`madvise`**, default `[Y/n]` |
+| Scope and persistence | Account right persists across reboots | System-wide policy for the selected THP size; runtime change until reboot or another policy change |
+| When setup takes effect | After signing out and signing back in | Before allocation in the same run |
+| Reboot required for setup | No | No |
+| Automatic persistent huge-page reservation | None | None; preconfigured HugeTLB pools are supported |
+
+### Windows first run
+
+Native Windows large pages require `SeLockMemoryPrivilege`. Administrator elevation
+alone does not assign this account right. If it is missing, interactive startup
+recommends granting it and offers `[Y/n]`; Enter accepts. The right is assigned to
+the account running the elevated process. If UAC uses another account's credentials,
+that is the account receiving the right.
+
+After a successful grant, the program exits and asks you to **sign out and sign back
+in**, then run it again. Reopening the program in the same login session generally
+retains the old login token. A full reboot also creates a new session, but is not
+required. Direct/non-interactive runs skip the grant offer.
+[Microsoft documents the next-logon requirement](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/lock-pages-in-memory).
+
+The allocator first tries a single native large-page allocation, then contiguous
+virtual chunks and a hybrid large-page/locked-native-page allocation, followed by
+fully locked native pages if necessary. The page size comes from
+`GetLargePageMinimum` rather than an assumed 2 MiB. Each large page is physically
+contiguous and nonpageable; the entire test window need not be physically contiguous.
+Closing memory-heavy applications or restarting Windows can improve coverage when
+memory is fragmented. This optional restart helps allocation success; it is separate
+from activating the account right.
+[Microsoft large-page support](https://learn.microsoft.com/en-us/windows/win32/memory/large-page-support).
+
+### Linux first run
+
+Linux has two supported huge-page mechanisms:
+
+- **HugeTLB:** explicitly reserved huge pages. The allocator tries the existing
+  default-size pool when its page size divides the requested window. These pages
+  are inherently non-swappable. The program does not reserve or restore a pool.
+- **Transparent huge pages (THP):** the automatic fallback when HugeTLB cannot
+  satisfy the request. The allocator aligns the mapping for the native PMD huge-page
+  size, requests `MADV_HUGEPAGE`, populates it and locks it with `mlock`. THP size
+  varies with architecture/kernel configuration; 2 MiB is common on x86-64.
+
+After the wizard resolves the final page preference, startup checks the global THP
+`enabled` control, the native-size `hugepages-<size>kB/enabled` override where
+available, and inherited process THP restrictions. A size-specific policy can
+override the global setting, so the global value alone is insufficient.
+
+If effective policy is `never`, an interactive root run recommends **`madvise`** and
+offers `[Y/n]`. This permits huge pages for allocations that explicitly request
+them. Modern kernels change only the native PMD-size control. Older kernels with
+no size-specific control use the global `enabled` control. The offer explains that
+the change also affects other applications and lasts until reboot or another policy
+change. It writes no boot configuration, and does not alter THP defrag policy or
+reserve a HugeTLB pool. The policy remains active after the test exits; the usual
+boot policy is reapplied on reboot. **No reboot, sign-out or application relaunch is required**:
+the test allocates its memory after setup and can use the new policy immediately.
+[Linux THP policy documentation](https://docs.kernel.org/admin-guide/mm/transhuge.html).
+
+Already suitable policies need no prompt. Direct/non-interactive runs diagnose a
+disabled policy without changing it. An unprivileged interactive run explains how
+to relaunch with `sudo`; `--no-large-pages` bypasses THP setup. Missing/unreadable
+controls, inherited complete process disabling, declined/invalid input and closed
+stdin do not authorize policy changes. Setup rechecks policy after confirmation
+and verifies the write by reading it back. Read-only sysfs or policy-manager
+interference produces a warning; allocation continues with the existing policy.
+
+Manual HugeTLB reservation can be performed at runtime without a reboot. Large
+reservations may fail on fragmented memory; reserving pages at boot is more reliable.
+Applying new kernel boot parameters requires a reboot. Reserved HugeTLB pages are
+unavailable to ordinary allocations, so pool size should be chosen deliberately.
+[Linux HugeTLB documentation](https://docs.kernel.org/admin-guide/mm/hugetlbpage.html).
+
+### Coverage, diagnostics and aggressive preparation
+
+The allocation summary reports **Locked**, **LargePages** and **Method**. Full,
+partial and unknown huge-page coverage are distinguished. Linux THP coverage is a
+snapshot from the mapping's metadata and can change later. A successful setup
+enables allocation policy; actual full coverage still depends on available memory
+and fragmentation. `--debug` adds bounded allocation and `THP setup:` diagnostics.
+
+`--aggressive-defrag` remains off by default. On Windows, failed ordinary full
+large-page attempts can trigger cache/working-set/standby preparation and one
+allocation retry. On Linux, incomplete THP coverage permits cache dropping,
+compaction and one process-local collapse attempt on supported kernels. These
+operations affect system memory/cache state and can slow other applications while
+they refill their caches. Neither platform needs a reboot for these operations.
+
+To receive setup offers, launch interactively without run-specific overrides.
+`--yes`, run-specific CLI options and non-interactive stdin skip setup prompts;
+`--dry-run` exits before privilege elevation or OS setup.
 
 ## Coverage and workload
 

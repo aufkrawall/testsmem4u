@@ -1,17 +1,18 @@
 #pragma once
 
+#include <cstdint>
 #include <iosfwd>
 #include <string>
 #include <string_view>
 
 namespace testsmem4u {
 
-enum class ThpPolicy { Unknown, Always, Madvise, Never, Inherit };
-enum class ThpControl { Global, Pmd };
-enum class ThpReadStatus { Ok, Missing, Failed };
+enum class ThpPolicy : uint8_t { UNKNOWN, ALWAYS, MADVISE, NEVER, INHERIT };
+enum class ThpControl : uint8_t { GLOBAL, PMD };
+enum class ThpReadStatus : uint8_t { OK, MISSING, READ_ERROR };
 
 struct ThpReadResult {
-    ThpReadStatus status = ThpReadStatus::Failed;
+    ThpReadStatus status = ThpReadStatus::READ_ERROR;
     std::string text;
     int error = 0;
 };
@@ -35,19 +36,19 @@ public:
     int processMode() override;
 };
 
-enum class ThpAvailability { Ready, Disabled, Unavailable, Unknown, ProcessDisabled };
+enum class ThpAvailability : uint8_t { READY, DISABLED, UNAVAILABLE, UNKNOWN, PROCESS_DISABLED };
 
 struct ThpPolicySnapshot {
-    ThpAvailability availability = ThpAvailability::Unknown;
-    ThpPolicy global = ThpPolicy::Unknown;
-    ThpPolicy pmd = ThpPolicy::Unknown;
-    ThpPolicy effective = ThpPolicy::Unknown;
+    ThpAvailability availability = ThpAvailability::UNKNOWN;
+    ThpPolicy global = ThpPolicy::UNKNOWN;
+    ThpPolicy pmd = ThpPolicy::UNKNOWN;
+    ThpPolicy effective = ThpPolicy::UNKNOWN;
     bool per_size = false;
     int process_mode = 0;
     int error = 0;
 };
 
-enum class ThpSetupResult { Skipped, Ready, Unavailable, Declined, NeedsPrivilege, Changed, Failed };
+enum class ThpSetupResult : uint8_t { SKIPPED, READY, UNAVAILABLE, DECLINED, NEEDS_PRIVILEGE, CHANGED, SETUP_FAILED };
 
 ThpPolicy parseThpPolicy(std::string_view text, bool allow_inherit);
 ThpPolicySnapshot inspectThpPolicy(ThpPolicyAccess& access);

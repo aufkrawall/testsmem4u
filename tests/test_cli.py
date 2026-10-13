@@ -65,6 +65,40 @@ class ConfigCliTests(unittest.TestCase):
         self.assertIn("Large pages:     Yes", result.stdout)
         self.assertIn("Cycles:          3", result.stdout)
 
+    @unittest.skipIf(os.name == "nt", "Linux inherited THP process policy")
+    def test_inherited_thp_disable_is_diagnosed_before_allocation(self):
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl.argtypes = [ctypes.c_int, *([ctypes.c_ulong] * 4)]
+        libc.prctl.restype = ctypes.c_int
+        if libc.prctl(42, 0, 0, 0, 0) < 0:  # PR_GET_THP_DISABLE
+            self.skipTest("kernel does not expose process THP policy")
+
+        def disable_thp_in_child():
+            if libc.prctl(41, 1, 0, 0, 0) != 0:  # PR_SET_THP_DISABLE; child only
+                raise OSError(ctypes.get_errno(), "could not set child THP policy")
+
+        for extra, expected_warning in (([], True), (["--no-large-pages"], False)):
+            with self.subTest(large_pages=expected_warning):
+                result = subprocess.run(
+                    [str(self.binary), "--yes", "--no-elevation", "--no-config", "--debug",
+                     "--memory", "16", "--cores", "1", "--cycles", "1", "--preset", str(self.preset), *extra],
+                    cwd=self.root, capture_output=True, text=True, timeout=20,
+                    preexec_fn=disable_thp_in_child)
+                output = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, output)
+                warning = "THP is disabled for this process by an inherited process policy"
+                self.assertEqual(warning in output, expected_warning, output)
+                self.assertNotIn("Enable 'madvise' now?", output)
+                self.assertIn("Completed cycles: 1", output)
+                log = (self.root / "testsmem4u.log").read_text()
+                if expected_warning:
+                    self.assertLess(output.index(warning), output.index("Starting tests with"), output)
+                    self.assertIn("THP setup:", log)
+                    self.assertIn("Allocation starting:", log)
+                    self.assertLess(log.index("THP setup:"), log.index("Allocation starting:"))
+                else:
+                    self.assertNotIn("THP setup:", log)
+
     def test_large_page_window_uses_native_preferred_granularity(self):
         if os.name == "nt":
             query = ctypes.WinDLL("kernel32").GetLargePageMinimum

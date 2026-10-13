@@ -19,7 +19,8 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `src/TestEngine.cpp`: allocation, dispatch, independent worker scheduling, and monitoring.
 - `src/HugePageSetup.cpp`, `include/HugePageSetup.h`: checked Linux THP policy
   inspection and stream-driven runtime setup component, with injectable controls
-  for deterministic regression coverage; startup integration is pending.
+  for deterministic regression coverage. Linux startup invokes it after the final
+  wizard/config selection, before memory allocation; direct runs never write policy.
 - `include/PreparationStatus.h`: owns and joins the preparation display thread, including exception paths.
 - `include/TestProgress.h`: separate worker counters and scoped thread-local binding for nested kernels; `VerificationProgress` in `TestEngineInternal.h` publishes verified blocks and error deltas once.
 - `include/ProgressDiagnostics.h`: monitor-owned byte/age sampling and capped periodic debug summaries; worker phases are atomic pointers to static labels.
