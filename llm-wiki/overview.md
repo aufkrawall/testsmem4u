@@ -8,7 +8,10 @@ starts the binary matching their CPU; a startup warning points out when a faster
 sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision).
 
 ## Key Files
-- `src/main.cpp`: CLI argument parsing, interactive/non-interactive configuration, and process management.
+- `src/main.cpp`: process management and CLI/wizard orchestration.
+- `src/CliOptions.cpp`, `src/RunConfiguration.cpp`, `src/ConfigWizard.cpp`,
+  `include/RunConfiguration.h`: argument parsing, shared configuration resolution,
+  summaries and the interactive wizard.
 - `src/TestEngine.cpp`: allocation, dispatch, independent worker scheduling, and monitoring.
 - `include/PreparationStatus.h`: owns and joins the preparation display thread, including exception paths.
 - `include/TestProgress.h`: separate worker counters and scoped thread-local binding for nested kernels; `VerificationProgress` in `TestEngineInternal.h` publishes verified blocks and error deltas once.
@@ -16,7 +19,12 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `include/InfrastructureFailure.h`: records thread failure/stop before allocating diagnostics, preserves the first cause, and uses bounded stderr reporting if detail storage or logging throws.
 - `src/TestPatterns.cpp`, `src/TestMarch.cpp`, `src/TestMemoryTraffic.cpp`, `src/TestModulo.cpp`,
   `src/TestRowHammer.cpp`: algorithm units; `src/simd_verify.cpp` owns first-observation march kernels.
-- `src/Platform.cpp`: Platform-specific API integration (CPU topology detection, memory locking, memory allocation, privilege escalation).
+- `src/Platform.cpp`: privilege management, system RAM sizing and shutdown handlers.
+- `src/PlatformCpu.cpp`: CPU topology detection, affinity and cached platform info.
+- `src/PlatformMemory.cpp`: allocation/cleanup dispatch, RAII and residency checks.
+- `src/PlatformWindowsMemory.cpp`, `src/PlatformLinuxMemory.cpp`: native allocation
+  and optional memory preparation; `include/PlatformMemoryInternal.h` connects
+  Linux pool restoration to cleanup and signal handlers.
 - `src/simd_ops.cpp`: capability detection, cache management/fences and optimized pattern writers.
 - `src/simd_patterns_verify.cpp`: first-observation address/uniform/pair verifiers.
 - `src/simd_lfsr.cpp`, `src/simd_traffic.cpp`: exact-sequence LFSR generation and
@@ -45,7 +53,7 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   fault injection, error classification, and validation limits.
 - Signal handler uses `memory_order_release` for `g_shutdown_initiated` to ensure stop flag visibility to workers.
 - Linux `--aggressive-defrag` raises the persistent `/proc/sys/vm/nr_hugepages`
-  pool (`Platform.cpp::reserveHugepages`). The original count (lock-free atomic,
+  pool (`PlatformLinuxMemory.cpp::reserveHugepages`). The original count (lock-free atomic,
   claimed once by exchange) is restored at exit; SIGINT/SIGTERM/SIGHUP shut down
   gracefully first. Second signals, SIGABRT and SIGBUS restore it signal-safely
   before `_exit`. Lowering the pool while pages are mapped only makes them

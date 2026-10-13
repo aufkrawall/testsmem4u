@@ -1,5 +1,15 @@
 # Recent Log
 
+## 2026-10-13 - Split native allocation and configuration responsibilities
+
+- Extracted CPU topology, common allocation/cleanup and Windows/Linux allocation
+  from Platform.cpp; moved CLI parsing, configuration resolution and the wizard
+  out of main.cpp. All affected source units are now below 800 lines.
+- This preparatory change retains allocation choices, defaults, pool restoration
+  and wizard behavior. Updated the declared build source list and wiki anchors.
+- Windows baseline/AVX2 internal suites plus all 17 Python regressions pass;
+  Linux baseline/v3/v4 release builds pass with the pinned Zig toolchain.
+
 ## 2026-10-13 - Audit large-page defaults and aggressive defrag
 
 - Confirmed large-page preference and strict locking default to enabled on both

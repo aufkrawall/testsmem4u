@@ -8,7 +8,7 @@ long-run stalls; low for tested native progress/accounting paths.
 
 - `src/TestEngine.cpp`: allocation, dispatch, page-aligned weighted worker regions,
   independent sequence execution, monitoring, termination, exception containment.
-- `src/Platform.cpp::allocateMemoryRAII` and `include/PreparationStatus.h`:
+- `src/PlatformMemory.cpp::allocateMemoryRAII` and `include/PreparationStatus.h`:
   prefaulting and exception-safe preparation lifetime.
 - `include/WorkerProgress.h`: per-worker completed sequence position; the minimum
   defines whole-allocation progress and completed cycles.
@@ -43,10 +43,13 @@ long-run stalls; low for tested native progress/accounting paths.
 
 ## Page-allocation defaults and limits
 
-Sources: `include/testsmem4u.h::Config`, `src/main.cpp::CliOptions`,
-`makeDefaultConfig`, `normalizeWindowMBForLargePages`,
-`src/Platform.cpp::allocateMemory`, `tryAllocateLargePagesChunked`,
-`tryAllocateHugepages`, `reserveHugepages`, and `src/TestEngine.cpp::runTests`.
+Sources: `include/testsmem4u.h::Config`, `include/RunConfiguration.h::CliOptions`,
+`src/RunConfiguration.cpp::makeDefaultConfig`,
+`src/ConfigWizard.cpp::normalizeWindowMBForLargePages`,
+`src/PlatformMemory.cpp::allocateMemory`,
+`src/PlatformWindowsMemory.cpp::tryAllocateLargePagesChunked`,
+`src/PlatformLinuxMemory.cpp::tryAllocateHugepages` / `reserveHugepages`,
+and `src/TestEngine.cpp::runTests`.
 
 Both memory locking and large-page preference default to enabled; saved config
 or CLI overrides can disable them. `--aggressive-defrag` defaults to disabled

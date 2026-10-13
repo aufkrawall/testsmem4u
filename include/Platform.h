@@ -46,6 +46,9 @@ struct MemoryRegion {
 
 class Platform {
 private:
+    static bool allocateNativeMemory(MemoryRegion& region, size_t size, bool try_large_pages, bool try_lock, bool allow_swappable);
+    static bool aggressiveDefragEnabled();
+
     // Internal allocation path used by allocateMemoryRAII (returns raw region).
     static bool allocateMemory(MemoryRegion& region, size_t size, bool try_large_pages, bool try_lock, bool allow_swappable = false);
 
