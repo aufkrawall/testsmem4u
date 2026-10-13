@@ -3,6 +3,7 @@
 #include "WorkerProgress.h"
 #include <algorithm>
 #include <chrono>
+#include <iomanip>
 #include <numeric>
 #include <sstream>
 #include <vector>
@@ -45,6 +46,8 @@ public:
             const uint64_t position = progress.completedTests(i);
             output << " | w" << i << " C" << position / sequence_size + 1
                    << " T" << position % sequence_size + 1 << " bytes=" << samples_[i].bytes
+                   << " step=" << std::fixed << std::setprecision(1)
+                   << workers[i].step() / (ProgressCounters::kStepScale / 100.0) << "%"
                    << " idle=" << std::chrono::duration_cast<std::chrono::seconds>(now - samples_[i].changed).count()
                    << "s phase=" << std::string(workers[i].phase()).substr(0, 32);
         }

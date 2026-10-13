@@ -101,7 +101,9 @@ TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& 
     TestResult res;
     uint64_t pattern = config.pattern_param0;
     const uint32_t repeats = config.parameter ? config.parameter : 1;
+    RepetitionProgress steps(ctx, repeats);
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
+        steps.begin(r);
         res.merge(runMarch(ctx, region, pattern, false, stop));
         pattern = ~pattern;
     }
@@ -112,8 +114,10 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
                                                 const TestConfig& config, bool stop) {
     TestResult res;
     const uint32_t repeats = config.parameter ? config.parameter : 1;
+    RepetitionProgress steps(ctx, uint64_t{repeats} * 64);
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
         for (unsigned bit = 0; bit < 64 && !ctx.shouldStop(); ++bit) {
+            steps.begin(uint64_t{r} * 64 + bit);
             res.merge(runMarch(ctx, region, 1ULL << bit, false, stop));
         }
     }
@@ -125,7 +129,9 @@ TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegi
     TestResult res;
     const uint64_t seed = config.pattern_param0 ? config.pattern_param0 : 0xACE1ACE2DEADBEEFULL;
     const uint32_t repeats = config.parameter ? config.parameter : 1;
+    RepetitionProgress steps(ctx, repeats);
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
+        steps.begin(r);
         res.merge(runMarch(ctx, region, seed, true, stop));
     }
     return res;

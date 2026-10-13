@@ -1,5 +1,19 @@
 # Recent Log
 
+## 2026-10-13 - Show current-test progress in the status line
+
+- Review follow-up to the reported "stalled" display: long tests (default
+  MovingInversion 150 repetitions, roughly 20+ minutes on a 54 GiB desktop run)
+  kept the same `T` index, leaving no visible sign of progress within a test.
+- Status now reads e.g. `Min C1/3 T4/18 37% | MovingInversion`; `--debug`
+  snapshots add `step=x.y%` per listed worker. Details/invariants in
+  [memory-testing.md](../memory-testing.md#diagnostics-and-interpretation).
+- Verification: native baseline/AVX2 suites pass, including new unit and
+  executeSuite checks for loops, march repetitions and retention dwells; a mutation
+  permitting nested repetition claims fails two checks. Strict clang-tidy passes.
+  A 1 GiB, four-worker AVX2 CLI smoke run showed 0% -> 22% -> 47% -> 70% -> 95%
+  during MovingInversion and exited 0 with zero errors.
+
 ## 2026-10-13 - Restore Linux hugepage pool on all catchable signals
 
 - Review found `--aggressive-defrag` reservations leaked when the run ended by

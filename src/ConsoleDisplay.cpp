@@ -140,7 +140,8 @@ std::string ConsoleDisplay::formatStatus(const StatusInfo& info, size_t max_widt
     coverage << " | Min C" << info.cycle << "/";
     if (info.total_cycles > 0) coverage << info.total_cycles;
     else coverage << "inf";
-    coverage << " T" << info.test_idx << "/" << info.total_tests;
+    coverage << " T" << info.test_idx << "/" << info.total_tests << " "
+             << std::min<uint32_t>(info.test_step, 1000000) / 10000 << "%";
     if (result.size() + coverage.str().size() <= max_width) result += coverage.str();
     const size_t width = max_width;
     if (result.size() + 3 < width) {

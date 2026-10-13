@@ -158,11 +158,15 @@ whole sequence. Faster workers continue genuine tests until all regions finish t
 requested cycle count. Stop and infrastructure failures never count incomplete
 cycles. Debug logs identify each worker's region, test transitions, and duration.
 
+The percentage after the test index is how far that least advanced region is
+through its current test, including the test's internal repetitions.
+
 The live byte count includes completed verification blocks from tests that are
 still running. Final results and `testsmem4u.log` record the exact verified-byte
 total and complete-cycle count, including completed checks from a stopped run.
 `--debug` adds progress snapshots every ten seconds: aggregate byte deltas and up
-to four workers' positions, phases, and time since their byte counts last advanced.
+to four workers' positions, current-test steps, phases, and time since their byte
+counts last advanced.
 A fill or disturbance phase can perform useful work before the next verification;
 an unchanged verified-byte count alone does not establish that a worker is stuck.
 

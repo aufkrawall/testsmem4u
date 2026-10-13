@@ -21,10 +21,13 @@ TestResult TestEngine::runModulo20(TestContext& ctx, const MemoryRegion& region,
     std::vector<std::pair<uint64_t, uint64_t>> errors;
     errors.reserve(128);
     const auto started = std::chrono::steady_clock::now();
+    const size_t offsets = std::min(stride, count);
+    RepetitionProgress steps(ctx, uint64_t{2} * offsets);
     for (unsigned polarity = 0; polarity < 2 && !ctx.shouldStop(); ++polarity) {
         const uint64_t pattern = polarity ? ~config.pattern_param0 : config.pattern_param0;
         const uint64_t errors_before = res.total_errors();
-        for (size_t offset = 0; offset < std::min(stride, count) && !ctx.shouldStop(); ++offset) {
+        for (size_t offset = 0; offset < offsets && !ctx.shouldStop(); ++offset) {
+            steps.begin(uint64_t{polarity} * offsets + offset);
             testPhase(ctx, "Modulo fill", region);
             for (size_t k = 0; k < period; ++k) expected[k] = k % stride == offset ? pattern : ~pattern;
             simd::generate_pattern_uniform(ptr, count, pattern, true);

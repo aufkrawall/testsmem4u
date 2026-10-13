@@ -93,8 +93,10 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
     bool use_nt = true;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
 
+    RepetitionProgress steps(ctx, repeats);
     for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
+        steps.begin(r);
 
         testPhase(ctx, "Simple fill", region);
         // Write pattern to memory
@@ -139,8 +141,10 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
     size_t block = size_t{256} * 1024;
 
+    RepetitionProgress steps(ctx, repeats);
     for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
+        steps.begin(r);
         generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt, word_start);
 
         simd::flush_cache_region(ptr, region.size);
@@ -186,8 +190,10 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
     size_t count = region.size / 8;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
 
+    RepetitionProgress steps(ctx, repeats);
     for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
+        steps.begin(r);
         // Write alternating pattern {param0, param1} using NT stores for true DRAM testing
         {
             size_t i = 0;
@@ -297,7 +303,9 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
     const char* name = invert ? "WalkingZeros" : "WalkingOnes";
 
     // Test each bit position
+    RepetitionProgress steps(ctx, 64);
     for (int bit = 0; bit < 64 && !ctx.shouldStop(); ++bit) {
+        steps.begin(static_cast<uint64_t>(bit));
         // If invert=false (WalkingOnes): pattern = 1 << bit
         // If invert=true (WalkingZeros): pattern = ~(1 << bit)
         uint64_t pattern = 1ULL << bit;

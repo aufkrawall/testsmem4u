@@ -199,6 +199,7 @@ TestResult TestEngine::runRegionWork(TestContext& ctx, const MemoryRegion& regio
         size_t offset = i * block_size;
         size_t len = std::min(block_size, region.size - offset);
 
+        ProgressBinding::beginBlock(&ctx, i, blocks);
         MemoryRegion sub = region;
         sub.base += offset;
         sub.size = len;
@@ -492,7 +493,9 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             last_update = now;
 
             StatusInfo info;
-            const uint64_t position = progress.minimum();
+            const SlowestWorker slowest = findSlowestWorker(progress, ctx.worker_progress);
+            const uint64_t position = slowest.position;
+            info.test_step = slowest.step;
             info.cycle = static_cast<uint32_t>(position / seq.size() + 1);
             info.total_cycles = config.cycles;
             info.test_idx = static_cast<uint32_t>(position % seq.size() + 1);
@@ -564,6 +567,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                                     (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100);
                                 const bool disturbs = isCrossRegionDisturbanceTest(tc.function);
                                 for (uint64_t loop = 0; loop < loops && !ctx.shouldStop(); ++loop) {
+                                    ProgressBinding::beginLoop(&ctx, loop, loops);
                                     DisturbanceWindow window(ctx, disturbs);
                                     TestResult tr = runRegionWork(ctx, my_region, tc, config.halt_on_error);
                                     if (tr.total_errors() && window.overlappedForeignDisturbance()) {
@@ -577,6 +581,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                                 }
                             }
                             if (ctx.shouldStop()) break;
+                            ProgressBinding::resetStep(&ctx);
                             progress.publish(t, cycle * seq.size() + seq_idx + 1);
                             LOG_DEBUG("Worker %u cycle %llu test %zu: %s completed in %.3fs verified-bytes=%llu", t,
                                       static_cast<unsigned long long>(cycle + 1), seq_idx + 1, tc.function.c_str(),

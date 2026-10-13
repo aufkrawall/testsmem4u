@@ -49,6 +49,30 @@ private:
     TestResult published_;
 };
 
+// Publishes the outermost kernel's internal repetitions as current-test
+// progress for the status line. Nested kernels (retention background tests)
+// do not claim the binding and leave the outer kernel's progress untouched.
+class RepetitionProgress {
+public:
+    RepetitionProgress(TestContext& ctx, uint64_t repetitions) noexcept
+        : ctx_(ctx), repetitions_(std::max<uint64_t>(1, repetitions)),
+          owner_(ProgressBinding::claimRepetitions(&ctx)) {}
+    ~RepetitionProgress() {
+        if (owner_) ProgressBinding::releaseRepetitions(&ctx_);
+    }
+    RepetitionProgress(const RepetitionProgress&) = delete;
+    RepetitionProgress& operator=(const RepetitionProgress&) = delete;
+
+    void begin(uint64_t repetition) noexcept {
+        if (owner_) ProgressBinding::setRepetition(&ctx_, repetition, repetitions_);
+    }
+
+private:
+    TestContext& ctx_;
+    uint64_t repetitions_;
+    bool owner_;
+};
+
 // Generate expected pattern value for verification
 // mode 0: uniform (val = p0)
 // mode 1: XOR pattern (val = p0 ^ (index * p1), wrapping is intentional for address testing)

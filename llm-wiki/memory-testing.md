@@ -195,6 +195,19 @@ tested; physical activation rates and fault-detection gains remain unmeasured.
 - Final `Coverage` is the number of complete cycles across every worker region.
 - Byte totals count verified reads, including repeated checks and retention's useful
   active tests. They are neither unique memory coverage nor physical bus traffic.
+- The status line follows the least advanced worker (`findSlowestWorker`: lowest
+  completed position, then lowest step) and appends its current-test step as a
+  percentage. `ProgressBinding` combines worker loop (`beginLoop`), configured
+  sub-block (`runRegionWork` -> `beginBlock`) and the outermost kernel's
+  `RepetitionProgress` into one per-worker parts-per-million atomic. Nested kernels
+  (RefreshStable's background SimpleTest) cannot claim repetitions. Workers reset
+  the step before publishing a completed position, so readers never pair a new
+  test index with the previous test's step. Units per kernel: SimpleTest/Mirror*/
+  BlockMove/MovingInversion(LFSR) repeats, MovingInversionWalking repeats x 64,
+  Walking* 64 bits, Modulo20 2 x offsets, RefreshStable sides x polarities,
+  RowHammer 2 x points, RandomAccess accesses (updated every 64Ki). LFSRPattern
+  advances only by loops. Covered by `tests/test_step_progress.h`; a mutation
+  allowing nested claims fails it.
 - Live progress includes completed verification blocks from currently running
   invocations. CLI results and the log also include exact final bytes and completed
   cycles, including partial work from cancellation or worker exceptions.

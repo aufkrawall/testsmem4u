@@ -76,7 +76,10 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
     }
 
     const uint64_t victim_patterns[2] = { ~0ULL, 0ULL };
+    RepetitionProgress steps(ctx, uint64_t{2} * hammer_points);
     for (int pass = 0; pass < 2 && !ctx.shouldStop(); ++pass) {
+        uint64_t points_started = 0;
+        steps.begin(uint64_t(pass) * hammer_points);
         const uint64_t victim_fill  = victim_patterns[pass];
         const uint64_t aggr_toggle0 = ~victim_fill;
         const uint64_t aggr_toggle1 =  victim_fill;
@@ -109,6 +112,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
                      row_stride_elements, points_for_stride);
 
             for (size_t i = 0; i < points_for_stride && !ctx.shouldStop(); ++i) {
+                steps.begin(uint64_t(pass) * hammer_points + std::min<uint64_t>(points_started++, hammer_points));
                 size_t idxA = hammer_dist(rng);
                 size_t idxB = idxA + row_stride_elements;
                 size_t idxC = idxA + 2 * row_stride_elements;

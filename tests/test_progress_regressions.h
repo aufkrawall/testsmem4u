@@ -192,7 +192,7 @@ void testProgressDiagnosticsAndStatus() {
     const auto first = diagnostics.update(start + std::chrono::seconds(10), totals, workers, progress, 2);
     expect(first.find("Progress: verified-bytes=65536 delta=65536") == 0 &&
            first.find("workers=6 omitted=2") != std::string::npos &&
-           first.find("w1 C2 T2 bytes=0 idle=10s phase=Synthetic fill") != std::string::npos &&
+           first.find("w1 C2 T2 bytes=0 step=0.0% idle=10s phase=Synthetic fill") != std::string::npos &&
            first.find("w0 ") == std::string::npos && first.find("w5 ") == std::string::npos,
            "Progress snapshots cap workers and prioritize the longest verification gaps");
     expect(diagnostics.update(start + std::chrono::seconds(11), totals, workers, progress, 2).empty(),

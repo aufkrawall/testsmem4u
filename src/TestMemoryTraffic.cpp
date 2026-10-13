@@ -38,7 +38,9 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
     };
     // Keep each held half untouched while the other half performs real
     // write/verify tests. Rotate roles so every word receives both polarities.
-    for (unsigned side = 0; side < (split ? 2U : 1U) && !ctx.shouldStop(); ++side) {
+    const unsigned sides = split ? 2U : 1U;
+    RepetitionProgress steps(ctx, uint64_t{sides} * 2);
+    for (unsigned side = 0; side < sides && !ctx.shouldStop(); ++side) {
         const MemoryRegion held = split ? (side == 0 ? slice(region, 0, split) :
                                            slice(region, split, region.size - split)) : region;
         const MemoryRegion active = split ? (side == 0 ? slice(region, split, region.size - split) :
@@ -54,6 +56,7 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
         bool background_inverted = false;
         for (unsigned polarity = 0; polarity < 2 && !ctx.shouldStop(); ++polarity) {
             const uint64_t pattern = polarity ? ~config.pattern_param0 : config.pattern_param0;
+            steps.begin(uint64_t{side} * 2 + polarity);
             simd::generate_pattern_uniform(ptr, count, pattern, true);
             simd::flush_cache_region(ptr, held.size);
             const auto hold_start = now();
@@ -145,7 +148,10 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
         band_sizes[lane] = span;
     }
     testPhase(ctx, "Random checks", region);
+    RepetitionProgress steps(ctx, iterations);
     for (uint64_t done = 0; done < iterations && !ctx.shouldStop();) {
+        // One relaxed store per 64Ki accesses keeps status updates off the hot path.
+        if ((done & 0xFFFF) < width) steps.begin(done);
         const size_t n = static_cast<size_t>(std::min<uint64_t>(width, iterations - done));
         // Disjoint address bands guarantee no duplicate outstanding writes.
         // Independent loads and batched flushes expose memory-level parallelism.
@@ -205,7 +211,9 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
     constexpr size_t block = size_t{256} * 1024;
     std::vector<std::pair<uint64_t, uint64_t>> errors;
     errors.reserve(128);
+    RepetitionProgress steps(ctx, repeats);
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
+        steps.begin(r);
         const uint64_t pattern = config.pattern_param0 ^ (step * r);
         simd::generate_pattern_linear(ptr, count, pattern, step, true, start);
         simd::flush_cache_region(ptr, region.size);

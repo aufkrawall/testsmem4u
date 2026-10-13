@@ -17,6 +17,8 @@
 #include <array>
 #include <chrono>
 #include <sstream>
+#include <cmath>
+#include <limits>
 
 #include <cstdint>
 #include <iostream>
@@ -647,6 +649,7 @@ void testRunResultMerge() {
 #include "test_performance_regressions.h"
 #include "test_runtime_regressions.h"
 #include "test_progress_regressions.h"
+#include "test_step_progress.h"
 
 } // namespace
 
@@ -707,6 +710,7 @@ int main() try {
     testSubBlockAndConcurrentProgress();
     testProgressDiagnosticsAndStatus();
     testRepeatedSimplePhases();
+    testStepProgressContracts();
     testThreadExceptionCleanup();
 
     // End-to-end tests with real memory allocation
