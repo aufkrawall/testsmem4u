@@ -1,5 +1,4 @@
 #include "Platform.h"
-#include "PlatformMemoryInternal.h"
 #include "Logger.h"
 #include <iostream>
 #include <thread>
@@ -89,10 +88,8 @@ static BOOL WINAPI consoleCtrlHandler(DWORD dwCtrlType) {
 #pragma clang diagnostic pop
 #else
 static void SignalHandlerWrapper(int signum) {
-    // Second signal (e.g. repeated Ctrl+C or another termination signal during
-    // shutdown): force immediate exit, but never leave the hugepage pool raised.
+    // All allocations are process-owned; the kernel frees them on forced exit.
     if (g_shutdown_initiated.load(std::memory_order_acquire)) {
-        platform_detail::restoreHugepagesSignalSafe();
         _exit(128 + signum);
     }
 
@@ -104,17 +101,13 @@ static void SignalHandlerWrapper(int signum) {
         cb();
     }
 
-    // SIGBUS indicates potentially unsafe memory access state. SIGABRT will
-    // re-raise with the default handler after we return, skipping atexit, so
-    // the hugepage reservation must be restored here. Exit immediately after
-    // signal-safe cleanup in both cases.
+    // SIGBUS indicates unsafe access; SIGABRT must not resume test execution.
     if (signum == SIGBUS || signum == SIGABRT) {
-        platform_detail::restoreHugepagesSignalSafe();
         _exit(128 + signum);
     }
 
     // SIGINT/SIGTERM/SIGHUP: return so the normal shutdown path can flush
-    // logs, release memory, report final results and restore hugepages.
+    // logs, release memory and report final results.
 }
 #endif
 
@@ -334,7 +327,7 @@ void Platform::registerShutdownHandler(void (*callback)()) {
     std::signal(SIGTERM, SignalHandlerWrapper);
     std::signal(SIGHUP, SignalHandlerWrapper);  // Closed terminal: stop gracefully
     std::signal(SIGBUS, SignalHandlerWrapper);  // Hugepage access fault
-    std::signal(SIGABRT, SignalHandlerWrapper); // Restore hugepages on abort
+    std::signal(SIGABRT, SignalHandlerWrapper); // Exit on abort
 #endif
 }
 

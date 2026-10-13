@@ -42,6 +42,20 @@
 
 #ifdef _WIN32
 namespace testsmem4u {
+size_t Platform::getNativePageSize() {
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    return info.dwPageSize;
+}
+
+size_t Platform::getPreferredLargePageSize() { return GetLargePageMinimum(); }
+
+memory_pages::Coverage Platform::queryLargePageCoverage(const MemoryRegion& region) {
+    const size_t bytes = region.large_page_bytes > region.base_offset_bytes ?
+        std::min(region.size, region.large_page_bytes - region.base_offset_bytes) : 0;
+    return {bytes, bytes, getPreferredLargePageSize(), true, false};
+}
+
 bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t min_required_bytes) {
     // Enable privilege first
     if (!enablePrivilege(SE_LOCK_MEMORY_NAME)) {

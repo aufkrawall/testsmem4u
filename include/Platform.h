@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include "Types.h"
+#include "MemoryPages.h"
 
 namespace testsmem4u {
 
@@ -63,6 +64,9 @@ public:
     static PlatformInfo detectPlatform();
     static uint64_t getTotalSystemRAM();
     static uint64_t getAvailableSystemRAM();
+    static size_t getNativePageSize();
+    static size_t getPreferredLargePageSize();
+    static memory_pages::Coverage queryLargePageCoverage(const MemoryRegion& region);
 
     // Process Management
     static std::vector<CpuTarget> getPreferredCpuTargets(uint32_t max_threads = 0);
@@ -96,9 +100,7 @@ private:
     static bool tryAllocateStandard(MemoryRegion& region, size_t size);
 #else
 private:
-    static bool tryAllocateMlock(MemoryRegion& region, size_t size);
     static bool tryAllocateHugepages(MemoryRegion& region, size_t size);
-    static bool tryAllocateStandard(MemoryRegion& region, size_t size);
 #endif
 };
 

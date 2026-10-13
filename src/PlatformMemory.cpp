@@ -56,8 +56,10 @@ bool Platform::allocateMemory(MemoryRegion& region, size_t size, bool try_large_
     region.locked_bytes = 0;
     region.lp_chunk_size = 0;
 
-    size_t page_align = 4096;
-    region.size = (size + page_align - 1) & ~(page_align - 1);
+    if (!memory_pages::alignSize(size, getNativePageSize(), region.size)) {
+        LOG_ERROR("Allocation: invalid size/alignment bytes=%zu native-page=%zu", size, getNativePageSize());
+        return false;
+    }
 
     return allocateNativeMemory(region, region.size, try_large_pages, try_lock, allow_swappable);
 }
@@ -67,25 +69,6 @@ MemoryGuard Platform::allocateMemoryRAII(size_t size, bool try_large_pages, bool
     if (allocateMemory(region, size, try_large_pages, try_lock, allow_swappable)) {
         MemoryGuard guard(region.base, region.size, region.is_large_pages, region.large_page_bytes, region.is_locked,
                           region.locked_offset, region.locked_bytes, region.lp_chunk_size);
-#ifndef _WIN32
-        if (!region.is_locked) {
-            // Anonymous mappings are demand-paged. Write once per native page
-            // before mincore checks so it observes real private RAM rather than
-            // an untouched mapping or the shared read-only zero page.
-            const long native_page_size = sysconf(_SC_PAGESIZE);
-            if (native_page_size <= 0) {
-                LOG_ERROR("Cannot prefault allocation: native page size is unavailable");
-                return MemoryGuard();
-            }
-            const size_t page_size = static_cast<size_t>(native_page_size);
-            const auto started = std::chrono::steady_clock::now();
-            auto* pages = static_cast<volatile uint8_t*>(region.base);
-            for (size_t offset = 0; offset < region.size; offset += page_size) pages[offset] = 0;
-            LOG_DEBUG("Prefaulted unlocked allocation: bytes=%zu page-size=%zu in %.3fs",
-                      region.size, page_size,
-                      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
-        }
-#endif
         return guard;
     }
     return MemoryGuard();
@@ -126,13 +109,12 @@ void Platform::freeMemory(MemoryRegion& region) {
         VirtualFree(region.base, 0, MEM_RELEASE);
     }
 #else
-    if (region.is_locked) {
+    if (region.is_locked && !region.is_large_pages) {
         munlock(region.base, region.size);
     }
-    munmap(region.base, region.size);
-
-    // Restore hugepage reservation to original count after any hugepage attempt.
-    platform_detail::restoreHugepages();
+    if (munmap(region.base, region.size) != 0) {
+        LOG_ERROR("Allocation: munmap failed bytes=%zu error=%d", region.size, errno);
+    }
 #endif
 
     region.base = nullptr;

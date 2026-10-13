@@ -63,14 +63,12 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         return res;
     }
 
-    size_t large_page_bytes_in_region = 0;
-    if (region.large_page_bytes > region.base_offset_bytes) {
-        large_page_bytes_in_region = std::min(region.size, region.large_page_bytes - region.base_offset_bytes);
-    }
-    if (large_page_bytes_in_region < region.size) {
+    const auto page_coverage = Platform::queryLargePageCoverage(region);
+    if (!page_coverage.known || page_coverage.bytes < region.size) {
         bool expected = false;
         if (g_rowhammer_large_page_warning_emitted.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            LOG_WARN("RowHammer test effectiveness is significantly reduced without full Large Page coverage (2MB pages).");
+            LOG_WARN("RowHammer: full large-page coverage is not confirmed (bytes=%zu..%zu of %zu, known=%s). Virtual strides do not establish physical row/bank adjacency.",
+                     page_coverage.bytes, page_coverage.possible_bytes, region.size, page_coverage.known ? "yes" : "no");
             LOG_WARN("Try reducing the test size, closing memory-heavy apps, or restarting the system.");
         }
     }

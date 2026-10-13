@@ -5,6 +5,11 @@
 #include "ConfigManager.h"
 #include "testsmem4u.h"
 #include "Platform.h"
+#include "PlatformMemoryInternal.h"
+#ifndef _WIN32
+#include <sys/mman.h>
+#include <cerrno>
+#endif
 #include "MemoryTestKernels.h"
 #include "WorkerProgress.h"
 #include "DisturbanceWindow.h"
@@ -648,6 +653,7 @@ void testRunResultMerge() {
 #include "test_engine_regressions.h"
 #include "test_performance_regressions.h"
 #include "test_runtime_regressions.h"
+#include "test_memory_pages.h"
 #include "test_progress_regressions.h"
 #include "test_step_progress.h"
 
@@ -705,6 +711,10 @@ int main() try {
     testIndependentWorkerExecution();
     testPreparationExceptionCleanup();
     testFreshUnlockedRun();
+    testMemoryPageContracts();
+#ifndef _WIN32
+    testLinuxMemoryFallbacks();
+#endif
     testLiveProgressAndCancellation();
     testAllKernelProgress();
     testSubBlockAndConcurrentProgress();

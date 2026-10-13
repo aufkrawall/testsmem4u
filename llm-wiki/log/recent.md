@@ -1,5 +1,29 @@
 # Recent Log
 
+## 2026-10-13 - Use process-owned Linux huge pages and measure coverage
+
+- Linux defaults now try compatible existing HugeTLB, then naturally aligned
+  THP advice plus write-prefaulting and strict mlock. HugeTLB is non-swappable
+  without redundant mlock. Native page sizes drive rounding and worker slices.
+- Process-owned THP replaces automatic persistent-pool writes/restoration, fixing
+  total-vs-free reservation accounting, concurrent restoration and uncatchable
+  kill leaks at their source. Aggressive cache dropping/compaction remains opt-in
+  on incomplete coverage, with one synchronous collapse attempt and no sleeps.
+- Allocation and RowHammer query smaps coverage. Checked parsing and conservative
+  bounds avoid claiming a prefix/full worker slice from aggregate VMA totals;
+  unreadable/malformed metadata stays unknown. Details and source anchors are in
+  [memory testing](../memory-testing.md#page-allocation-defaults-and-limits).
+- New focused portable and Linux syscall-fixture regressions pass in Windows/WSL
+  baseline and AVX2 suites, alongside all 17 Python regressions. Linux baseline,
+  v3 and v4 release builds pass. Strict native analysis passes all production
+  profiles plus the runner after correcting synthetic-test multiplication widths.
+- Real 16 MiB comparison: prior Linux binary used locked native pages, fixed
+  binary used full THP + mlock, and --no-large-pages used native pages. Each
+  completed one cycle with exactly 16,777,216 verified bytes and zero errors.
+  SIGKILL after successful aggressive-mode allocation left no process or pool
+  change (pool stayed zero; WSL surfaced signal exit as 9). Default Windows used
+  full large pages. All checks were bounded; no test processes remain.
+
 ## 2026-10-13 - Split native allocation and configuration responsibilities
 
 - Extracted CPU topology, common allocation/cleanup and Windows/Linux allocation

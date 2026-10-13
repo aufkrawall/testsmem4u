@@ -73,7 +73,8 @@ static std::vector<WorkerAssignment> buildWorkerAssignments(const MemoryRegion& 
     }
     targets.resize(std::min(targets.size(), std::max<size_t>(1, region.size / 4096)));
 
-    const size_t page_size = 4096;
+    const size_t page_size = Platform::getNativePageSize();
+    if (page_size == 0) throw std::runtime_error("Native page size is unavailable");
     if (region.size < page_size) return {{targets.front(), 0, region.size}};
     const size_t aligned_region_size = (region.size / page_size) * page_size;
     size_t total_pages = aligned_region_size / page_size;
@@ -275,6 +276,10 @@ RunResult TestEngine::runTests(const Config& config
     region.is_large_pages = guard.is_large_pages();
     region.large_page_bytes = guard.large_page_bytes();
     region.is_locked = guard.is_locked();
+    const auto page_coverage = Platform::queryLargePageCoverage(region);
+    LOG_DEBUG("Allocation: coverage bytes=%zu..%zu known=%s transparent=%s page-size=%zu total=%zu",
+              page_coverage.bytes, page_coverage.possible_bytes, page_coverage.known ? "yes" : "no",
+              page_coverage.transparent ? "yes" : "no", page_coverage.page_size, region.size);
 
     if (region.size < needed_bytes) {
         LOG_ERROR("Allocation contract violated: requested %u MB but got only %zu MB. Aborting.",
@@ -309,19 +314,27 @@ RunResult TestEngine::runTests(const Config& config
     }
     {
         std::ostringstream ss;
-        if (region.large_page_bytes == 0) {
+        if (!page_coverage.known) {
+            ss << "  LargePages: Unknown (coverage inspection unavailable)";
+        } else if (page_coverage.bytes == 0 && page_coverage.possible_bytes == 0) {
             ss << "  LargePages: No";
-        } else if (region.large_page_bytes >= region.size) {
+        } else if (page_coverage.bytes >= region.size) {
             ss << "  LargePages: Yes (full region)";
         } else {
-            ss << "  LargePages: Partial (" << (region.large_page_bytes / 1024 / 1024) << " MB of "
-               << (region.size / 1024 / 1024) << " MB)";
+            ss << "  LargePages: Partial (" << (page_coverage.bytes / 1024 / 1024);
+            if (page_coverage.bytes != page_coverage.possible_bytes) ss << "-" << (page_coverage.possible_bytes / 1024 / 1024);
+            ss << " MB of " << (region.size / 1024 / 1024) << " MB)";
         }
         ConsoleDisplay::get().printLine(ss.str());
     }
+    if (config.use_large_pages && page_coverage.page_size > 0) {
+        ConsoleDisplay::get().printLine("  Page size:  " + std::to_string(page_coverage.page_size / 1024) + " KiB (large-page allocation target)");
+    }
     {
         std::ostringstream ss;
-        if (region.large_page_bytes >= region.size) {
+        if (page_coverage.transparent && page_coverage.possible_bytes > 0) {
+            ss << "  Method:     Transparent Huge Pages" << (region.is_locked ? " + mlock" : " (Swappable)");
+        } else if (region.large_page_bytes >= region.size) {
             ss << "  Method:     Large Pages";
         } else if (region.large_page_bytes > 0 && region.is_locked) {
             ss << "  Method:     Hybrid (Large Pages + Locked Standard Pages)";
@@ -332,9 +345,13 @@ RunResult TestEngine::runTests(const Config& config
         }
         ConsoleDisplay::get().printLine(ss.str());
     }
-    if (region.is_locked && region.large_page_bytes < region.size) {
-        ConsoleDisplay::get().printLine("  Info:       Testing remains valid with fully locked memory, but full large-page coverage would improve throughput and RowHammer fidelity.");
+    if (region.is_locked && (!page_coverage.known || page_coverage.bytes < region.size)) {
+        ConsoleDisplay::get().printLine("  Info:       Testing remains valid with fully locked memory; more large-page coverage can improve address translation and physical contiguity within each page.");
+#ifdef _WIN32
         ConsoleDisplay::get().printLine("              If you want a full large-page run, try closing memory-heavy apps or restarting Windows before starting the test.");
+#else
+        ConsoleDisplay::get().printLine("              For more huge-page coverage, check Linux THP policy or configure a matching HugeTLB pool; --aggressive-defrag permits system-wide preparation.");
+#endif
     }
     ConsoleDisplay::get().printLine("");
 

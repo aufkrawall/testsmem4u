@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Improved
+
+- **Linux huge-page defaults:** large-page preference now requests aligned transparent huge pages automatically when an existing HugeTLB pool cannot satisfy the window, while preserving strict memory locking and native-page fallback. Allocation and RowHammer diagnostics report measured huge-page coverage, including conservative bounds for partial worker slices.
+
+### Fixed
+
+- **Native page sizes:** allocation and worker partitioning use the OS base page size; HugeTLB allocation uses its actual default size and does not silently expand a small window to a 1 GiB huge page.
+- **HugeTLB lock status:** inherently non-swappable HugeTLB mappings no longer require a redundant successful `mlock()` to satisfy strict locked-memory testing.
+
+### Changed
+
+- **Linux huge-page preparation:** automatic huge-page provisioning uses process-owned transparent pages instead of changing the persistent HugeTLB pool, preventing reservations from remaining after a kill or overwriting concurrent pool changes. Preconfigured HugeTLB pools remain supported; `--aggressive-defrag` retains optional cache dropping, compaction and one process-local collapse attempt without fixed delays.
+
 ## 1.8 - 2026-10-13
 
 ### Fixed

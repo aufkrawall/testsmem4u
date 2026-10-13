@@ -1,352 +1,269 @@
 #include "Platform.h"
+#include "PlatformMemoryInternal.h"
 #include "Logger.h"
-#include <iostream>
-#include <thread>
-#include <chrono>
-#include <cstring>
-#include <algorithm>
-#include <memory>
-#include <vector>
-#include <cstdio>
-#include <atomic>
-#include <cstdlib>
-#include <array>
-#include <string>
-#include <limits>
-#include <utility>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <psapi.h>
-#include <memoryapi.h>
-#include <ntsecapi.h> // For LSA functions
-#include <processtopologyapi.h>
-#include <processthreadsapi.h>
-#include <winnt.h>
-
-
-#else
+#ifndef _WIN32
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <unistd.h>
-#include <sys/sysinfo.h>
-#include <pthread.h>
-#include <sched.h>
-#include <errno.h>
-#include <csignal>
-#include <fcntl.h>
-#include <dirent.h>
-#include <fstream>
+#include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <memory>
+
+namespace testsmem4u {
+namespace {
+
+using File = std::unique_ptr<FILE, decltype(&std::fclose)>;
+
+#ifdef TESTSMEM4U_TESTING
+std::atomic<const platform_detail::LinuxMemoryHooks*> g_memory_hooks{nullptr};
 #endif
 
-#include "PlatformMemoryInternal.h"
-#ifndef _WIN32
-namespace testsmem4u {
-// Original hugepage count to restore on exit (-1 = not modified). Signal
-// handlers read it, so it must be a lock-free atomic.
-static std::atomic<int> g_original_hugepages{-1};
-static_assert(std::atomic<int>::is_always_lock_free, "signal handlers require lock-free hugepage state");
-
-namespace platform_detail {
-// Restore hugepage count using only async-signal-safe functions.
-// Called from signal handlers before _exit(), which skips atexit handlers.
-// Reducing the pool while this process still maps hugepages is safe: the
-// kernel turns in-use pages into surplus pages and frees them on exit.
-void restoreHugepagesSignalSafe() {
-    int val = g_original_hugepages.exchange(-1, std::memory_order_acq_rel);
-    if (val < 0) return;
-
-    // Convert integer to string (no snprintf — not async-signal-safe)
-    char buf[16];
-    int pos = 0;
-    if (val == 0) {
-        buf[pos++] = '0';
-    } else {
-        char tmp[16];
-        int tpos = 0;
-        while (val > 0) { tmp[tpos++] = '0' + (val % 10); val /= 10; }
-        while (tpos > 0) buf[pos++] = tmp[--tpos];
-    }
-    buf[pos++] = '\n';
-
-    // open/write/close are all async-signal-safe
-    int fd = open("/proc/sys/vm/nr_hugepages", O_WRONLY);
-    if (fd >= 0) {
-        (void)write(fd, buf, pos);
-        close(fd);
-    }
-}
-
-// Normal-exit hugepage restoration (uses standard I/O, not signal-safe)
-void restoreHugepages() {
-    const int original = g_original_hugepages.exchange(-1, std::memory_order_acq_rel);
-    if (original < 0) return;
-
-    FILE* fp = fopen("/proc/sys/vm/nr_hugepages", "w");
-    if (fp) {
-        fprintf(fp, "%d\n", original);
-        fclose(fp);
-        LOG_INFO("Restored hugepages to original count: %d", original);
-    } else {
-        LOG_WARN("Could not restore hugepages to original count %d: %s", original, strerror(errno));
-    }
-}
-
-}
-bool Platform::tryAllocateMlock(MemoryRegion& region, size_t size) {
-    if (region.base) {
-        munmap(region.base, region.size);
-        region.base = nullptr;
-    }
-
-    region.base = static_cast<uint8_t*>(mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-    if (region.base == MAP_FAILED) {
-        region.base = nullptr;
-        return false;
-    }
-
-    if (mlock(region.base, size) == 0) {
-        region.is_locked = true;
-        region.large_page_bytes = 0;
-        LOG_INFO("Allocated and locked %zu MB using mlock", size / 1024 / 1024);
-    } else {
-        region.is_locked = false;
-        region.large_page_bytes = 0;
-        LOG_WARN("mlock failed: %s", strerror(errno));
-    }
-
-    return true;
-}
-
-bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
-    if (region.base) {
-        munmap(region.base, region.size);
-        region.base = nullptr;
-    }
-
-    region.base = static_cast<uint8_t*>(mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-    if (region.base == MAP_FAILED) {
-        region.base = nullptr;
-        return false;
-    }
-
-    region.is_locked = false;
-    region.is_large_pages = false;
-    region.large_page_bytes = 0;
-    region.locked_offset = 0;
-    region.locked_bytes = 0;
-    LOG_INFO("Allocated %zu MB using standard pages (swappable)", size / 1024 / 1024);
-    return true;
-}
-
-// Defragment Linux physical memory to maximize hugepage availability.
-// Drops filesystem caches and triggers kernel memory compaction.
-static void defragLinuxMemory() {
-    if (geteuid() != 0) return;  // Requires root
-
-    // Drop page cache, dentries, and inodes to free physical memory
-    FILE* fp = fopen("/proc/sys/vm/drop_caches", "w");
-    if (fp) {
-        fprintf(fp, "3\n");
-        fclose(fp);
-        LOG_INFO("Dropped filesystem caches to free physical memory");
-    }
-
-    // Trigger kernel memory compaction to consolidate free pages into
-    // contiguous 2MB regions suitable for hugepages
-    fp = fopen("/proc/sys/vm/compact_memory", "w");
-    if (fp) {
-        fprintf(fp, "1\n");
-        fclose(fp);
-        LOG_INFO("Triggered kernel memory compaction");
-    }
-
-    // Brief pause to let compaction work
-    usleep(500000); // 500ms
-}
-
-static bool reserveHugepages(size_t size_needed) {
-    const size_t hugepage_size = size_t{2} * 1024 * 1024;
-    int pages_needed = static_cast<int>((size_needed + hugepage_size - 1) / hugepage_size);
-
-    // Read current hugepage count
-    FILE* fp = fopen("/proc/sys/vm/nr_hugepages", "r");
-    if (!fp) return false;
-
-    int current_pages = 0;
-    if (fscanf(fp, "%d", &current_pages) != 1) current_pages = 0;
-    fclose(fp);
-
-    // Save original count so we can restore on exit
-    if (g_original_hugepages.load(std::memory_order_acquire) < 0) {
-        g_original_hugepages.store(current_pages, std::memory_order_release);
-        static bool restore_registered = false;
-        if (!restore_registered) {
-            std::atexit(platform_detail::restoreHugepages);
-            restore_registered = true;
+size_t readPageSize(const char* path, const char* key = nullptr) {
+    File file(std::fopen(path, "r"), &std::fclose);
+    if (!file) return 0;
+    char line[256];
+    uint64_t value = 0;
+    while (std::fgets(line, sizeof(line), file.get())) {
+        if (key) {
+            if (std::strncmp(line, key, std::strlen(key)) != 0) continue;
+            if (!memory_pages::readKilobytes(line + std::strlen(key), value) ||
+                value > std::numeric_limits<size_t>::max() / 1024) return 0;
+            value *= 1024;
+        } else {
+            const char* cursor = line;
+            if (!memory_pages::readUnsigned(cursor, value) ||
+                (*cursor != '\0' && *cursor != '\n' && *cursor != '\r')) return 0;
         }
-        LOG_INFO("Registered hugepage restoration (original count: %d; restored on exit, "
-                 "SIGINT/SIGTERM/SIGHUP, repeated signals, SIGABRT and SIGBUS)", current_pages);
+        if (value > std::numeric_limits<size_t>::max()) return 0;
+        const size_t size = static_cast<size_t>(value);
+        return size != 0 && (size & (size - 1)) == 0 ? size : 0;
     }
+    return 0;
+}
 
-    // Calculate how many more pages we need
-    int additional_pages = pages_needed - current_pages;
-    if (additional_pages <= 0) {
-        // Already enough hugepages reserved
-        return true;
+size_t defaultHugePageSize() {
+#ifdef TESTSMEM4U_TESTING
+    const auto* hooks = g_memory_hooks.load(std::memory_order_acquire);
+    if (hooks && hooks->hugepage_size) return hooks->hugepage_size();
+#endif
+    return readPageSize("/proc/meminfo", "Hugepagesize:");
+}
+
+int advise(void* base, size_t size, int advice) {
+#ifdef TESTSMEM4U_TESTING
+    const auto* hooks = g_memory_hooks.load(std::memory_order_acquire);
+    if (hooks && hooks->advise_memory) return hooks->advise_memory(base, size, advice);
+#endif
+    return madvise(base, size, advice);
+}
+
+int lockMemory(const void* base, size_t size) {
+#ifdef TESTSMEM4U_TESTING
+    const auto* hooks = g_memory_hooks.load(std::memory_order_acquire);
+    if (hooks && hooks->lock_memory) return hooks->lock_memory(base, size);
+#endif
+    return mlock(base, size);
+}
+
+void* mapHuge(size_t size) {
+#ifdef TESTSMEM4U_TESTING
+    const auto* hooks = g_memory_hooks.load(std::memory_order_acquire);
+    if (hooks && hooks->map_huge) return hooks->map_huge(size);
+#endif
+    return mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+}
+
+struct MappingCleanup {
+    uint8_t* base;
+    size_t size;
+    ~MappingCleanup() { if (base) munmap(base, size); }
+};
+
+uint8_t* mapAligned(size_t size, size_t alignment) {
+    const size_t native = Platform::getNativePageSize();
+    if (alignment <= native) {
+        void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        return ptr == MAP_FAILED ? nullptr : static_cast<uint8_t*>(ptr);
     }
-
-    // Cap additional pages to prevent writing hazardous values to kernel sysfs
-    if (additional_pages > 100000) {
-        LOG_WARN("Capping hugepage request from %d to 100000 pages to avoid system instability",
-                 additional_pages);
-        additional_pages = 100000;
+    size_t total = 0;
+    if (!memory_pages::alignSize(size, native, total) || total > std::numeric_limits<size_t>::max() - alignment) return nullptr;
+    total += alignment;
+    void* raw = mmap(nullptr, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) return nullptr;
+    auto* base = static_cast<uint8_t*>(raw);
+    MappingCleanup cleanup{base, total};
+    const size_t prefix = (alignment - reinterpret_cast<uintptr_t>(base) % alignment) % alignment;
+    const size_t suffix = total - prefix - size;
+    // Keep the target mapping reserved throughout; trim only its excess ends.
+    if (prefix) {
+        if (munmap(base, prefix) != 0) {
+            LOG_ERROR("Allocation: alignment prefix trim failed bytes=%zu error=%d", prefix, errno);
+            return nullptr;
+        }
+        cleanup.base += prefix;
+        cleanup.size -= prefix;
     }
-
-    // Try to reserve hugepages directly first
-    int new_total = current_pages + additional_pages + 2; // Add a couple extra
-
-    fp = fopen("/proc/sys/vm/nr_hugepages", "w");
-    if (!fp) return false;
-
-    fprintf(fp, "%d\n", new_total);
-    fclose(fp);
-
-    // Check how many we actually got
-    fp = fopen("/proc/sys/vm/nr_hugepages", "r");
-    if (!fp) return false;
-    int actual_pages = 0;
-    if (fscanf(fp, "%d", &actual_pages) != 1) actual_pages = 0;
-    fclose(fp);
-
-    if (actual_pages >= pages_needed) {
-        LOG_INFO("Reserved %d hugepages (requested %d)", actual_pages, pages_needed);
-        return true;
+    if (suffix && munmap(cleanup.base + size, suffix) != 0) {
+        LOG_ERROR("Allocation: alignment suffix trim failed bytes=%zu error=%d", suffix, errno);
+        return nullptr;
     }
+    auto* aligned = cleanup.base;
+    cleanup.base = nullptr;
+    return aligned;
+}
 
-    // Not enough — defrag memory and retry
-    LOG_INFO("Got %d/%d hugepages, defragmenting memory and retrying...", actual_pages, pages_needed);
-    defragLinuxMemory();
+void prefault(uint8_t* base, size_t size) {
+    const auto started = std::chrono::steady_clock::now();
+    auto* pages = static_cast<volatile uint8_t*>(base);
+    const size_t native = Platform::getNativePageSize();
+    for (size_t offset = 0; offset < size; offset += native) pages[offset] = 0;
+    LOG_DEBUG("Allocation: prefault bytes=%zu native-page=%zu seconds=%.3f", size, native,
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+}
 
-    fp = fopen("/proc/sys/vm/nr_hugepages", "w");
-    if (!fp) return false;
-    fprintf(fp, "%d\n", new_total);
-    fclose(fp);
-
-    // Check result
-    fp = fopen("/proc/sys/vm/nr_hugepages", "r");
-    if (fp) {
-        if (fscanf(fp, "%d", &actual_pages) != 1) actual_pages = 0;
-        fclose(fp);
-        LOG_INFO("After defrag: got %d/%d hugepages", actual_pages, pages_needed);
+void writePreparationControl(const char* path, const char* value, const char* label) {
+    File file(std::fopen(path, "w"), &std::fclose);
+    if (!file) {
+        LOG_WARN("Allocation: %s unavailable error=%d", label, errno);
+        return;
     }
+    const bool written = std::fputs(value, file.get()) >= 0 && std::fflush(file.get()) == 0;
+    const int error = errno;
+    const int closed = std::fclose(file.release());
+    if (written && closed == 0) LOG_INFO("Allocation: %s completed", label);
+    else LOG_WARN("Allocation: %s failed error=%d", label, written ? errno : error);
+}
 
-    usleep(100000); // 100ms
-    return actual_pages >= pages_needed;
+void defragLinuxMemory() {
+    if (geteuid() != 0) {
+        LOG_WARN("Allocation: aggressive preparation requires root; continuing with process-local THP");
+        return;
+    }
+    writePreparationControl("/proc/sys/vm/drop_caches", "3\n", "cache-drop");
+    writePreparationControl("/proc/sys/vm/compact_memory", "1\n", "compaction");
+}
+
+} // namespace
+
+#ifdef TESTSMEM4U_TESTING
+const platform_detail::LinuxMemoryHooks* platform_detail::setLinuxMemoryHooks(const LinuxMemoryHooks* hooks) {
+    return g_memory_hooks.exchange(hooks, std::memory_order_acq_rel);
+}
+#endif
+
+size_t Platform::getNativePageSize() {
+    const long size = sysconf(_SC_PAGESIZE);
+    return size > 0 ? static_cast<size_t>(size) : 0;
+}
+
+size_t Platform::getPreferredLargePageSize() {
+    // PMD-sized THPs are process-owned and do not require a persistent pool.
+    const size_t thp = readPageSize("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size");
+    return thp > 0 ? thp : defaultHugePageSize();
+}
+
+memory_pages::Coverage Platform::queryLargePageCoverage(const MemoryRegion& region) {
+    if (region.is_large_pages) {
+        const size_t bytes = region.large_page_bytes > region.base_offset_bytes ?
+            std::min(region.size, region.large_page_bytes - region.base_offset_bytes) : 0;
+        return {bytes, bytes, defaultHugePageSize(), true, false};
+    }
+    File file(std::fopen("/proc/self/smaps", "r"), &std::fclose);
+    if (!file) return {};
+    memory_pages::SmapsCoverage parser(reinterpret_cast<uintptr_t>(region.base), region.size);
+    char line[512];
+    bool continuation = false;
+    while (std::fgets(line, sizeof(line), file.get())) {
+        if (!continuation) parser.consume(line);
+        continuation = std::strchr(line, '\n') == nullptr;
+    }
+    if (std::ferror(file.get())) return {};
+    auto result = parser.finish();
+    result.page_size = getPreferredLargePageSize();
+    return result;
 }
 
 bool Platform::tryAllocateHugepages(MemoryRegion& region, size_t size) {
-    if (region.base) {
-        munmap(region.base, region.size);
-        region.base = nullptr;
+    const size_t huge = defaultHugePageSize();
+    // Keep small windows small on ARM64 and systems with 1 GiB HugeTLB pages.
+    if (huge == 0 || size % huge != 0) {
+        LOG_DEBUG("Allocation: HugeTLB skipped bytes=%zu default-page=%zu (incompatible window)", size, huge);
+        return false;
     }
-
-    // Hugepage size is typically 2MB on x86_64 and ARM64
-    const size_t hugepage_size = size_t{2} * 1024 * 1024;
-
-    // Round up to hugepage boundary
-    size_t aligned_size = (size + hugepage_size - 1) & ~(hugepage_size - 1);
-
-    // Try to allocate with MAP_HUGETLB
-    void* ptr = mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
-
+    void* ptr = mapHuge(size);
     if (ptr == MAP_FAILED) {
-        // Failed to allocate - try to reserve hugepages automatically (requires root)
-        if (geteuid() == 0) {  // Running as root
-            LOG_INFO("Attempting to reserve hugepages automatically...");
-            if (reserveHugepages(aligned_size)) {
-                // Try allocation again after reserving
-                ptr = mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
-            }
-        }
-
-        if (ptr == MAP_FAILED) {
-            return false;
-        }
+        LOG_DEBUG("Allocation: HugeTLB unavailable bytes=%zu page-size=%zu error=%d; trying process-local THP", size, huge, errno);
+        return false;
     }
-
-    // Lock the hugepages to prevent them from being swapped
-    if (mlock(ptr, aligned_size) == 0) {
-        region.is_locked = true;
-    } else {
-        region.is_locked = false;
-        LOG_WARN("mlock failed for hugepages: %s", strerror(errno));
-    }
-
-    region.base = static_cast<uint8_t*>(ptr);
-    region.size = aligned_size;
+    MappingCleanup cleanup{static_cast<uint8_t*>(ptr), size};
+    prefault(cleanup.base, size);
+    LOG_INFO("Allocation: HugeTLB bytes=%zu page-size=%zu non-swappable=yes (no mlock required)", size, huge);
+    region.base = cleanup.base;
+    region.size = size;
     region.is_large_pages = true;
-    region.large_page_bytes = aligned_size;
-    region.locked_bytes = aligned_size;
-
-    LOG_INFO("Allocated %zu MB using hugepages (2MB pages)", aligned_size / 1024 / 1024);
+    region.large_page_bytes = size;
+    region.is_locked = true;
+    cleanup.base = nullptr;
     return true;
 }
 
 bool Platform::allocateNativeMemory(MemoryRegion& region, size_t size, bool try_large_pages, bool try_lock, bool allow_swappable) {
-    (void)size;
-    // Linux implementation with hugepages support
-    if (try_large_pages) {
-        if (aggressiveDefragEnabled()) {
-            if (tryAllocateHugepages(region, region.size)) {
-                return true;
-            }
-            LOG_INFO("Hugepage allocation failed at %zu MB, falling back to locked standard pages",
-                     region.size / (size_t{1024} * 1024));
-        } else {
-            // Non-aggressive: try hugepages once, skip defrag and kernel sysfs writes
-            const size_t hugepage_size = size_t{2} * 1024 * 1024;
-            size_t aligned_size = (region.size + hugepage_size - 1) & ~(hugepage_size - 1);
-            void* ptr = mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE,
-                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
-            if (ptr != MAP_FAILED) {
-                region.base = static_cast<uint8_t*>(ptr);
-                region.size = aligned_size;
-                region.is_large_pages = true;
-                region.large_page_bytes = aligned_size;
-                if (mlock(ptr, aligned_size) == 0) {
-                    region.is_locked = true;
-                }
-                LOG_INFO("Allocated %zu MB using hugepages (2MB pages) without defrag",
-                         aligned_size / 1024 / 1024);
-                return true;
-            }
-            LOG_INFO("Hugepage allocation failed at %zu MB (use --aggressive-defrag to enable auto-reservation)",
-                     region.size / (size_t{1024} * 1024));
+    if (try_large_pages && tryAllocateHugepages(region, size)) return true;
+    const size_t native = getNativePageSize();
+    const size_t preferred = try_large_pages ? getPreferredLargePageSize() : native;
+    auto* base = mapAligned(size, std::max(native, preferred));
+    if (!base) {
+        LOG_ERROR("Allocation: anonymous mmap failed bytes=%zu error=%d", size, errno);
+        return false;
+    }
+    MappingCleanup cleanup{base, size};
+    const int advice = try_large_pages ? MADV_HUGEPAGE : MADV_NOHUGEPAGE;
+    if (advise(base, size, advice) != 0) {
+        LOG_DEBUG("Allocation: %s unavailable error=%d; native-page fallback remains valid",
+                  try_large_pages ? "MADV_HUGEPAGE" : "MADV_NOHUGEPAGE", errno);
+    }
+    prefault(base, size);
+    bool locked = false;
+    if (try_lock) {
+        locked = lockMemory(base, size) == 0;
+        if (!locked) {
+            const int error = errno;
+            struct rlimit limit{};
+            const bool have_limit = getrlimit(RLIMIT_MEMLOCK, &limit) == 0;
+            LOG_ERROR("Allocation: mlock failed bytes=%zu error=%d memlock-limit=%llu strict=%s", size, error,
+                      have_limit ? static_cast<unsigned long long>(limit.rlim_cur) : 0ULL,
+                      allow_swappable ? "no" : "yes");
+            if (!allow_swappable) return false;
         }
     }
-
-    // Linux implementation check for strict locking
-    if (try_lock) {
-         if (tryAllocateMlock(region, region.size)) {
-              if (region.is_locked) return true;
-
-              if (!allow_swappable) {
-                  LOG_ERROR("mlock failed (Limit: %zu bytes). Aborting to avoid swapping.", region.size);
-                  freeMemory(region);
-                   return false;
-               }
-           }
-          if (region.base != nullptr) {
-              return allow_swappable;
-          }
-          return false;
+    MemoryRegion observed;
+    observed.base = base;
+    observed.size = size;
+    auto coverage = queryLargePageCoverage(observed);
+    if (try_large_pages && aggressiveDefragEnabled() && (!coverage.known || coverage.bytes < size)) {
+        defragLinuxMemory();
+        // Linux 6.1+: synchronous, process-local compaction; older kernels fall
+        // back on EINVAL. No sleeps and no persistent hugepage pool writes.
+        constexpr int collapse = 25; // MADV_COLLAPSE UAPI, absent in older libc headers.
+        if (advise(base, size, collapse) != 0) LOG_DEBUG("Allocation: MADV_COLLAPSE incomplete error=%d", errno);
+        coverage = queryLargePageCoverage(observed);
     }
-
-    return tryAllocateStandard(region, region.size);
+    LOG_INFO("Allocation: anonymous bytes=%zu locked=%s THP=%zu..%zu coverage-known=%s preferred-page=%zu",
+             size, locked ? "yes" : "no", coverage.bytes, coverage.possible_bytes,
+             coverage.known ? "yes" : "no", preferred);
+    region.base = base;
+    region.size = size;
+    region.is_locked = locked;
+    cleanup.base = nullptr;
+    return true;
 }
+
 } // namespace testsmem4u
 #endif

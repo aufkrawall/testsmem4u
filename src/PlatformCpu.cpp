@@ -446,22 +446,7 @@ static void initializeCpuTopologyCache() {
     snprintf(info.arch, sizeof(info.arch), "Unknown");
 #endif
 
-    FILE* fp = fopen("/proc/sys/vm/nr_hugepages", "r");
-    if (fp) {
-        int nr_hugepages = 0;
-        if (fscanf(fp, "%d", &nr_hugepages) == 1 && nr_hugepages > 0) {
-            info.large_pages_available = true;
-        }
-        fclose(fp);
-    }
-    if (!info.large_pages_available) {
-        void* test = mmap(nullptr, size_t{2} * 1024 * 1024, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
-        if (test != MAP_FAILED) {
-            info.large_pages_available = true;
-            munmap(test, size_t{2} * 1024 * 1024);
-        }
-    }
+    info.large_pages_available = Platform::getPreferredLargePageSize() > 0;
 #endif
 
     std::vector<CpuTarget> targets = detectCpuTargets();

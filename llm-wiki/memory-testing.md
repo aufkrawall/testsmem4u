@@ -44,60 +44,61 @@ long-run stalls; low for tested native progress/accounting paths.
 ## Page-allocation defaults and limits
 
 Sources: `include/testsmem4u.h::Config`, `include/RunConfiguration.h::CliOptions`,
-`src/RunConfiguration.cpp::makeDefaultConfig`,
-`src/ConfigWizard.cpp::normalizeWindowMBForLargePages`,
-`src/PlatformMemory.cpp::allocateMemory`,
-`src/PlatformWindowsMemory.cpp::tryAllocateLargePagesChunked`,
-`src/PlatformLinuxMemory.cpp::tryAllocateHugepages` / `reserveHugepages`,
-and `src/TestEngine.cpp::runTests`.
+`src/PlatformMemory.cpp::allocateMemory`, `src/PlatformWindowsMemory.cpp`,
+`src/PlatformLinuxMemory.cpp`, `include/MemoryPages.h`,
+`src/TestEngine.cpp::runTests` and `src/TestRowHammer.cpp`.
 
-Both memory locking and large-page preference default to enabled; saved config
-or CLI overrides can disable them. `--aggressive-defrag` defaults to disabled
-and is a CLI-only setting. Large-page preference is best effort, while requested
-locking is strict: `runTests` rejects an allocation reported as unlocked.
+Both locking and large-page preference default to enabled; saved config and CLI
+overrides can disable them. Large-page preference is best effort, while requested
+locking is strict. Aggressive preparation remains opt-in.
 
-- Windows first tries `MEM_LARGE_PAGES` using `GetLargePageMinimum`, then
-  decreasing chunk sizes and a large-page prefix with a fully `VirtualLock`ed
-  tail. Fully locked standard pages are the final fallback. Aggressive mode
-  disables/enables the system file cache, trims other processes' working sets,
-  flushes modified pages, purges standby pages, and retries. It performs this
-  cleanup before even trying the direct allocation.
-- Linux defaults to one `MAP_HUGETLB` attempt using the existing default-size
-  pool, then `mmap` plus `mlock`. Aggressive mode additionally tries to raise
-  `/proc/sys/vm/nr_hugepages` as root; a shortfall triggers cache dropping and
-  compaction. Pool restoration and uncatchable-signal limits are described in
-  [overview.md](overview.md). There is no explicit THP advice or THP accounting.
-  Standard mappings can still receive THP under kernel policy; `LargePages`
-  reports explicit HugeTLB allocation, not measured THP coverage.
+- Windows uses its native page size and `GetLargePageMinimum` for large pages,
+  retaining direct/chunked/hybrid allocation and fully locked standard fallback.
+- Linux tries an existing default-size HugeTLB pool only when the requested
+  window is compatible with the actual `Hugepagesize`. HugeTLB is inherently
+  non-swappable: no redundant `mlock` or memlock-limit dependency is imposed.
+- Linux fallback mappings are naturally aligned for the native PMD-sized THP
+  target, receive `MADV_HUGEPAGE` before write-prefaulting, then `mlock` when
+  requested. Unsupported advice or unavailable THPs still allow valid locked
+  native pages. `--no-large-pages` skips HugeTLB and requests `MADV_NOHUGEPAGE`.
+- Linux automatic huge-page allocation is now process-owned THP, replacing the
+  previous persistent-pool reservation mechanism. No code writes or restores
+  `nr_hugepages`, so SIGKILL/OOM and concurrent administrators cannot strand or
+  overwrite a task-owned persistent reservation. Explicit preconfigured HugeTLB
+  pools remain supported.
+- Linux aggressive mode acts only after incomplete THP coverage: optional root
+  cache dropping and synchronous compaction, followed by one process-local
+  `MADV_COLLAPSE` attempt (Linux 6.1+). Older kernels fall back on unsupported
+  advice. No timing sleeps or persistent-pool writes are used.
 
-Open correctness/portability findings (source-verified; unchanged by this audit):
+All native rounding rejects zero/invalid sizes and arithmetic overflow. Linux
+keeps incompatible small windows small rather than rounding them up to a 1 GiB
+default HugeTLB page. Aligned anonymous mappings retain ownership of the target
+address range while trimming excess ends; failure/exception cleanup owns exactly
+the remaining mapping. Worker partitioning uses the OS base page size.
 
-- Linux hardcodes 2 MiB for rounding, reservation counts and diagnostics, but
-  `MAP_HUGETLB` without a size selector uses the kernel's default hugepage size.
-  Non-2-MiB defaults can invalidate size/cleanup accounting. Read
-  `Hugepagesize` or select and manage a supported size consistently; ARM64 also
-  supports other sizes depending on its base page size. See the
-  [mmap contract](https://man7.org/linux/man-pages/man2/mmap.2.html) and
-  [ARM64 hugepage sizes](https://docs.kernel.org/arch/arm64/hugetlbpage.html).
-- Both Linux HugeTLB success paths derive `is_locked` from `mlock` success.
-  [HugeTLB memory cannot be swapped](https://docs.kernel.org/admin-guide/mm/hugetlbpage.html);
-  a failed redundant `mlock` can therefore make `runTests` reject valid
-  non-swappable memory. Native fault-injection coverage is still needed.
-- `reserveHugepages` compares requested pages with the total pool rather than
-  free/unreserved pages. A pool used by other applications can satisfy that
-  comparison while still being unable to satisfy this allocation.
-- Pool restoration stores a single global original count and overwrites the
-  pool on exit; concurrent changes by another allocator/administrator are not
-  reconciled. Avoid treating restoration as process-owned resource accounting.
+`queryLargePageCoverage` reads Linux `/proc/self/smaps` after preparation and at
+RowHammer entry. It reports THP coverage and page-size targets alongside explicit
+large pages. Per-VMA totals cannot locate partial THPs within a worker/sub-block
+slice: report conservative lower/upper bounds, and require the lower bound to
+cover the whole slice before treating it as fully large. Missing or malformed
+metadata is unknown, never presumed full. Numbers are checked, and filenames or
+memory contents are not logged. THP coverage is a snapshot and can later change;
+large pages do not establish physical row/bank adjacency or RowHammer efficacy.
 
-Verification (2026-10-13, v1.8 release binaries): one SimpleTest pass, 16 MiB,
-one worker/cycle, `--yes --no-config --no-elevation --show-config --debug`,
-leaving lock/large-page switches at their defaults. Windows used full large
-pages. WSL root (4 KiB base / 2 MiB HugeTLB, empty pool, THP `madvise`) fell
-back to locked standard pages. Both reported exactly 16,777,216 verified bytes,
-one completed cycle and zero errors. Runs were bounded, exited, and left no
-test processes; the Linux pool remained zero. This does not establish large
-allocation success, throughput gains, ARM runtime behavior or RowHammer efficacy.
+Regressions: `tests/test_memory_pages.h` checks rounding/overflow, ARM64-sized
+normalization, exact/bounded/unknown/malformed smaps totals and fresh native
+allocation. Linux-only process-local syscall fixtures exercise non-2-MiB HugeTLB,
+redundant-mlock avoidance, incompatible 1 GiB defaults, unavailable huge pages/
+advice, strict lock failure plus unmapping, explicit pageable fallback and
+no-large-page advice. They never modify sysctls or impose timing assumptions.
+
+2026-10-13 bounded 16 MiB, one-worker/cycle SimpleTest verification: Windows used
+full native large pages; WSL root (empty HugeTLB pool, THP `madvise`) used full THP
+plus mlock. Both verified exactly 16,777,216 bytes with zero errors, exited, and
+left no test processes; the Linux pool remained zero. The previous Linux binary
+used locked native pages on the same pool/policy. This does not establish large
+allocation success, throughput gains, ARM runtime behavior or hardware efficacy.
 
 ## Invariants
 

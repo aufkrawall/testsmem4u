@@ -114,6 +114,7 @@ The executable now supports the following high-value operator options:
 - --halt-on-error or --no-halt-on-error to control stop behavior.
 - --locked-memory or --no-locked-memory to control memory locking.
 - --large-pages or --no-large-pages to control large-page preference.
+- --aggressive-defrag to permit system-wide cache cleanup and memory compaction; off by default.
 - --show-config and --dry-run for validation and inspection.
 - --yes or --non-interactive to suppress prompts and exit pauses.
 - --no-elevation to prevent Administrator/root relaunch.
@@ -129,6 +130,8 @@ See cli-report.md for the full option reference, mode rules, exit codes, and exa
 - On Linux, the program relaunches itself through `sudo` unless `--no-elevation` is given, so the test window can be locked in RAM. It warns when memory-lock or hugepage capability still appears limited.
 - Binary variant selection is manual: run the `-v3` (AVX2) or `-v4` (AVX-512) binary that matches your CPU; the baseline binary works everywhere. A startup warning points out when a faster variant would fit your CPU.
 - If the run falls back from full large pages to locked standard pages, the console now explains that the test remains valid and how to improve large-page coverage for future runs.
+- Large pages and strict memory locking are preferred by default on both platforms. Windows tries native large pages, chunked/hybrid allocations and fully locked standard fallback. Linux first tries a compatible existing HugeTLB pool, then requests aligned transparent huge pages and locks the mapping. Allocation output reports actual large-page coverage; Linux THP coverage is a snapshot and can change under kernel memory management.
+- Linux automatic huge-page allocation does not change the persistent HugeTLB pool. With `--aggressive-defrag`, incomplete THP coverage permits cache dropping, compaction and a process-local collapse attempt; allocations are released by the kernel even after a forced kill. `--no-large-pages` also requests that Linux avoid THP for the test mapping.
 
 ## Files
 
