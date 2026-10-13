@@ -60,6 +60,9 @@ void testWizardExplicitSettings() {
     config = fixture.run("\n\ninvalid\n\n\n\n", prompts);
     expect(config.cycles == 3 && prompts.find("Invalid cycle count") != std::string::npos,
            "Invalid wizard cycles cannot silently turn a default run into an infinite run");
+    config = fixture.run("\nabc\n\n\n\n\n", prompts);
+    expect(config.cores == 0 && prompts.find("Invalid thread count") != std::string::npos,
+           "Invalid wizard thread input keeps the portable all-core policy instead of saving this system's count");
     config = fixture.run("\n\n0\n\n\n\n", prompts);
     expect(config.cycles == 0, "Explicit infinite-cycle selection remains supported");
 }

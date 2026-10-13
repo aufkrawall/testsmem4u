@@ -17,6 +17,12 @@
 - Windows hybrid tail-lock failure freed its chunk with unchecked raw
   `VirtualFree`; it now stays owned by `MappingCleanup`. The new fixture failed
   before the fix. Linux non-strict `mlock` failure is WARN, strict abort ERROR.
+- Wizard invalid thread input saved the concrete core count; it now saves
+  `Cores=0` (all-core policy) and prints a notice, like empty input.
+- Verification per commit: Windows mingw baseline/AVX2 internal suites, 20
+  Python regressions (Linux-only one skipped), and zig-built Linux baseline/AVX2
+  runners in WSL. Real sysfs THP writes and an interactive Linux countdown were
+  not exercised; the prompt-mode decision is covered by stream fixtures.
 
 ## 2026-10-13 - Integrate huge-page setup and expand operator documentation
 

@@ -126,7 +126,8 @@ Config runConfigWizard(std::istream& input_stream, std::ostream& output_stream) 
         if (cores > plat.cpu_cores && plat.cpu_cores > 0) cores = plat.cpu_cores;
         config.cores = cores;
     } else {
-        config.cores = plat.cpu_cores;
+        config.cores = 0; // Same portable all-core policy as the default.
+        output_stream << "[!] Invalid thread count. Using all threads.\n";
     }
 
     output_stream << "Enter number of cycles (0 for infinite) [Default: 3]: ";
