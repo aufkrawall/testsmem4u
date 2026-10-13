@@ -115,7 +115,8 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   nested/sub-block accounting, deterministic peer observation, cancellation,
   exceptions after verification/mismatch, monitor/worker recovery with sustained
   thread-local allocation failure (`tests/TestAllocationFailure.h`), virtual-clock
-  diagnostic cadence/caps, narrow status formatting and synthetic multi-terabyte totals.
+  diagnostic cadence/caps, real repeated fill/verify transitions, narrow status
+  formatting and synthetic multi-terabyte totals.
 - `tests/test_cli.py` and `tests/test_build.py`: real configuration resolution,
   database generation, and fail-closed analysis (including zero-exit diagnostics).
 

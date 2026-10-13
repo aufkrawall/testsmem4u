@@ -706,6 +706,7 @@ int main() try {
     testAllKernelProgress();
     testSubBlockAndConcurrentProgress();
     testProgressDiagnosticsAndStatus();
+    testRepeatedSimplePhases();
     testThreadExceptionCleanup();
 
     // End-to-end tests with real memory allocation

@@ -10,6 +10,7 @@
 - **Narrow-terminal progress:** tested-memory totals remain visible alongside errors and elapsed time when cycle details or long test names exceed the terminal width.
 - **Progress monitor failures:** exceptions in status rendering or progress diagnostics now stop and join the workers and preserve collected results instead of terminating the process.
 - **Failure recovery under memory pressure:** monitor and worker exception handlers record failure and request shutdown before formatting diagnostics. Continued allocation or logging failures use a bounded stderr fallback, allowing threads to join and verified totals to be collected.
+- **Repeated fill diagnostics:** SimpleTest publishes its fill phase before every repetition's pattern generation and cache flushing, so normal fill intervals no longer retain the previous verification label.
 
 ### Improved
 

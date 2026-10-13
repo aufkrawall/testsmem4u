@@ -204,6 +204,11 @@ tested; physical activation rates and fault-detection gains remain unmeasured.
   least-recently advancing workers are shown first; omitted workers are counted.
   Phase labels are capped at 32 characters and only static literals are published.
   Idle ages are approximate monitor observations, not hang warnings.
+- SimpleTest publishes `Simple fill` before each internal repetition's pattern
+  generation/cache flush and then `Simple verify` before checking. The fill label
+  must reset each repeat; constructor-only initialization leaves later fills
+  mislabeled as verification. `testRepeatedSimplePhases` checks uniform/XOR/linear
+  repeats with pre-fill sentinels and exact live/final byte totals.
 - Bounded mismatch samples retain exact aggregate counts. Destructive march errors
   are unverified observations; other sampled errors can be classified by rereading.
 - Memory-lock allocation contracts are still fail-closed. On Windows the existing

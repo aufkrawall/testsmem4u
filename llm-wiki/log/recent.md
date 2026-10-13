@@ -1,5 +1,20 @@
 # Recent Log
 
+## 2026-10-13 - Reset SimpleTest fill diagnostics on every repeat
+
+- SimpleTest's constructor-only fill phase left later pattern generation/cache
+  flushes labeled `Simple verify`. It now publishes `Simple fill` before each
+  internal repeat, retaining the existing verification boundary and byte counts.
+- A focused regression fails on the prior code for all three pattern modes. It
+  verifies each of three fill transitions happens before a sentinel is overwritten,
+  followed by verification and exact live/final totals. No sleeps, clocks or
+  per-block logging were added. Sources: `src/TestPatterns.cpp::runSimpleTest`,
+  `tests/test_progress_regressions.h::testRepeatedSimplePhases`.
+- Native baseline/AVX2 plus all 17 Python regressions pass. Strict clang-tidy
+  rechecks the changed production unit in all native ISA profiles and the runner.
+  All nine release binaries rebuild and contain the new phase label; signatures
+  and sizes are inspected. Native/ISA execution limits remain as recorded below.
+
 ## 2026-10-13 - Preserve thread failure recovery under allocation failure
 
 - Review found that the monitor catch block could allocate/throw again before

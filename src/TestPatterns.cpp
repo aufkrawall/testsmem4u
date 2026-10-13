@@ -96,6 +96,7 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
     for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
 
+        testPhase(ctx, "Simple fill", region);
         // Write pattern to memory
         if (config.pattern_mode == 0) {
             generate_pattern_uniform(ptr, count, config.pattern_param0, use_nt);

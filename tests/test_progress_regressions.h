@@ -222,6 +222,53 @@ void testProgressDiagnosticsAndStatus() {
     }
 }
 
+void testRepeatedSimplePhases() {
+    auto guard = Platform::allocateMemoryRAII(size_t{64} * 1024, false, false, true);
+    expect(guard.valid(), "Repeated SimpleTest phase allocation");
+    if (!guard.valid()) return;
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    region.base_offset_bytes = 0x10000;
+    auto* memory = reinterpret_cast<uint64_t*>(region.base);
+    constexpr uint64_t marker = 0x1317131713171317ULL;
+    for (uint8_t mode : {0, 1, 2}) {
+        TestContext ctx;
+        ctx.worker_progress = std::vector<ProgressCounters>(1);
+        auto& counters = ctx.worker_progress[0];
+        ProgressBinding binding(&ctx, counters);
+        TestConfig tc;
+        tc.parameter = 3;
+        tc.pattern_mode = mode;
+        tc.pattern_param0 = 0xAAAAAAAAAAAAAAAAULL;
+        tc.pattern_param1 = 0x9E3779B97F4A7C15ULL;
+        unsigned fills = 0, verifies = 0, completed = 0;
+        memory[0] = marker;
+        ctx.phase_hook = [&](const char* phase, const MemoryRegion&) {
+            const std::string name = phase;
+            if (name == "Simple fill") {
+                ++fills;
+                expect(std::string(counters.phase()) == name && memory[0] == marker && fills == completed + 1,
+                       "Every repeat publishes its fill phase before overwriting prior memory");
+            } else if (name == "Simple verify") {
+                ++verifies;
+                expect(fills == verifies && std::string(counters.phase()) == name,
+                       "Repeated verification follows the corresponding fill phase");
+            } else if (name == "Verified block") {
+                ++completed;
+                expect(counters.snapshot().bytes_tested == completed * region.size,
+                       "Repeated phase transitions preserve exact verified-byte publication");
+                if (completed < tc.parameter) memory[0] = marker;
+            }
+        };
+        const auto result = TestEngine::runSimpleTest(ctx, region, tc, false);
+        expect(fills == tc.parameter && verifies == tc.parameter && completed == tc.parameter &&
+               result.total_errors() == 0 && result.bytes_tested == tc.parameter * region.size,
+               "Uniform, XOR and linear SimpleTest repeats expose every fill/verify boundary");
+        expectProgressMatches(ctx, result, "Repeated SimpleTest phases");
+    }
+}
+
 void testThreadExceptionCleanup() {
     auto guard = Platform::allocateMemoryRAII(size_t{64} * 1024, false, false, true);
     expect(guard.valid(), "Thread exception allocation");
