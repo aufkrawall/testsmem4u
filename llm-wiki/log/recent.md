@@ -1,5 +1,16 @@
 # Recent Log
 
+## 2026-10-13 - Integrate upstream prompt-template updates
+
+- Merged October 2026 baseline updates from `aufkrawall/llm-prompt-templates` into `AGENTS.md`:
+  - Rule placement principle: keep always-on rules (gates, precedence, stop conditions) in `AGENTS.md` and detailed reference in `llm-wiki/`.
+  - Toolchain/environment substitution guardrail: require declared project toolchain/tools and forbid silent substitution of global or alternate tools.
+  - Verification rigor: verify artifact existence and direct output beyond relying only on command exit codes.
+  - Reviewable commit workflow: concise title plus short bullet-point body for non-trivial changes; split tasks into small self-contained commits without compiling every intermediate commit.
+  - Economical diagnostics: single-line entries, stable prefixes, rate-limited repeats, capped/truncated collections, and verbose logging behind explicit flags.
+  - Test apps and computer use: prefer scripted verification, bounded run times with explicit stop conditions, full process lifecycle shutdown, and readiness-gated startup for interdependent processes.
+- Updated `CHANGELOG.md` unreleased section with the agent instructions improvements.
+
 ## 2026-10-08 - Update README with support and project cross-references
 
 - Added `## Support` section to `README.md` with GitHub Sponsors and Buy Me a Coffee badges.

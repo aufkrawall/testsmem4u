@@ -5,11 +5,17 @@ Copyright (c) 2026 aufkrawall
 
 # Agent Instructions
 
+Keep always-on rules here (commit gates, tool and platform precedence, stop conditions) and keep full procedures, style guides, and worked examples in `llm-wiki/`, referenced by path. Do not maintain the same rule in both places; the exception is a highest-stakes commit gate, which may stay here as a compressed checklist so it holds even when no wiki page is loaded.
+
 ## Critical workflow
 
 - Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason not to!
+- Use the repository's declared platform priority, build system, package manager, toolchain, and pinned/project-local tools; never silently substitute another ecosystem, tool version, or globally installed tool. If declarations conflict or a required tool is unavailable, stop and report instead of working around it!
+- Verify the change itself, not just command exit status: prefer a check that would fail without the change; otherwise inspect the artifact directly (it exists and its content, format, or size changed as expected); otherwise read the actual output to confirm the relevant tests or build ran. If none is practical, state what was and was not verified!
 - Always git commit after code changes!
 - Commit completed code changes with plain git commands only: `git status`, `git add -A`, `git commit -m "<message>"`!
+- When committing, use a concise title plus a short bullet-point body for non-trivial changes stating what changed and why!
+- Split up non-trivial tasks into a series of small, self-contained commits (but don't compile every small commit!), not one large commit, so later review stays easy; each commit must independently hold together and pass verification and secret-leak checks!
 - Do not push to cloud unless explicitly requested, generally just commit locally!
 - Every agent-created commit must pass the mandatory pre-commit and post-commit secret-leak checks in `llm-wiki/secret-leak-prevention.md`; never push a commit that has not passed the post-commit check!
 - Maintain a root `CHANGELOG.md` using `llm-wiki/changelog-guidelines.md`: record changelog-worthy task-owned changes in the current unreleased section before committing!
@@ -61,11 +67,18 @@ Regression coverage and diagnosability are first-class deliverables, not optiona
 - For every bug fix or behavioral correction, explicitly assess both regression coverage and diagnostics even when existing tests pass. Strongly prefer a focused automated regression test that fails before the fix and passes after it!
 - For features, cover the new contract and important edge cases when suitable test infrastructure exists!
 - Do not add low-value tests merely to satisfy a blanket rule. If focused automation is genuinely impractical or adds little value, preserve a reproducible verification method and state why automated coverage was omitted.
-- Add or improve high-signal debug/diagnostic logging when a recurrence would otherwise be materially harder to diagnose, especially around relevant state transitions, inputs, boundaries, recovery paths, and failures. Keep diagnostics non-secret and low-overhead, and preserve useful debug information when compatible with release policy!
+- Add or improve high-signal debug/diagnostic logging when a recurrence would otherwise be materially harder to diagnose, especially around relevant state transitions, inputs, boundaries, recovery paths, and failures. Keep diagnostics non-secret, low-overhead, and economical to consume (human- and token-efficient): single-line entries with stable prefixes; log each distinct event once; rate-limit repeats with counters and summaries; cap collections and truncate long values (first few items plus totals, sizes/hashes instead of full bodies); keep verbose detail behind an explicit flag. Preserve useful debug information when compatible with release policy!
 - We are paranoid about having sufficient debug logging!
 - If additional regression coverage or diagnostics are deliberately not added for a non-trivial behavioral change, state the reason.
 - Do not introduce sleeps or timing assumptions into tests unless timing is the behavior under test and the test remains deterministic!
 - Fix pre-existing, as well as newly introduced LSP errors/warnings along the way!
+
+## Test apps and computer use
+
+- Prefer scripted, API-, CLI-, or harness-driven verification, including scripted input and screenshots, over interactive computer use; computer use remains allowed when GUI interaction itself is what must be verified!
+- Keep runs short and bounded: start with a brief duration, extend only when evidence requires it, give every started process an explicit stop condition, and never leave test apps running longer than needed!
+- Own the full lifecycle: shut down everything started, including child processes, when done or on failure, then confirm nothing lingers in the background!
+- Start interdependent apps in dependency order and let each signal readiness (open port, created file, health check, visible process state) before starting the next; use only a brief stagger when no such signal exists!
 
 ## Windows debugging and binary analysis tools
 

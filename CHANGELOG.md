@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Improved
+
+- **Agent instructions baseline:** merged upstream prompt-template improvements into `AGENTS.md` covering economical diagnostic logging format, test-app and background process lifecycle management, toolchain substitution guardrails, direct artifact/change verification rigor, concise bullet-point commit messages, and small reviewable commits.
+
 ### Changed
 
 - **Support and project references:** added GitHub Sponsors and Buy Me a Coffee donation badges and cross-project links to `README.md`.
