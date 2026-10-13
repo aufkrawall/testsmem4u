@@ -1,5 +1,24 @@
 # Recent Log
 
+## 2026-10-13 - Audit large-page defaults and aggressive defrag
+
+- Confirmed large-page preference and strict locking default to enabled on both
+  platforms, while `--aggressive-defrag` is opt-in. Windows already tries direct,
+  chunked and hybrid large pages; Linux only tries the existing HugeTLB pool by
+  default. Automatic pool reservation is tied to aggressive mode.
+- Bounded 16 MiB, one-worker/cycle SimpleTest runs with default page switches:
+  Windows used full large pages; WSL root with an empty pool used locked standard
+  pages. Both verified 16,777,216 bytes with zero errors, exited, and left no test
+  processes. Linux pool stayed zero; no aggressive cleanup or pool writes tested.
+- Recorded source-verified open Linux findings and OS documentation in
+  [memory testing](../memory-testing.md#page-allocation-defaults-and-limits):
+  fixed 2 MiB assumptions, redundant mlock-based HugeTLB lock status, total-vs-free
+  pool counts, concurrent pool restoration, and absent explicit THP advice/accounting.
+  Non-2-MiB and injected-mlock-failure runtime coverage remains unperformed.
+- Assessment recommends separating improved allocation from system-wide cleanup
+  before changing defaults. This is a recommendation, not a user-approved policy
+  change. Runtime code, default behavior and changelog are unchanged.
+
 ## 2026-10-13 - Release v1.8
 
 Bumped version string to `1.8` across runtime and changelog:

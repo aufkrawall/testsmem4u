@@ -1,6 +1,6 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-10-13 for native kernel contracts, performance and progress/result reporting; 2026-09-30 for other
+Last verified: 2026-10-13 for page-allocation defaults, native kernel contracts, performance and progress/result reporting; 2026-09-30 for other
 runtime paths. Stale risk: medium for hardware effectiveness and unobserved
 long-run stalls; low for tested native progress/accounting paths.
 
@@ -40,6 +40,61 @@ long-run stalls; low for tested native progress/accounting paths.
   exception regressions, using condition-variable/promise synchronization.
 - `src/ConsoleDisplay.cpp`: compact status with error count/time before the variable-length test name.
 - `default.cfg`: 18 configured entries covering 14 distinct test functions.
+
+## Page-allocation defaults and limits
+
+Sources: `include/testsmem4u.h::Config`, `src/main.cpp::CliOptions`,
+`makeDefaultConfig`, `normalizeWindowMBForLargePages`,
+`src/Platform.cpp::allocateMemory`, `tryAllocateLargePagesChunked`,
+`tryAllocateHugepages`, `reserveHugepages`, and `src/TestEngine.cpp::runTests`.
+
+Both memory locking and large-page preference default to enabled; saved config
+or CLI overrides can disable them. `--aggressive-defrag` defaults to disabled
+and is a CLI-only setting. Large-page preference is best effort, while requested
+locking is strict: `runTests` rejects an allocation reported as unlocked.
+
+- Windows first tries `MEM_LARGE_PAGES` using `GetLargePageMinimum`, then
+  decreasing chunk sizes and a large-page prefix with a fully `VirtualLock`ed
+  tail. Fully locked standard pages are the final fallback. Aggressive mode
+  disables/enables the system file cache, trims other processes' working sets,
+  flushes modified pages, purges standby pages, and retries. It performs this
+  cleanup before even trying the direct allocation.
+- Linux defaults to one `MAP_HUGETLB` attempt using the existing default-size
+  pool, then `mmap` plus `mlock`. Aggressive mode additionally tries to raise
+  `/proc/sys/vm/nr_hugepages` as root; a shortfall triggers cache dropping and
+  compaction. Pool restoration and uncatchable-signal limits are described in
+  [overview.md](overview.md). There is no explicit THP advice or THP accounting.
+  Standard mappings can still receive THP under kernel policy; `LargePages`
+  reports explicit HugeTLB allocation, not measured THP coverage.
+
+Open correctness/portability findings (source-verified; unchanged by this audit):
+
+- Linux hardcodes 2 MiB for rounding, reservation counts and diagnostics, but
+  `MAP_HUGETLB` without a size selector uses the kernel's default hugepage size.
+  Non-2-MiB defaults can invalidate size/cleanup accounting. Read
+  `Hugepagesize` or select and manage a supported size consistently; ARM64 also
+  supports other sizes depending on its base page size. See the
+  [mmap contract](https://man7.org/linux/man-pages/man2/mmap.2.html) and
+  [ARM64 hugepage sizes](https://docs.kernel.org/arch/arm64/hugetlbpage.html).
+- Both Linux HugeTLB success paths derive `is_locked` from `mlock` success.
+  [HugeTLB memory cannot be swapped](https://docs.kernel.org/admin-guide/mm/hugetlbpage.html);
+  a failed redundant `mlock` can therefore make `runTests` reject valid
+  non-swappable memory. Native fault-injection coverage is still needed.
+- `reserveHugepages` compares requested pages with the total pool rather than
+  free/unreserved pages. A pool used by other applications can satisfy that
+  comparison while still being unable to satisfy this allocation.
+- Pool restoration stores a single global original count and overwrites the
+  pool on exit; concurrent changes by another allocator/administrator are not
+  reconciled. Avoid treating restoration as process-owned resource accounting.
+
+Verification (2026-10-13, v1.8 release binaries): one SimpleTest pass, 16 MiB,
+one worker/cycle, `--yes --no-config --no-elevation --show-config --debug`,
+leaving lock/large-page switches at their defaults. Windows used full large
+pages. WSL root (4 KiB base / 2 MiB HugeTLB, empty pool, THP `madvise`) fell
+back to locked standard pages. Both reported exactly 16,777,216 verified bytes,
+one completed cycle and zero errors. Runs were bounded, exited, and left no
+test processes; the Linux pool remained zero. This does not establish large
+allocation success, throughput gains, ARM runtime behavior or RowHammer efficacy.
 
 ## Invariants
 
