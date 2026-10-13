@@ -203,6 +203,11 @@ void testNativeThpPolicyFiles() {
     ThpDirectoryFixture fixture;
     NativeThpPolicyAccess access(fixture.root);
     expect(access.read(ThpControl::GLOBAL).status == ThpReadStatus::MISSING, "Native policy reader distinguishes missing controls");
+    fixture.put("enabled", "[always] madvise never\n");
+    const auto legacy = inspectThpPolicy(access);
+    expect(access.read(ThpControl::PMD).status == ThpReadStatus::MISSING && !legacy.per_size &&
+           legacy.effective == ThpPolicy::ALWAYS,
+           "Kernels without hpage_pmd_size use the legacy global control instead of failing inspection");
     fixture.put("enabled", "always madvise [never]\n");
     fixture.put("hpage_pmd_size", "2097152\n");
     std::filesystem::create_directory(std::filesystem::path(fixture.root) / "hugepages-2048kB");

@@ -24,24 +24,29 @@ using File = std::unique_ptr<FILE, decltype(&std::fclose)>;
 std::atomic<const platform_detail::LinuxMemoryHooks*> g_memory_hooks{nullptr};
 #endif
 
-size_t readPageSize(const char* path, const char* key = nullptr) {
+size_t readPageSize(const char* path) {
     File file(std::fopen(path, "r"), &std::fclose);
+    if (!file) return 0;
+    char text[64];
+    const size_t count = std::fread(text, 1, sizeof(text), file.get());
+    size_t size = 0;
+    if (std::ferror(file.get()) || count == sizeof(text) || !memory_pages::parsePageSize(text, count, size)) {
+        LOG_DEBUG("Allocation: page-size control unreadable or malformed bytes=%zu", count);
+        return 0;
+    }
+    return size;
+}
+
+size_t readMeminfoPageSize(const char* key) {
+    File file(std::fopen("/proc/meminfo", "r"), &std::fclose);
     if (!file) return 0;
     char line[256];
     uint64_t value = 0;
     while (std::fgets(line, sizeof(line), file.get())) {
-        if (key) {
-            if (std::strncmp(line, key, std::strlen(key)) != 0) continue;
-            if (!memory_pages::readKilobytes(line + std::strlen(key), value) ||
-                value > std::numeric_limits<size_t>::max() / 1024) return 0;
-            value *= 1024;
-        } else {
-            const char* cursor = line;
-            if (!memory_pages::readUnsigned(cursor, value) ||
-                (*cursor != '\0' && *cursor != '\n' && *cursor != '\r')) return 0;
-        }
-        if (value > std::numeric_limits<size_t>::max()) return 0;
-        const size_t size = static_cast<size_t>(value);
+        if (std::strncmp(line, key, std::strlen(key)) != 0) continue;
+        if (!memory_pages::readKilobytes(line + std::strlen(key), value) ||
+            value > std::numeric_limits<size_t>::max() / 1024) return 0;
+        const size_t size = static_cast<size_t>(value) * 1024;
         return size != 0 && (size & (size - 1)) == 0 ? size : 0;
     }
     return 0;
@@ -52,7 +57,7 @@ size_t defaultHugePageSize() {
     const auto* hooks = g_memory_hooks.load(std::memory_order_acquire);
     if (hooks && hooks->hugepage_size) return hooks->hugepage_size();
 #endif
-    return readPageSize("/proc/meminfo", "Hugepagesize:");
+    return readMeminfoPageSize("Hugepagesize:");
 }
 
 int advise(void* base, size_t size, int advice) {

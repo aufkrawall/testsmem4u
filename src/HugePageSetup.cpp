@@ -1,4 +1,5 @@
 #include "HugePageSetup.h"
+#include "MemoryPages.h"
 #include "Logger.h"
 #include "Utils.h"
 
@@ -6,7 +7,6 @@
 #include <array>
 #include <cctype>
 #include <cerrno>
-#include <charconv>
 #include <cstdio>
 #include <cstdint>
 #include <istream>
@@ -95,13 +95,10 @@ NativeThpPolicyAccess::NativeThpPolicyAccess(std::string root) : root_(std::move
 ThpReadResult NativeThpPolicyAccess::controlPath(ThpControl control) const {
     if (control == ThpControl::GLOBAL) return {ThpReadStatus::OK, root_ + "/enabled", 0};
     auto size = readFile(root_ + "/hpage_pmd_size");
-    if (size.status != ThpReadStatus::OK) return {ThpReadStatus::READ_ERROR, {}, size.error};
-    const size_t end = size.text.find_first_of("\r\n");
-    const auto number = std::string_view(size.text).substr(0, end);
-    uint64_t bytes = 0;
-    const auto parsed = std::from_chars(number.data(), number.data() + number.size(), bytes);
-    if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || bytes < 1024 ||
-        (bytes & (bytes - 1)) != 0 || (end != std::string::npos && size.text.find_first_not_of("\r\n", end) != std::string::npos)) {
+    // Kernels predating hpage_pmd_size also predate per-size controls: legacy global-only.
+    if (size.status != ThpReadStatus::OK) return size;
+    size_t bytes = 0;
+    if (!memory_pages::parsePageSize(size.text.data(), size.text.size(), bytes)) {
         return {ThpReadStatus::READ_ERROR, {}, EINVAL};
     }
     return {ThpReadStatus::OK, root_ + "/hugepages-" + std::to_string(bytes / 1024) + "kB/enabled", 0};

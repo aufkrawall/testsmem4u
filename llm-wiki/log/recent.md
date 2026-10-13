@@ -7,6 +7,9 @@
   (AUTOMATION/UNATTENDED/ATTENDED); only an operator who opened the wizard is
   prompted. Answers are trimmed/case-insensitive; `THP setup:` WARN logs became
   INFO because WARN is echoed to the console next to the stream text.
+- `hpage_pmd_size` absent now reads as MISSING (legacy global-only) instead of
+  READ_ERROR, which made enabled policies fail inspection. Both its readers use
+  `memory_pages::parsePageSize`; HugeTLB meminfo parsing is a separate helper.
 
 ## 2026-10-13 - Integrate huge-page setup and expand operator documentation
 

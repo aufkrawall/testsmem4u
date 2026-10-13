@@ -145,7 +145,9 @@ recommends it, explaining that sign-out/sign-in suffices without a reboot.
   duplicate, malformed or oversized input. It resolves the native PMD-size
   `enabled` override/inheritance using `hpage_pmd_size`, then queries inherited
   process THP restrictions with `PR_GET_THP_DISABLE`. Missing per-size controls
-  use the legacy global control; unreadable controls and unknown process modes
+  (including a missing `hpage_pmd_size`, which predates them) use the legacy
+  global control; `memory_pages::parsePageSize` is the one parser for that file,
+  shared with `Platform::getPreferredLargePageSize`; unreadable controls and unknown process modes
   cannot authorize writes. Complete process disabling is never cleared.
 - When effective policy is `never`, stream-driven setup recommends `madvise`
   with `[Y/n]` only for an attended (`ThpPrompt::ATTENDED`: the operator opened

@@ -28,6 +28,23 @@ inline bool readKilobytes(const char* cursor, uint64_t& value) {
            (cursor[2] == '\0' || cursor[2] == '\n' || cursor[2] == '\r');
 }
 
+// Body of a single-value byte-count control such as THP `hpage_pmd_size`
+// ("2097152\n"). Shared by the allocator and THP setup so both select the same
+// page size; anything but one power-of-two value of at least 1 KiB is rejected.
+inline bool parsePageSize(const char* text, size_t length, size_t& size) {
+    uint64_t value = 0;
+    const char* end = text + length;
+    const auto result = std::from_chars(text, end, value);
+    if (result.ec != std::errc{} || result.ptr == text) return false;
+    const char* rest = result.ptr;
+    if (rest != end && *rest == '\r') ++rest;
+    if (rest != end && *rest == '\n') ++rest;
+    if (rest != end || value < 1024 || value > std::numeric_limits<size_t>::max() ||
+        (value & (value - 1)) != 0) return false;
+    size = static_cast<size_t>(value);
+    return true;
+}
+
 inline bool alignSize(size_t size, size_t alignment, size_t& aligned) {
     if (size == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0 ||
         size > std::numeric_limits<size_t>::max() - (alignment - 1)) return false;

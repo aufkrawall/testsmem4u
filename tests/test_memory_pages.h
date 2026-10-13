@@ -161,6 +161,17 @@ void testMemoryPageContracts() {
            workerLimit(65536, 4096) == 16 && workerLimit(1024, 65536) == 1 && workerLimit(65536, 0) == 0,
            "Worker caps follow native pages and cannot outnumber 64-KiB pages on ARM64");
 
+    size_t page_size = 0;
+    for (const char* text : {"2097152", "2097152\n", "536870912\r\n", "4096\n"}) {
+        expect(parsePageSize(text, std::strlen(text), page_size) && page_size >= 4096,
+               "Page-size controls accept one power-of-two value with an optional line ending");
+    }
+    for (const char* text : {"", "\n", "-1\n", "3\n", "512\n", " 2097152\n", "2097152 \n", "2097152\ngarbage\n",
+                             "2097152\n\n", "18446744073709551616\n"}) {
+        expect(!parsePageSize(text, std::strlen(text), page_size),
+               "Malformed, tiny, non-power-of-two or overflowing page-size controls are rejected");
+    }
+
     SmapsCoverage full(0x200000, 0x400000);
     full.consume("200000-600000 rw-p 00000000 00:00 0");
     full.consume("AnonHugePages: 4096 kB");
