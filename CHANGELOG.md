@@ -9,6 +9,7 @@
 - **Final test totals:** console results and the persistent log now report the exact verified-byte total and completed cycles, including partial work from a stopped run. The console explains that repeated verification reads contribute to the total.
 - **Narrow-terminal progress:** tested-memory totals remain visible alongside errors and elapsed time when cycle details or long test names exceed the terminal width.
 - **Progress monitor failures:** exceptions in status rendering or progress diagnostics now stop and join the workers and preserve collected results instead of terminating the process.
+- **Failure recovery under memory pressure:** monitor and worker exception handlers record failure and request shutdown before formatting diagnostics. Continued allocation or logging failures use a bounded stderr fallback, allowing threads to join and verified totals to be collected.
 
 ### Improved
 

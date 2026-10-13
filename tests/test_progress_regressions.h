@@ -222,9 +222,9 @@ void testProgressDiagnosticsAndStatus() {
     }
 }
 
-void testMonitorExceptionCleanup() {
+void testThreadExceptionCleanup() {
     auto guard = Platform::allocateMemoryRAII(size_t{64} * 1024, false, false, true);
-    expect(guard.valid(), "Monitor exception allocation");
+    expect(guard.valid(), "Thread exception allocation");
     if (!guard.valid()) return;
     MemoryRegion region{};
     region.base = guard.base();
@@ -236,25 +236,69 @@ void testMonitorExceptionCleanup() {
     TestConfig tc;
     tc.function = "SimpleTest";
     tc.time_percent = 1;
-    TestContext ctx;
-    std::mutex mutex;
-    std::condition_variable cv;
-    bool verified = false;
-    ctx.phase_hook = [&](const char* phase, const MemoryRegion&) {
-        if (std::string(phase) == "Verified block") {
-            std::lock_guard<std::mutex> lock(mutex);
-            verified = true;
-            cv.notify_all();
+    const auto previous_terminate = std::set_terminate([]() {
+        std::fputs("[FAIL] Thread allocation failure escaped recovery\n", stderr);
+        std::_Exit(86);
+    });
+    for (unsigned scenario = 0; scenario < 6; ++scenario) {
+        const bool monitor = scenario < 3;
+        const unsigned failure = scenario % 3;
+        TestContext ctx;
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool verified = false;
+        std::atomic<uint64_t> failed_allocations{0};
+        auto inject_failure = [&]() {
+            if (failure == 0) throw std::runtime_error("injected RAM-test thread failure");
+            testing::failed_allocation_count = &failed_allocations;
+            if (failure == 1) throw std::bad_alloc();
+            throw 42;
+        };
+        ctx.phase_hook = [&](const char* phase, const MemoryRegion&) {
+            if (std::string(phase) == "Verified block") {
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    verified = true;
+                    cv.notify_all();
+                }
+                if (!monitor) inject_failure();
+            }
+        };
+        if (monitor) {
+            ctx.monitor_hook = [&]() {
+                std::unique_lock<std::mutex> lock(mutex);
+                cv.wait(lock, [&]() { return verified; });
+                inject_failure();
+            };
         }
+        const auto result = TestEngine::executeSuite(config, region, {0}, {{0, tc}}, &ctx);
+        const char* summary = monitor ? "Progress monitor failed" : "RAM-test worker failed";
+        expect(result.infrastructure_failure && result.infrastructure_error.find(summary) == 0 &&
+               result.bytes_tested == region.size && result.total_errors() == 0 &&
+               ctx.total_bytes.load() == result.bytes_tested && ctx.worker_progress.empty() &&
+               !ConsoleDisplay::get().isTestingActive(),
+               "Thread exceptions and allocation failures stop/join workers and preserve exact results");
+        expect(failure == 0 || failed_allocations.load() > 0,
+               "Thread recovery actually encounters persistent allocation failure");
+    }
+
+    TestContext failed_context;
+    std::atomic<uint64_t> failed_allocations{0};
+    // Sanitizer builds use a DLL-backed string allocator. Force an ordinary
+    // allocation at the storage boundary rather than relying on DLL interposition.
+    failed_context.failure_message_hook = []() {
+        void* memory = ::operator new(64);
+        ::operator delete(memory);
     };
-    ctx.monitor_hook = [&]() {
-        std::unique_lock<std::mutex> lock(mutex);
-        cv.wait(lock, [&]() { return verified; });
-        throw std::runtime_error("injected progress monitor failure");
-    };
-    const auto result = TestEngine::executeSuite(config, region, {0}, {{0, tc}}, &ctx);
-    expect(result.infrastructure_failure && result.infrastructure_error.find("Progress monitor failed:") == 0 &&
-           result.bytes_tested == region.size && result.total_errors() == 0 &&
-           !ConsoleDisplay::get().isTestingActive(),
-           "Monitor exception stops/joins workers and preserves results without terminating");
+    std::thread reporter([&]() noexcept {
+        testing::failed_allocation_count = &failed_allocations;
+        failed_context.setInfrastructureFailure("Synthetic infrastructure failure with unavailable detail allocation");
+    });
+    reporter.join();
+    const auto fallback = failed_context.getInfrastructureFailureMessage();
+    failed_context.setInfrastructureFailure("A later failure must not replace the original cause");
+    expect(failed_allocations.load() > 0 && failed_context.shouldStop() && failed_context.hasInfrastructureFailure() &&
+           !fallback.empty() && failed_context.getInfrastructureFailureMessage() == fallback,
+           "Direct infrastructure failure records stop and a stable first-cause fallback without allocation");
+    std::set_terminate(previous_terminate);
 }

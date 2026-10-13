@@ -10,6 +10,7 @@
 #include "TestEngineInternal.h"
 #include "MemoryTestKernels.h"
 #include "ProgressDiagnostics.h"
+#include "InfrastructureFailure.h"
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -510,22 +511,26 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             }
         }
     };
-    std::thread monitor([&]() {
+    std::thread monitor([&]() noexcept {
         try {
             monitor_work();
         } catch (const std::exception& error) {
-            LOG_ERROR("Progress monitor failed: %s", error.what());
-            ctx.setInfrastructureFailure("Progress monitor failed: " + std::string(error.what()));
+            reportInfrastructureFailure(ctx, "Progress monitor failed", error.what());
         } catch (...) {
-            LOG_ERROR("Progress monitor failed with an unknown exception.");
-            ctx.setInfrastructureFailure("Progress monitor failed with an unknown exception.");
+            reportInfrastructureFailure(ctx, "Progress monitor failed", "unknown exception");
         }
-        ConsoleDisplay::get().clearStatus();
+        try {
+            ConsoleDisplay::get().clearStatus();
+        } catch (const std::exception& error) {
+            reportInfrastructureFailure(ctx, "Progress monitor status cleanup failed", error.what());
+        } catch (...) {
+            reportInfrastructureFailure(ctx, "Progress monitor status cleanup failed", "unknown exception");
+        }
     });
 
     try {
         for (uint32_t t = 0; t < threads; ++t) {
-            workers.emplace_back([&, t]() {
+            workers.emplace_back([&, t]() noexcept {
                 ProgressBinding binding(&ctx, ctx.worker_progress[t]);
                 try {
                     const WorkerAssignment& assignment = assignments[t];
@@ -585,15 +590,16 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         ++cycle;
                     }
                 } catch (const std::exception& error) {
-                    LOG_ERROR("Worker %u failed: %s", t, error.what());
-                    ctx.setInfrastructureFailure("RAM-test worker failed: " + std::string(error.what()));
+                    reportInfrastructureFailure(ctx, "RAM-test worker failed", error.what(), t);
                 } catch (...) {
-                    ctx.setInfrastructureFailure("RAM-test worker failed with an unknown exception.");
+                    reportInfrastructureFailure(ctx, "RAM-test worker failed", "unknown exception", t);
                 }
             });
         }
     } catch (const std::exception& error) {
-        ctx.setInfrastructureFailure("Could not start RAM-test workers: " + std::string(error.what()));
+        reportInfrastructureFailure(ctx, "Could not start RAM-test workers", error.what());
+    } catch (...) {
+        reportInfrastructureFailure(ctx, "Could not start RAM-test workers", "unknown exception");
     }
 
     for (auto& w : workers) {

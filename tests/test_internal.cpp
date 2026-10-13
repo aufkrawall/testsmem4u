@@ -11,6 +11,7 @@
 #include "TestEngineInternal.h"
 #include "PreparationStatus.h"
 #include "ProgressDiagnostics.h"
+#include "TestAllocationFailure.h"
 #include <future>
 #include <stdexcept>
 #include <array>
@@ -705,7 +706,7 @@ int main() try {
     testAllKernelProgress();
     testSubBlockAndConcurrentProgress();
     testProgressDiagnosticsAndStatus();
-    testMonitorExceptionCleanup();
+    testThreadExceptionCleanup();
 
     // End-to-end tests with real memory allocation
     testSimpleEndToEnd();

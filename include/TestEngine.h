@@ -10,6 +10,8 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <cstdio>
+#include <string_view>
 #ifdef TESTSMEM4U_TESTING
 #include <functional>
 #endif
@@ -23,6 +25,7 @@ struct TestContext {
     std::function<void(const char*, const MemoryRegion&)> phase_hook;
     std::function<std::chrono::steady_clock::time_point()> retention_clock;
     std::function<void()> monitor_hook;
+    std::function<void()> failure_message_hook;
 #endif
     std::atomic<uint64_t> total_hard_errors{0};
     std::atomic<uint64_t> total_soft_errors{0};
@@ -39,6 +42,7 @@ struct TestContext {
 
     std::mutex failure_mutex;
     std::string infrastructure_error;
+    std::atomic<const char*> infrastructure_fallback{"RAM-test infrastructure failure (diagnostics unavailable)."};
 
     void publishProgress(const TestResult& delta) noexcept {
         if (ProgressBinding::publish(this, delta)) return;
@@ -68,7 +72,7 @@ struct TestContext {
         worker_progress.clear();
     }
 
-    void requestStop() {
+    void requestStop() noexcept {
         stop_flag.store(true, std::memory_order_release);
     }
 
@@ -77,13 +81,31 @@ struct TestContext {
                (external_stop && external_stop->load(std::memory_order_acquire));
     }
 
-    void setInfrastructureFailure(const std::string& message) {
-        bool expected = false;
-        if (infrastructure_failure.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            std::lock_guard<std::mutex> lock(failure_mutex);
-            infrastructure_error = message;
-        }
+    // The first failure owns its message. Call before any allocating diagnostics;
+    // fallback must be a static literal so it remains valid after threads join.
+    bool beginInfrastructureFailure(const char* fallback) noexcept {
         requestStop();
+        bool expected = false;
+        if (!infrastructure_failure.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) return false;
+        infrastructure_fallback.store(fallback, std::memory_order_release);
+        return true;
+    }
+
+    void storeInfrastructureFailureMessage(std::string_view message) {
+#ifdef TESTSMEM4U_TESTING
+        if (failure_message_hook) failure_message_hook();
+#endif
+        std::lock_guard<std::mutex> lock(failure_mutex);
+        infrastructure_error.assign(message.data(), message.size());
+    }
+
+    void setInfrastructureFailure(std::string_view message) noexcept {
+        if (!beginInfrastructureFailure("RAM-test infrastructure failure (diagnostics unavailable).")) return;
+        try {
+            storeInfrastructureFailureMessage(message);
+        } catch (...) {
+            std::fputs("RAM-test infrastructure failure: diagnostic details unavailable\n", stderr);
+        }
     }
 
     bool hasInfrastructureFailure() const {
@@ -92,6 +114,9 @@ struct TestContext {
 
     std::string getInfrastructureFailureMessage() {
         std::lock_guard<std::mutex> lock(failure_mutex);
+        if (infrastructure_error.empty() && hasInfrastructureFailure()) {
+            return infrastructure_fallback.load(std::memory_order_acquire);
+        }
         return infrastructure_error;
     }
 };

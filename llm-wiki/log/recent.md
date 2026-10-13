@@ -1,5 +1,23 @@
 # Recent Log
 
+## 2026-10-13 - Preserve thread failure recovery under allocation failure
+
+- Review found that the monitor catch block could allocate/throw again before
+  recording failure, terminating after already completed verification. A focused
+  sustained-allocation-failure regression reproduced exit 86 on the prior code.
+- Failure/stop now publish before diagnostics; the first reporter owns a static
+  fallback and its detailed message. Monitor cleanup, workers and partial worker
+  startup share a non-throwing reporter with one bounded stderr fallback line.
+- Permanent tests exercise normal/unknown exceptions and sustained allocation
+  failure on monitor and worker threads after actual verification, plus direct
+  failure-setting and first-cause retention. Thread-local injection does not alter
+  OS memory limits or other threads' allocations. Source anchors and invariants
+  are in [memory-testing.md](../memory-testing.md#live-tested-byte-accounting-and-the-apparent-stall-fix).
+- Validation: native baseline/AVX2 and all 17 Python regressions, both ISA
+  ASan/UBSan suites, full strict clang-tidy plus the updated runner check, and all
+  nine release builds pass. Artifact signatures/sizes and the native release PE's
+  absence of sanitizer imports are checked. ARM/AVX-512 remain cross-build only.
+
 ## 2026-10-13 - Optimize random access and cached disturbance spans
 
 - RandomAccess prepares band starts/sizes once, retaining native remainders and

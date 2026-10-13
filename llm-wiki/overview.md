@@ -13,6 +13,7 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `include/PreparationStatus.h`: owns and joins the preparation display thread, including exception paths.
 - `include/TestProgress.h`: separate worker counters and scoped thread-local binding for nested kernels; `VerificationProgress` in `TestEngineInternal.h` publishes verified blocks and error deltas once.
 - `include/ProgressDiagnostics.h`: monitor-owned byte/age sampling and capped periodic debug summaries; worker phases are atomic pointers to static labels.
+- `include/InfrastructureFailure.h`: records thread failure/stop before allocating diagnostics, preserves the first cause, and uses bounded stderr reporting if detail storage or logging throws.
 - `src/TestPatterns.cpp`, `src/TestMarch.cpp`, `src/TestMemoryTraffic.cpp`, `src/TestModulo.cpp`,
   `src/TestRowHammer.cpp`: algorithm units; `src/simd_verify.cpp` owns first-observation march kernels.
 - `src/Platform.cpp`: Platform-specific API integration (CPU topology detection, memory locking, memory allocation, privilege escalation).
@@ -112,7 +113,8 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   allocator/display exceptions, and transactional config load statuses.
 - `tests/test_progress_regressions.h`: live publication across all 14 algorithms,
   nested/sub-block accounting, deterministic peer observation, cancellation,
-  exceptions after verification/mismatch, monitor exceptions, virtual-clock
+  exceptions after verification/mismatch, monitor/worker recovery with sustained
+  thread-local allocation failure (`tests/TestAllocationFailure.h`), virtual-clock
   diagnostic cadence/caps, narrow status formatting and synthetic multi-terabyte totals.
 - `tests/test_cli.py` and `tests/test_build.py`: real configuration resolution,
   database generation, and fail-closed analysis (including zero-exit diagnostics).

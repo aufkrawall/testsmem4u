@@ -18,6 +18,8 @@ long-run stalls; low for tested native progress/accounting paths.
 - `include/ProgressDiagnostics.h`: monitor-owned progress ages and periodic,
   capped snapshots; `src/ConsoleDisplay.cpp::formatStatus` preserves primary fields
   before coverage/test-name details on narrow terminals.
+- `include/InfrastructureFailure.h` and `TestContext`: non-throwing thread-failure
+  reporting, first-cause ownership and static message fallback under allocation failure.
 - `include/DisturbanceWindow.h`: flags test invocations that overlapped another
   worker's RowHammer so their errors can be annotated.
 - `src/TestPatterns.cpp`: SimpleTest, MirrorMove, MirrorMove128, walking bits,
@@ -244,6 +246,30 @@ Accounting invariants:
   phase labels at algorithm boundaries without locks, clocks or per-block logging.
   Monitor exceptions are logged as infrastructure failures, stop peers, and retain
   completed work through normal joining/folding. Test-only hooks reproduce this.
+
+Thread failure recovery records stop/failure before allocating diagnostic strings
+or calling the logger. `beginInfrastructureFailure` claims the first cause and
+retains a static fallback label; only the owner stores its detailed message.
+`reportInfrastructureFailure` catches failures in both detail storage and logging,
+emitting one stderr line with at most 256 detail characters. Monitor work/status
+cleanup, worker exceptions and partial worker startup use this protected path.
+The direct failure setter accepts `string_view` and cannot throw while storing
+details. Fallback pointers must reference static literals; detailed messages and
+final results can allocate on the joining/calling thread, where exceptions can be
+handled by the caller. This prevents exceptions escaping test threads; it does not
+promise successful allocation of every final display under process-wide exhaustion.
+
+`tests/TestAllocationFailure.h` replaces ordinary new/delete in the test runner
+only. A thread-local counter enables sustained allocation failure on a selected
+monitor/worker; peers and the joining thread keep normal allocation behavior.
+`testThreadExceptionCleanup` uses a condition-variable verification handshake,
+then exercises standard/unknown exceptions and continued allocation failure on
+both thread types. It checks exact collected bytes, joined-slot release and stable
+first-cause fallback. The allocation-failure regression terminated with exit 86
+before the recovery fix. Sanitizer DLL-backed string allocation can bypass the
+runner's replacement allocator, so the direct message-storage regression uses a
+test-only storage-boundary hook to force an ordinary allocation there. No sleeps
+or low-memory system settings are needed.
 
 Baseline/AVX2 regressions inspect live progress at march phase boundaries (150
 internal repetitions), cancel at the tenth forward pass, and throw after a
