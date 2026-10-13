@@ -1,7 +1,8 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-09-30. Stale risk: medium for hardware effectiveness;
-low for tested software invariants.
+Last verified: 2026-10-13 for progress/result reporting; 2026-09-30 for other
+runtime paths. Stale risk: medium for hardware effectiveness and unobserved
+long-run stalls; low for the reproduced reporting defects below.
 
 ## Sources and responsibilities
 
@@ -140,6 +141,9 @@ is shared across available strides rather than silently expanded to one per stri
 - Final `Coverage` is the number of complete cycles across every worker region.
 - Byte totals count verified reads, including repeated checks and retention's useful
   active tests. They are neither unique memory coverage nor physical bus traffic.
+- Known reporting defects (2026-10-13): the live byte total is published only after
+  a whole `runRegionWork` invocation returns, and the CLI results/debug log omit
+  the accumulated byte total. See the reproduction below; neither defect is fixed.
 - Bounded mismatch samples retain exact aggregate counts. Destructive march errors
   are unverified observations; other sampled errors can be classified by rereading.
 - Memory-lock allocation contracts are still fail-closed. On Windows the existing
@@ -147,6 +151,69 @@ is shared across available strides rather than silently expanded to one per stri
   proven physically resident. Locked/large-page allocation remains recommended.
   [VirtualLock's contract](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtuallock)
   guarantees residency for successfully locked pages.
+
+## Known issue: tested-byte display appears stalled
+
+Sources: `src/TestEngine.cpp::executeSuite` (monitor reads `ctx.total_bytes`, but
+workers add `tr.bytes_tested` only after `runRegionWork` returns),
+`src/TestEngine.cpp::runRegionWork` (configured sub-blocks are also merged locally),
+`src/TestMarch.cpp::runMarch` / `runMovingInversion` (local verified-byte increments
+and internal repetitions), `include/TestEngine.h::TestContext`,
+`include/Types.h::TestResult`, `src/ConsoleDisplay.cpp::formatStatus`,
+`src/main.cpp::main` (results section), and `default.cfg`.
+
+The monitor refreshes approximately every 600 ms (200 ms polling with a 500 ms
+minimum interval), independently of byte publication. A running clock with a
+stationary byte total therefore does not establish that testing stopped. Default
+MovingInversion performs 150 internal repetitions per invocation; MirrorMove
+performs 200 and MirrorMove128 performs 400. All verified passes stay local until
+the enclosing invocation returns. Short SimpleTest invocations can publish
+frequently, whereas heavier algorithms can appear frozen for a long time. The
+same deferred-publication and omitted-result paths exist in the April 2026 v1.3
+commit `fa89da3`; that comparison is source inspection, not a historical runtime
+reproduction. Older versions also differ in partial-work accounting.
+
+Deterministic reproduction on current sources, built with the repository's pinned
+LLVM MinGW toolchain and `TESTSMEM4U_TESTING`, in both baseline and AVX2:
+
+1. Allocate a resident 64 KiB region, select one worker and one cycle, and execute
+   a single MovingInversion entry with `time_percent=1`, `parameter=150`, and
+   global `time_percent=100`. Pass an instrumented `TestContext` to `executeSuite`.
+2. At every `March inverted` / `March restored` phase hook, count a completed
+   verified pass and inspect `ctx.total_bytes`. All 450 passes leave the live total
+   at its initial value; only return publishes the exact 29,491,200 verified bytes.
+3. Repeat, requesting stop at `March inverted` in the tenth repetition (count
+   repetitions at `March filled`). Exactly 28 passes complete: the live total
+   still has no increment at the hook, but the final result includes exactly
+   1,835,008 bytes and zero complete cycles.
+4. Repeat both cases with synthetic starting totals of 5,000 and 8,000 GiB.
+   Final additions remain exact and `ConsoleDisplay` formats those starting totals
+   correctly. These seed values exercise counter/formatting arithmetic; the
+   reproduction does not perform a multi-terabyte endurance run. Counters use
+   `uint64_t`; no overflow boundary near the reported totals was found.
+
+An actual 16 MiB, one-worker/one-cycle SimpleTest CLI run with `--debug --yes
+--no-config --no-elevation --no-locked-memory --no-large-pages` confirms that
+results print errors/time, and the log prints completed-cycle coverage, but neither
+reports accumulated tested bytes. Current normal cancellation retains completed
+verified bytes internally; the UI simply never presents that final value.
+
+Local probes are ignored under `build/review/progress-report/`. Baseline/AVX2
+internal suites and all 16 Python CLI/build regressions pass. Existing tests do not
+require byte publication during an invocation or a tested-byte line in CLI results.
+No production fix or permanent test asserting the defective behavior was added
+for this investigation. A fix should cover live publication, exact accounting
+through nested tests/sub-blocks and cancellation, and final console/log totals;
+diagnostics should expose useful progress without per-chunk log storms.
+
+Limits: the original preset/version, hardware, elapsed stall duration, and Linux
+warning are unknown. Actual long-run kernel failure, scheduler starvation, or
+memory pressure on the reporter's machine is unverified. Current defaults use all
+available CPU targets and 85% of total physical RAM (`src/main.cpp::makeDefaultConfig`
+and `getSizingBaselineRAM`); process priority remains normal
+(`src/Platform.cpp::confirmNormalProcessPriority`). These choices can compete with
+other workloads, but this investigation did not reproduce desktop unresponsiveness
+or diagnose the unspecified Linux complaint. No Linux runtime reproduction was run.
 
 ## Validation and measurements
 

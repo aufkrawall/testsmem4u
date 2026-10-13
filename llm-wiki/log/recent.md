@@ -1,5 +1,31 @@
 # Recent Log
 
+## 2026-10-13 - Investigate reported tested-byte freeze around 5-8 TB
+
+- Confirmed two unfixed reporting defects: `executeSuite` publishes verified bytes
+  only after an entire `runRegionWork` invocation returns, and the final CLI results
+  and debug log omit the accumulated tested-byte total. Long internal-repeat tests
+  can show a stationary byte total while the clock and memory testing continue.
+- Deterministic phase-hook probes with the pinned LLVM MinGW toolchain reproduced
+  both baseline/AVX2 paths: 450 verified 64 KiB passes remain invisible live, then
+  publish exactly 29,491,200 bytes. Cancellation after 28 passes retains exactly
+  1,835,008 bytes internally and credits no completed cycle.
+- Synthetic initial totals of 0, 5,000 and 8,000 GiB give identical publication
+  behavior and exact arithmetic/formatting. No overflow threshold near the report
+  was found; this is not a multi-terabyte endurance run. April v1.3 (`fa89da3`)
+  contains the same reporting paths, verified by source inspection only.
+- An actual 16 MiB SimpleTest CLI run confirms omitted final byte totals even with
+  debug logging. Baseline/AVX2 internal suites and all 16 Python regressions pass;
+  they do not test these missing progress/result contracts. All started probes and
+  test apps exited; fixtures/binaries/logs remain ignored in `build/`.
+- Investigation only: production behavior is unchanged, so no behavioral changelog
+  entry or permanent test preserving the defects was added. Follow-up fix/test and
+  diagnostic requirements are in [memory-testing.md](../memory-testing.md).
+- Original version/configuration, hardware and Linux warning are unavailable.
+  Desktop responsiveness, Linux runtime behavior and a permanent computation stall
+  remain unverified. Current all-core/85%-of-total-RAM defaults can compete with
+  other workloads; normal process priority is confirmed by source inspection.
+
 ## 2026-10-13 - Integrate upstream prompt-template updates
 
 - Merged October 2026 baseline updates from `aufkrawall/llm-prompt-templates` into `AGENTS.md`:
