@@ -132,18 +132,26 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     uint64_t state = 0x1234567890ABCDEFULL ^ word_start;
     constexpr size_t lanes = 16;
     std::array<size_t, lanes> indices{};
+    std::array<size_t, lanes> band_starts{};
+    std::array<size_t, lanes> band_sizes{};
+    std::array<void*, lanes> flush_lines{};
     std::vector<std::pair<uint64_t, uint64_t>> errors;
     errors.reserve(lanes);
     const size_t width = std::min(lanes, count);
+    const size_t band_words = count / width;
+    for (size_t lane = 0; lane < width; ++lane) {
+        band_starts[lane] = band_words * lane;
+        const size_t span = lane + 1 == width ? count - band_starts[lane] : band_words;
+        band_sizes[lane] = span;
+    }
     testPhase(ctx, "Random checks", region);
     for (uint64_t done = 0; done < iterations && !ctx.shouldStop();) {
         const size_t n = static_cast<size_t>(std::min<uint64_t>(width, iterations - done));
         // Disjoint address bands guarantee no duplicate outstanding writes.
         // Independent loads and batched flushes expose memory-level parallelism.
         for (size_t lane = 0; lane < n; ++lane) {
-            const size_t begin = (count / width) * lane;
-            const size_t end = lane + 1 == width ? count : begin + count / width;
-            indices[lane] = begin + randomWord(state) % (end - begin);
+            indices[lane] = band_starts[lane] + randomWord(state) % band_sizes[lane];
+            flush_lines[lane] = ptr + indices[lane];
         }
         for (unsigned phase = 0; phase < 3 && !ctx.shouldStop(); ++phase) {
             errors.clear();
@@ -151,6 +159,9 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
                 const size_t idx = indices[lane];
                 const uint64_t expected = phase == 1 ? ~(word_start + idx) : word_start + idx;
                 const uint64_t observed = *static_cast<volatile uint64_t*>(ptr + idx);
+#ifdef TESTSMEM4U_TESTING
+                if (ctx.phase_hook) ctx.phase_hook("Random observed", region);
+#endif
                 if (observed != expected) errors.emplace_back(idx, observed);
             }
             classifyAndLogErrors(region, ptr, errors, errors.size(), 0,
@@ -162,13 +173,14 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
                 const size_t idx = indices[lane];
                 ptr[idx] = phase == 0 ? ~(word_start + idx) : word_start + idx;
             }
-            for (size_t lane = 0; lane < n; ++lane) simd::flush_cache_line(ptr + indices[lane]);
-            simd::memory_fence();
+            simd::flush_cache_lines(flush_lines.data(), n);
         }
         done += n;
     }
-    LOG_DEBUG("RandomAccess: offset=%zu words=%zu accesses=%llu (Parameter=%u) errors=%llu in %.3fs%s",
+    LOG_DEBUG("RandomAccess: offset=%zu words=%zu accesses=%llu (Parameter=%u) lanes=%zu "
+              "flush=batch errors=%llu in %.3fs%s",
               region.base_offset_bytes, count, static_cast<unsigned long long>(iterations), config.parameter,
+              width,
               static_cast<unsigned long long>(res.total_errors()),
               std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
               ctx.shouldStop() ? " [stopped]" : "");

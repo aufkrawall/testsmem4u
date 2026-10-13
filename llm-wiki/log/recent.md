@@ -1,5 +1,28 @@
 # Recent Log
 
+## 2026-10-13 - Optimize random access and cached disturbance spans
+
+- RandomAccess prepares band starts/sizes once, retaining native remainders and
+  exact addresses. Reciprocal remainders and split load/compare arrays were tried
+  and rejected after longer comparisons showed no useful throughput gain.
+- RandomAccess and RowHammer batch line flushes with one dispatch and MFENCE;
+  hammer iterations retain the preceding SFENCE and both aggressor flushes.
+- Modulo20 writes nineteen-word cached SIMD spans, excluding every protected word
+  even at tails/unaligned starts. Pass flushes and all verified-byte counts remain.
+- Added all-offset protected-word sentinels and an actual random transient fault
+  hook retaining the originally loaded value after repair. Native baseline/AVX2 and
+  all 17 Python regressions pass. Summaries name optimized paths without log storms.
+- Default preset, worker/SMT policy, retention dwells, and disturbance budgets are
+  unchanged; their hardware optimum is not established by the short measurements.
+- Final native baseline/AVX2 plus 17 Python regressions, both ISA ASan/UBSan runs,
+  strict clang-tidy and all nine release builds pass. Windows baseline/AVX2 and
+  WSL AVX2 complete an 18-entry 64 MiB smoke cycle with zero errors and expected
+  diagnostics. Release disassembly confirms direct bulk CLFLUSHOPT loops.
+- Final 512 MiB medians show clear one-worker march/LFSR improvements; sixteen
+  workers are mostly unchanged, with Modulo20 about 6% higher throughput. Small
+  changes are noisy. Method, exact times and hardware limits are in
+  [memory-testing.md](../memory-testing.md#2026-10-13-kernel-optimization-check).
+
 ## 2026-10-13 - Parallel exact-sequence LFSR generation
 
 - AVX2 fills/expected buffers generate four consecutive states with T^4;

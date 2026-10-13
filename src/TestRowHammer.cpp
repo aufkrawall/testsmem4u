@@ -133,6 +133,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
                 }
 
                 testPhase(ctx, "RowHammer disturb", region);
+                std::array<void*, 2> aggressor_lines{ptr + idxA, ptr + idxC};
                 for (size_t k = 0; k < hammer_iterations && !ctx.shouldStop(); ++k) {
                     uint64_t pattern = (k & 1) ? aggr_toggle1 : aggr_toggle0;
 #if defined(__x86_64__) || defined(_M_X64)
@@ -144,9 +145,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
                     __atomic_store_n(&ptr[idxC], pattern, __ATOMIC_RELAXED);
                     std::atomic_thread_fence(std::memory_order_release);
 #endif
-                    simd::flush_cache_line((void*)&ptr[idxA]);
-                    simd::flush_cache_line((void*)&ptr[idxC]);
-                    simd::memory_fence();
+                    simd::flush_cache_lines(aggressor_lines.data(), aggressor_lines.size());
                 }
 
                 // Observe the selected victim promptly, before another point

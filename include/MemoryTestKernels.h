@@ -44,4 +44,8 @@ constexpr size_t kLfsrGenerationLanes = 4;
 constexpr size_t kLfsrGenerationLanes = 1;
 #endif
 
+// Cached complement writes to all words except protected_offset modulo 20.
+// No protected word is loaded or stored, including partial final spans.
+void fill_modulo20(uint64_t* memory, size_t count, size_t protected_offset, uint64_t value);
+
 } // namespace testsmem4u::simd

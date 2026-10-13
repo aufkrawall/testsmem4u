@@ -57,6 +57,7 @@ SRC_FILES = [
     PROJECT_ROOT / "src" / "TestMemoryTraffic.cpp",
     PROJECT_ROOT / "src" / "simd_verify.cpp",
     PROJECT_ROOT / "src" / "simd_lfsr.cpp",
+    PROJECT_ROOT / "src" / "simd_traffic.cpp",
     PROJECT_ROOT / "src" / "ConfigManager.cpp",
     PROJECT_ROOT / "src" / "ConsoleDisplay.cpp",
     PROJECT_ROOT / "src" / "Logger.cpp",

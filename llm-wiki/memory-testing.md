@@ -1,6 +1,6 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-10-13 for progress/result reporting; 2026-09-30 for other
+Last verified: 2026-10-13 for native kernel contracts, performance and progress/result reporting; 2026-09-30 for other
 runtime paths. Stale risk: medium for hardware effectiveness and unobserved
 long-run stalls; low for tested native progress/accounting paths.
 
@@ -142,6 +142,13 @@ The configured access count remains exact, including the partial last batch.
 Parameter 1-100 (0 = 1) is a pass multiplier; >100 is an explicit per-region access
 count (`randomAccessIterations`). executeSuite warns about the latter at startup.
 
+RandomAccess prepares band starts/sizes once, retaining the original native
+remainder calculation, RNG sequence, addresses and partial-batch counts. Written
+addresses use `flush_cache_lines` with one dispatch/fence. Each volatile read's
+original observation is retained; a repaired-after-load fault still counts as soft.
+Reciprocal remainders and a separate load-then-compare array were tested but
+rejected: longer one-/sixteen-worker measurements showed no throughput gain.
+
 Modulo20 holds one word in every 20 at one polarity while repeatedly writing the
 other 19 with its complement. Software never reads or writes a protected word during
 disturbance, but it shares a cache line with peers: the RFO fetches it and the flush
@@ -154,10 +161,22 @@ cache/buffering sensitivity; see the primary algorithm descriptions at
 [MemTest86](https://www.memtest86.com/tech_memtest-algoritm.html) and
 [Memtest86+](https://memtest.org/readme).
 
+`src/simd_traffic.cpp::fill_modulo20` writes a short prefix, then fixed nineteen-word
+cached SIMD spans following each protected word, and a bounded tail. No masked
+store or read/restore of a protected word is used. The existing 2 MiB cancellation
+granularity, repeat flushes and verification layout remain. Sentinel regressions
+cover all twenty protected offsets and unaligned/partial spans. RandomAccess and
+Modulo20 summaries identify their optimized paths without hot-loop logging.
+
 RowHammer checks the selected victim cache line promptly and checks an upcoming
 aggressor before overwriting it, so reusing a former victim cannot silently erase
 an earlier flip. Final sweeps still cover all other words. An explicit point budget
 is shared across available strides rather than silently expanded to one per stride.
+
+Aggressor writes retain SFENCE, both line flushes and MFENCE each iteration;
+`flush_cache_lines` dispatches the two-address flush once. Victim/reuse checks and
+point/iteration budgets are unchanged. The software contracts are regression
+tested; physical activation rates and fault-detection gains remain unmeasured.
 
 ## Diagnostics and interpretation
 
@@ -261,6 +280,47 @@ unresponsiveness, a permanent long-run stall and the original unspecified Linux
 complaint have not been reproduced or diagnosed.
 
 ## Validation and measurements
+
+### 2026-10-13 kernel optimization check
+
+Native baseline/AVX2 suites and all 17 Python regressions pass, including exact
+LFSR sequences, uniform/generic equivalence, protected-word sentinels, transient
+random observations and live/cancelled progress. ASan/UBSan pass for both native
+ISA runners. Strict clang-tidy checks every production source and test runner;
+the final random-path simplification was rechecked with the same warning gate.
+All nine pinned-toolchain release targets build. Windows baseline/AVX2 and WSL
+Linux AVX2 CLI smoke tests cover all 18 entries on 64 MiB with eight workers,
+shortened counts/25 ms retention dwells, one full cycle and zero errors. Expected
+kernel diagnostics are present. ARM/AVX-512 remain cross-build-only validation.
+
+The native AVX2 release disassembly directly confirms CLFLUSHOPT inside the
+region loop without per-line calls/VZEROUPPER, plus MFENCE. ASLR/DEP/CFG flags
+remain present; no sanitizer runtime is imported by the delivered release binary.
+
+Compared the pre-task `a905045` snapshot with final kernels on Ryzen 5700X using
+the same pinned MinGW release/ThinLTO flags, affinity, 512 MiB allocation and
+equal worker slices. Median seconds exclude one warmup and use three samples:
+
+| Kernel | 1 worker before / after | 16 workers before / after |
+| --- | --- | --- |
+| Uniform march, four repeats | 0.866 / 0.530 | 0.341 / 0.334 |
+| LFSR fill + verify | 0.130 / 0.105 | 0.0395 / 0.0401 |
+| LFSR march, four repeats | 1.484 / 1.195 | 0.374 / 0.362 |
+| Modulo20, one disturbance repeat | 4.449 / 4.479 | 2.198 / 2.075 |
+
+All samples have zero errors and identical per-case verified bytes. Eight-worker
+streaming cases mostly change little. Pure region flushing is also essentially
+unchanged: removing calls does not remove the hardware's flush cost. Final
+16-worker RandomAccess at 1,048,576 accesses per worker is 0.198 s versus 0.198 s
+before. A longer 16,777,216-access experiment rejected reciprocal indexing and
+separate load/compare arrays after they failed to improve throughput.
+
+These short measurements are software-throughput evidence, with ordinary timing
+noise; small percentages do not establish a hardware optimum. Equal benchmark
+slices differ from the default weighted SMT assignments. No package-power,
+DRAM-bus, DIMM-temperature or unstable-memory detection measurements were taken.
+Fixtures/logs/snapshots remain ignored under `build/review/performance/`; every
+run is bounded. Manual full-capacity testing remains the next hardware check.
 
 Software checks: native baseline/SSE2 and AVX2 regression suites, ASan and UBSan
 with both ISA runners, clang-tidy, and all nine release cross-build targets.

@@ -697,6 +697,7 @@ int main() try {
     testEngineRegressions();
     testUniformMarchSpecialization();
     testLfsrParallelGeneration();
+    testTrafficKernelSpecializations();
     testIndependentWorkerExecution();
     testPreparationExceptionCleanup();
     testFreshUnlockedRun();

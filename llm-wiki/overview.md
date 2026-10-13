@@ -16,7 +16,11 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `src/TestPatterns.cpp`, `src/TestMarch.cpp`, `src/TestMemoryTraffic.cpp`, `src/TestModulo.cpp`,
   `src/TestRowHammer.cpp`: algorithm units; `src/simd_verify.cpp` owns first-observation march kernels.
 - `src/Platform.cpp`: Platform-specific API integration (CPU topology detection, memory locking, memory allocation, privilege escalation).
-- `src/simd_ops.cpp`: SSE/AVX/NEON optimized pattern writing and verification loops.
+- `src/simd_ops.cpp`: capability detection, cache management/fences and optimized pattern writers.
+- `src/simd_patterns_verify.cpp`: first-observation address/uniform/pair verifiers.
+- `src/simd_lfsr.cpp`, `src/simd_traffic.cpp`: exact-sequence LFSR generation and
+  protected-word-preserving Modulo20 cached writes. SIMD dispatch/fences and
+  pattern writers remain in `src/simd_ops.cpp`.
 - `src/PresetLoader.cpp` and `src/ConfigManager.cpp`: preset/config parsing, validation, and fail-closed load/save behavior.
 - `src/Logger.cpp`: Async logging implementation (background writer thread, rate-limited console output, queue backpressure).
 - `include/Logger.h`: Logger class declaration and LOG_* macros.

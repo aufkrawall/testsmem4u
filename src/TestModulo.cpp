@@ -38,13 +38,7 @@ TestResult TestEngine::runModulo20(TestContext& ctx, const MemoryRegion& region,
             testPhase(ctx, "Modulo disturb", region);
             for (uint32_t repeat = 0; repeat < repeats && !ctx.shouldStop(); ++repeat) {
                 for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
-                    const size_t end = std::min(count, i + block);
-                    for (size_t base = i; base < end; base += stride) {
-                        const size_t protected_idx = base + offset;
-                        const size_t span_end = std::min(end, base + stride);
-                        std::fill(ptr + base, ptr + std::min(protected_idx, span_end), ~pattern);
-                        if (protected_idx + 1 < span_end) std::fill(ptr + protected_idx + 1, ptr + span_end, ~pattern);
-                    }
+                    simd::fill_modulo20(ptr + i, std::min(block, count - i), offset, ~pattern);
                 }
                 simd::flush_cache_region(ptr, region.size);
             }
@@ -69,7 +63,7 @@ TestResult TestEngine::runModulo20(TestContext& ctx, const MemoryRegion& region,
                   static_cast<unsigned long long>(res.total_errors() - errors_before),
                   ctx.shouldStop() ? " [stopped]" : "");
     }
-    LOG_DEBUG("Modulo20: offset=%zu completed in %.3fs", region.base_offset_bytes,
+    LOG_DEBUG("Modulo20: offset=%zu disturb=cached-19-word-spans completed in %.3fs", region.base_offset_bytes,
               std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     return res;
 }

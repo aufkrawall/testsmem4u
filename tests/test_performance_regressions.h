@@ -1,5 +1,34 @@
 #pragma once
 
+void testTrafficKernelSpecializations() {
+    alignas(64) std::array<uint64_t, 2080> memory{};
+    for (size_t count : {0U, 1U, 7U, 19U, 20U, 21U, 39U, 40U, 41U, 511U, 1280U, 1281U, 2049U}) {
+        for (size_t protected_offset = 0; protected_offset < 20; ++protected_offset) {
+            for (size_t alignment = 0; alignment < 4; ++alignment) {
+                for (size_t i = 0; i < memory.size(); ++i) memory[i] = 17 * i + 3;
+                simd::fill_modulo20(memory.data() + alignment, count, protected_offset, ~0ULL);
+                bool correct = true;
+                for (size_t i = 0; i < memory.size(); ++i) {
+                    const bool written = i >= alignment && i - alignment < count && (i - alignment) % 20 != protected_offset;
+                    correct &= memory[i] == (written ? ~0ULL : 17 * i + 3);
+                }
+                expect(correct, "Modulo spans preserve protected words, boundaries, offsets and alignment");
+            }
+        }
+    }
+    TestContext ctx;
+    MemoryRegion region{}; region.base = reinterpret_cast<uint8_t*>(memory.data()); region.size = 8 * sizeof(uint64_t);
+    bool corrupted = false, repaired = false;
+    ctx.phase_hook = [&](const char* phase, const MemoryRegion&) {
+        if (!corrupted && std::string(phase) == "Random checks") { memory[0] ^= 1; corrupted = true; }
+        if (corrupted && !repaired && std::string(phase) == "Random observed") { memory[0] ^= 1; repaired = true; }
+    };
+    TestConfig tc; tc.parameter = 101;
+    const auto result = TestEngine::runRandomAccess(ctx, region, tc, true);
+    expect(corrupted && repaired && result.soft_errors == 1 && result.total_errors() == 1 && ctx.shouldStop(),
+           "Batched random loads retain a transient original observation after memory repairs itself");
+}
+
 void testLfsrParallelGeneration() {
     alignas(64) std::array<uint64_t, 1056> memory{};
     std::vector<uint64_t> seeds{0, ~0ULL, 0xACE1ACE2DEADBEEFULL, 0x1234567890ABCDEFULL};
