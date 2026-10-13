@@ -64,8 +64,10 @@ namespace testsmem4u {
 static std::atomic<void (*)()> g_shutdown_callback{nullptr};
 static std::atomic<bool> g_shutdown_initiated{false};
 #ifndef _WIN32
-// Original hugepage count to restore on exit (-1 = not modified)
-static int g_original_hugepages = -1;
+// Original hugepage count to restore on exit (-1 = not modified). Signal
+// handlers read it, so it must be a lock-free atomic.
+static std::atomic<int> g_original_hugepages{-1};
+static_assert(std::atomic<int>::is_always_lock_free, "signal handlers require lock-free hugepage state");
 #endif
 
 namespace {
@@ -535,13 +537,15 @@ static BOOL WINAPI consoleCtrlHandler(DWORD dwCtrlType) {
 #pragma clang diagnostic pop
 #else
 // Restore hugepage count using only async-signal-safe functions.
-// Called from signal handler before _exit().
+// Called from signal handlers before _exit(), which skips atexit handlers.
+// Reducing the pool while this process still maps hugepages is safe: the
+// kernel turns in-use pages into surplus pages and frees them on exit.
 static void restoreHugepagesSignalSafe() {
-    if (g_original_hugepages < 0) return;
+    int val = g_original_hugepages.exchange(-1, std::memory_order_acq_rel);
+    if (val < 0) return;
 
     // Convert integer to string (no snprintf — not async-signal-safe)
     char buf[16];
-    int val = g_original_hugepages;
     int pos = 0;
     if (val == 0) {
         buf[pos++] = '0';
@@ -563,20 +567,24 @@ static void restoreHugepagesSignalSafe() {
 
 // Normal-exit hugepage restoration (uses standard I/O, not signal-safe)
 static void restoreHugepages() {
-    if (g_original_hugepages < 0) return;
+    const int original = g_original_hugepages.exchange(-1, std::memory_order_acq_rel);
+    if (original < 0) return;
 
     FILE* fp = fopen("/proc/sys/vm/nr_hugepages", "w");
     if (fp) {
-        fprintf(fp, "%d\n", g_original_hugepages);
+        fprintf(fp, "%d\n", original);
         fclose(fp);
-        LOG_INFO("Restored hugepages to original count: %d", g_original_hugepages);
+        LOG_INFO("Restored hugepages to original count: %d", original);
+    } else {
+        LOG_WARN("Could not restore hugepages to original count %d: %s", original, strerror(errno));
     }
-    g_original_hugepages = -1;
 }
 
 static void SignalHandlerWrapper(int signum) {
-    // Second signal: force immediate exit.
+    // Second signal (e.g. repeated Ctrl+C or another termination signal during
+    // shutdown): force immediate exit, but never leave the hugepage pool raised.
     if (g_shutdown_initiated.load(std::memory_order_acquire)) {
+        restoreHugepagesSignalSafe();
         _exit(128 + signum);
     }
 
@@ -597,8 +605,8 @@ static void SignalHandlerWrapper(int signum) {
         _exit(128 + signum);
     }
 
-    // SIGINT/SIGTERM: return so the normal shutdown path can flush logs,
-    // release memory, and report final results.
+    // SIGINT/SIGTERM/SIGHUP: return so the normal shutdown path can flush
+    // logs, release memory, report final results and restore hugepages.
 }
 #endif
 
@@ -1389,10 +1397,15 @@ static bool reserveHugepages(size_t size_needed) {
     fclose(fp);
 
     // Save original count so we can restore on exit
-    if (g_original_hugepages < 0) {
-        g_original_hugepages = current_pages;
-        std::atexit(restoreHugepages);
-        LOG_INFO("Registered hugepage restoration atexit handler (original count: %d)", current_pages);
+    if (g_original_hugepages.load(std::memory_order_acquire) < 0) {
+        g_original_hugepages.store(current_pages, std::memory_order_release);
+        static bool restore_registered = false;
+        if (!restore_registered) {
+            std::atexit(restoreHugepages);
+            restore_registered = true;
+        }
+        LOG_INFO("Registered hugepage restoration (original count: %d; restored on exit, "
+                 "SIGINT/SIGTERM/SIGHUP, repeated signals, SIGABRT and SIGBUS)", current_pages);
     }
 
     // Calculate how many more pages we need
@@ -1820,6 +1833,7 @@ void Platform::registerShutdownHandler(void (*callback)()) {
 #else
     std::signal(SIGINT, SignalHandlerWrapper);
     std::signal(SIGTERM, SignalHandlerWrapper);
+    std::signal(SIGHUP, SignalHandlerWrapper);  // Closed terminal: stop gracefully
     std::signal(SIGBUS, SignalHandlerWrapper);  // Hugepage access fault
     std::signal(SIGABRT, SignalHandlerWrapper); // Restore hugepages on abort
 #endif

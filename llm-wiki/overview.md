@@ -44,6 +44,14 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - See [memory-testing.md](memory-testing.md) for algorithms, invariants, measurements,
   fault injection, error classification, and validation limits.
 - Signal handler uses `memory_order_release` for `g_shutdown_initiated` to ensure stop flag visibility to workers.
+- Linux `--aggressive-defrag` raises the persistent `/proc/sys/vm/nr_hugepages`
+  pool (`Platform.cpp::reserveHugepages`). The original count (lock-free atomic,
+  claimed once by exchange) is restored at exit; SIGINT/SIGTERM/SIGHUP shut down
+  gracefully first. Second signals, SIGABRT and SIGBUS restore it signal-safely
+  before `_exit`. Lowering the pool while pages are mapped only makes them
+  surplus. SIGKILL/OOM kills cannot restore it. Windows large pages are
+  process-owned and need no restoration. Verified 2026-10-13 in WSL as root with
+  pre-/post-fix binaries; no automated test (needs root and Linux sysfs).
 - Preset/config path validation rejects empty paths and control characters, but allows explicit absolute and parent-relative paths after filesystem canonicalization. Unsafe paths are hex-escaped in diagnostics.
 - Config loading parses into a temporary copy and only commits on full success; malformed config files must not leave partially-applied settings behind.
 - `loadConfigWithStatus` distinguishes loaded, missing, and invalid/unreadable files.

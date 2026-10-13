@@ -1,5 +1,18 @@
 # Recent Log
 
+## 2026-10-13 - Restore Linux hugepage pool on all catchable signals
+
+- Review found `--aggressive-defrag` reservations leaked when the run ended by
+  SIGHUP (unhandled) or a second signal (`_exit` skipped the atexit restore).
+- Fix: SIGHUP joins the graceful SIGINT/SIGTERM path; the second-signal path calls
+  `restoreHugepagesSignalSafe`; the saved count is a lock-free atomic claimed by
+  exchange; the atexit handler registers once and logs restore failures.
+- Verification (WSL root, 256 MiB, `--aggressive-defrag`, pool 0 -> 130): pre-fix
+  binary left 130 pages after HUP, HUP HUP and TERM TERM; fixed binary restored 0
+  for INT, INT INT, HUP, HUP HUP and TERM TERM (single HUP prints final results).
+  The pool was reset to its original value after each run. No automated test:
+  native runners are Windows-hosted and the check needs root plus Linux sysfs.
+
 ## 2026-10-13 - Reset SimpleTest fill diagnostics on every repeat
 
 - SimpleTest's constructor-only fill phase left later pattern generation/cache
