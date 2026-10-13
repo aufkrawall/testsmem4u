@@ -1,5 +1,13 @@
 # Recent Log
 
+## 2026-10-14 - Release v1.9
+
+Bumped version string to `1.9` across runtime and changelog:
+- Promoted unreleased improvements to `## 1.9 - 2026-10-14` in `CHANGELOG.md`.
+- Verified test suite (`python build.py --tests`), static analysis (`--lint`), and runtime sanitizers (`--run-sanitizers`).
+- Built all nine release binaries with LLVM MinGW (Windows x86_64 variants with CFG/CET hardening) and Zig (Linux x86/x64/ARM, Windows ARM64).
+- Packaged `testsmem4u-1.9-allOS.7z` and published GitHub release `1.9`.
+
 ## 2026-10-14 - Reject strict Linux lock failures before prefaulting
 
 - Anonymous allocation now applies THP advice, attempts requested `mlock`, then

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.9 - 2026-10-14
+
 ### New
 
 - **Linux first-run huge-page setup:** interactive root runs detect disabled effective THP policy and recommend a default-Yes runtime `madvise` change. The offer explains its system-wide scope and temporary persistence; verified setup takes effect in the same run without a reboot. Direct runs and disabled large-page preference leave policy unchanged.
