@@ -1,5 +1,16 @@
 # Recent Log
 
+## 2026-10-13 - Add checked Linux THP setup component
+
+- Added native PMD-size/global policy inspection, inherited process-mode checks,
+  and a stream-driven default-Yes runtime `madvise` offer. The component is not
+  yet connected to startup; integration and user documentation follow separately.
+- Policy/setup fixtures cover modern overrides, legacy controls, consent/EOF,
+  non-interactive/unprivileged skips, unsupported policies, write/readback failures
+  and changes during confirmation. Native temporary-file fixtures verify exact
+  bytes, bounded reads and non-2-MiB control paths without touching real sysfs.
+- Windows and WSL baseline/AVX2 internal suites and all 19 Python regressions pass.
+
 ## 2026-10-13 - Make wizard defaults and sizing policies comparable
 
 - Both wizards use shared defaults/question order with large pages enabled.

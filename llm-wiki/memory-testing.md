@@ -133,6 +133,39 @@ left no test processes; the Linux pool remained zero. The previous Linux binary
 used locked native pages on the same pool/policy. This does not establish large
 allocation success, throughput gains, ARM runtime behavior or hardware efficacy.
 
+## THP policy setup component
+
+Sources: `include/HugePageSetup.h`, `src/HugePageSetup.cpp`,
+`tests/test_huge_page_setup.h`. Startup integration is a separate follow-up.
+
+- Policy inspection parses the bracketed active sysfs value, rejecting unknown,
+  duplicate, malformed or oversized input. It resolves the native PMD-size
+  `enabled` override/inheritance using `hpage_pmd_size`, then queries inherited
+  process THP restrictions with `PR_GET_THP_DISABLE`. Missing per-size controls
+  use the legacy global control; unreadable controls and unknown process modes
+  cannot authorize writes. Complete process disabling is never cleared.
+- When effective policy is `never`, stream-driven setup recommends `madvise`
+  with `[Y/n]` only for an interactive privileged run with page preference enabled.
+  Modern kernels change the PMD-size control only; older kernels change global
+  `enabled`. The offer explains the system-wide scope, runtime persistence and
+  immediate applicability. It saves no boot configuration or HugeTLB reservation.
+- Closed stdin, invalid/negative input, unprivileged and automated runs cannot
+  authorize a write. Confirmation rechecks the snapshot; changed policy requires
+  a fresh offer unless it already permits the allocation. Successful writes
+  require flush/close success and a fresh effective-policy readback. There are no
+  restoration writes, retries, cache changes or defrag-policy changes.
+- `ThpPolicyAccess` injects synthetic controls for portable deterministic tests.
+  `NativeThpPolicyAccess` additionally has ordinary temporary-directory fixtures
+  that verify bounded reads, native non-2-MiB paths and exact output bytes.
+  Tests never change real sysfs/process policy. Stable `THP setup:` diagnostics
+  record parsed modes, decision, control and errno without raw sysfs contents.
+
+Verified against the [kernel THP controls](https://docs.kernel.org/admin-guide/mm/transhuge.html)
+and [process-policy API](https://man7.org/linux/man-pages/man2/PR_GET_THP_DISABLE.2const.html),
+2026-10-13. Sysfs has no atomic compare-and-set API: an independent policy manager
+can change settings after inspection/readback; allocation coverage remains the
+final observation of what the test actually obtained.
+
 ## Invariants
 
 Workers retain exclusive contiguous regions and CPU affinity. Their test phases
@@ -148,7 +181,7 @@ The displayed test is the least advanced region's next test, not a claim that al
 workers run that test. Mid-test cancellation does not publish a completed boundary.
 
 Because workers are unsynchronised, one region's RowHammer can overlap another
-region's unrelated test. Regions are 4 KiB-aligned but DRAM rows are larger, so
+region's unrelated test. Regions are native-page-aligned but DRAM rows are larger, so
 hammering near a boundary can flip a peer's cells. This is accepted (a lockstep
 RowHammer barrier would reintroduce per-cycle idling, since RowHammer is last in
 default.cfg). Instead each invocation runs inside a `DisturbanceWindow`; if it

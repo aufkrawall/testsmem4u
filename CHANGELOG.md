@@ -4,6 +4,7 @@
 
 ### Improved
 
+- **Huge-page setup coverage:** added checked Linux THP policy inspection and setup regression coverage for native-size overrides, inherited process restrictions, explicit consent, write/readback failures and concurrent policy changes.
 - **Comparable configuration wizards:** Windows and Linux ask the same questions and default to 85% of RAM, all cores, three cycles, strict locking, large-page preference and halt-on-error. Saved wizard settings retain percentage/all-core policies for the next system instead of freezing resolved RAM/thread counts; explicit selections remain explicit.
 - **Linux huge-page defaults:** large-page preference now requests aligned transparent huge pages automatically when an existing HugeTLB pool cannot satisfy the window, while preserving strict memory locking and native-page fallback. Allocation and RowHammer diagnostics report measured huge-page coverage, including conservative bounds for partial worker slices.
 

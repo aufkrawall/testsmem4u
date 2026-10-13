@@ -17,6 +17,9 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   preferred native large-page size on both platforms. Program/version/default-path
   constants now live in `include/RunConfiguration.h`.
 - `src/TestEngine.cpp`: allocation, dispatch, independent worker scheduling, and monitoring.
+- `src/HugePageSetup.cpp`, `include/HugePageSetup.h`: checked Linux THP policy
+  inspection and stream-driven runtime setup component, with injectable controls
+  for deterministic regression coverage; startup integration is pending.
 - `include/PreparationStatus.h`: owns and joins the preparation display thread, including exception paths.
 - `include/TestProgress.h`: separate worker counters and scoped thread-local binding for nested kernels; `VerificationProgress` in `TestEngineInternal.h` publishes verified blocks and error deltas once.
 - `include/ProgressDiagnostics.h`: monitor-owned byte/age sampling and capped periodic debug summaries; worker phases are atomic pointers to static labels.

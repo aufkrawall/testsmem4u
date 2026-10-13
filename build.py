@@ -56,6 +56,7 @@ SRC_FILES = [
     PROJECT_ROOT / "src" / "CliOptions.cpp",
     PROJECT_ROOT / "src" / "RunConfiguration.cpp",
     PROJECT_ROOT / "src" / "ConfigWizard.cpp",
+    PROJECT_ROOT / "src" / "HugePageSetup.cpp",
     PROJECT_ROOT / "src" / "TestEngine.cpp",
     PROJECT_ROOT / "src" / "TestPatterns.cpp",
     PROJECT_ROOT / "src" / "TestRowHammer.cpp",

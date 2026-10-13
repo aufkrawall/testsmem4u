@@ -7,6 +7,7 @@
 #include "Platform.h"
 #include "PlatformMemoryInternal.h"
 #include "RunConfiguration.h"
+#include "HugePageSetup.h"
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
@@ -659,6 +660,7 @@ void testRunResultMerge() {
 #include "test_runtime_regressions.h"
 #include "test_memory_pages.h"
 #include "test_config_wizard.h"
+#include "test_huge_page_setup.h"
 #include "test_progress_regressions.h"
 #include "test_step_progress.h"
 
@@ -694,6 +696,7 @@ int main() try {
     testConfigLoadStatuses();
     testWizardDefaultPolicies();
     testWizardExplicitSettings();
+    testHugePageSetup();
 
     // Existing tests from original file
     testBoundedUniformVerification();
