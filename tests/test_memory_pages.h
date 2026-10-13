@@ -8,7 +8,7 @@
 #endif
 
 #ifdef _WIN32
-enum class WindowsFixtureMode : uint8_t { DIRECT, CHUNKED, HYBRID, THROW_CHUNK, FAIL_LOCK };
+enum class WindowsFixtureMode : uint8_t { DIRECT, CHUNKED, HYBRID, HYBRID_TAIL_LOCK_FAIL, THROW_CHUNK, FAIL_LOCK };
 WindowsFixtureMode g_windows_mode = WindowsFixtureMode::DIRECT;
 size_t g_windows_target = 0;
 size_t g_windows_largest_commit = 0;
@@ -17,14 +17,26 @@ uint32_t g_windows_preparations = 0;
 std::array<void*, 16> g_windows_owned{};
 std::array<bool, 16> g_windows_released{};
 size_t g_windows_page_size = size_t{2} * 1024 * 1024;
+size_t g_windows_chunk_allocations = 0;
+size_t g_windows_hook_releases = 0;
+size_t g_windows_tail_locks = 0;
+size_t g_windows_tail_lock_failures = 0;
 
 size_t fixtureWindowsPageSize() { return g_windows_page_size; }
 bool fixtureWindowsPrivilege() { return true; }
 bool fixtureWindowsWorkingSet(size_t, size_t) { return true; }
-bool fixtureWindowsLock(void*, size_t) { return g_windows_mode != WindowsFixtureMode::FAIL_LOCK; }
+bool fixtureWindowsLock(void*, size_t size) {
+    if (g_windows_mode == WindowsFixtureMode::HYBRID_TAIL_LOCK_FAIL && size == g_windows_page_size &&
+        ++g_windows_tail_locks % 2 == 0) {
+        ++g_windows_tail_lock_failures;
+        return false;
+    }
+    return g_windows_mode != WindowsFixtureMode::FAIL_LOCK;
+}
 void fixtureWindowsPreparation() { ++g_windows_preparations; }
 bool fixtureWindowsRelease(void* base) {
     const bool freed = VirtualFree(base, 0, MEM_RELEASE) != 0;
+    if (freed) ++g_windows_hook_releases;
     for (size_t i = 0; i < g_windows_large_chunks; ++i) {
         if (g_windows_owned[i] == base) g_windows_released[i] = freed;
     }
@@ -33,10 +45,12 @@ bool fixtureWindowsRelease(void* base) {
 
 void* fixtureWindowsAllocate(void* base, size_t size, uint32_t flags, uint32_t protection) {
     if ((flags & MEM_COMMIT) != 0) g_windows_largest_commit = std::max(g_windows_largest_commit, size);
+    const bool hybrid = g_windows_mode == WindowsFixtureMode::HYBRID ||
+                        g_windows_mode == WindowsFixtureMode::HYBRID_TAIL_LOCK_FAIL;
     if ((flags & MEM_LARGE_PAGES) != 0) {
         if (g_windows_mode == WindowsFixtureMode::FAIL_LOCK ||
             (base == nullptr && g_windows_mode != WindowsFixtureMode::DIRECT) ||
-            (base != nullptr && g_windows_mode == WindowsFixtureMode::HYBRID && g_windows_large_chunks >= 3)) {
+            (base != nullptr && hybrid && g_windows_large_chunks >= 3)) {
             SetLastError(ERROR_NOT_ENOUGH_MEMORY);
             return nullptr;
         }
@@ -49,9 +63,12 @@ void* fixtureWindowsAllocate(void* base, size_t size, uint32_t flags, uint32_t p
         if (result && base && g_windows_large_chunks < g_windows_owned.size()) {
             g_windows_owned[g_windows_large_chunks++] = result;
         }
+        if (result && base) ++g_windows_chunk_allocations;
         return result;
     }
-    return VirtualAlloc(base, size, flags, protection);
+    void* result = VirtualAlloc(base, size, flags, protection);
+    if (result && base) ++g_windows_chunk_allocations;
+    return result;
 }
 
 class WindowsMemoryHookScope {
@@ -73,6 +90,8 @@ void resetWindowsFixture(WindowsFixtureMode mode, size_t target) {
     g_windows_owned.fill(nullptr);
     g_windows_released.fill(false);
     g_windows_page_size = size_t{2} * 1024 * 1024;
+    g_windows_chunk_allocations = g_windows_hook_releases = 0;
+    g_windows_tail_locks = g_windows_tail_lock_failures = 0;
 }
 
 void testWindowsMemoryFallbacks() {
@@ -109,6 +128,15 @@ void testWindowsMemoryFallbacks() {
         expect(guard.valid() && guard.is_locked() && guard.size() == size &&
                guard.large_page_bytes() == size_t{6} * 1024 * 1024,
                "Hybrid Windows fallback reports only its real large-page prefix");
+    }
+    resetWindowsFixture(WindowsFixtureMode::HYBRID_TAIL_LOCK_FAIL, size);
+    {
+        auto guard = Platform::allocateMemoryRAII(size, true, true);
+        expect(g_windows_tail_lock_failures > 0 && g_windows_chunk_allocations > 0 &&
+               g_windows_hook_releases == g_windows_chunk_allocations,
+               "Hybrid tail lock failure rolls back every chunk, including the unlocked one, through the owning cleanup");
+        expect(guard.valid() && guard.is_locked() && guard.size() == size && guard.large_page_bytes() == 0,
+               "After hybrid rollback the strict VirtualLock fallback still provides fully locked memory");
     }
     resetWindowsFixture(WindowsFixtureMode::THROW_CHUNK, size);
     bool caught = false;

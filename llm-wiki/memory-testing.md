@@ -123,6 +123,9 @@ exact 18-MiB chunking, a 6-MiB LP prefix with locked native tail, exception roll
 strict lock failure, pageable fallback sizing and a small incompatible window.
 Fixtures simulate LP API success with releasable native mappings and replace
 preparation with a counter; they never change global caches or cache-limit policy.
+A hybrid tail-lock failure fixture requires every committed chunk to be released
+through the owning `MappingCleanup` (equal hook allocations/releases); a raw
+`VirtualFree` on that path previously bypassed the hook and ignored failures.
 Cleanup fixtures record successful OS free/unmap calls while ownership is held,
 avoiding assumptions that freed virtual addresses remain unused afterwards.
 Actual cache flushing was not exercised on the active desktop; its request is

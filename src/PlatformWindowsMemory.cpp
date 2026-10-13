@@ -558,9 +558,10 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size, b
                     ++cleanup.count;
 
                     if (!lockPages(chunk_addr, aligned_chunk)) {
-                        LOG_DEBUG("Allocation: chunk address unavailable bytes=%zu error=%lu", aligned_chunk, GetLastError());
-                        VirtualFree(chunk_addr, 0, MEM_RELEASE);
-                        --cleanup.count;
+                        // The chunk stays owned by cleanup, which releases it with the others
+                        // and reports release failures instead of dropping them silently.
+                        LOG_DEBUG("Allocation: hybrid tail lock failed chunk=%zu of %zu bytes=%zu error=%lu",
+                                  i, num_chunks, aligned_chunk, GetLastError());
                         hybrid_ok = false;
                         break;
                     }

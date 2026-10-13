@@ -256,10 +256,14 @@ bool Platform::allocateNativeMemory(MemoryRegion& region, size_t size, bool try_
             const int error = errno;
             struct rlimit limit{};
             const bool have_limit = getrlimit(RLIMIT_MEMLOCK, &limit) == 0;
-            LOG_ERROR("Allocation: mlock failed bytes=%zu error=%d memlock-limit=%llu strict=%s", size, error,
-                      have_limit ? static_cast<unsigned long long>(limit.rlim_cur) : 0ULL,
-                      allow_swappable ? "no" : "yes");
-            if (!allow_swappable) return false;
+            const unsigned long long memlock = have_limit ? static_cast<unsigned long long>(limit.rlim_cur) : 0ULL;
+            if (!allow_swappable) {
+                LOG_ERROR("Allocation: mlock failed bytes=%zu error=%d memlock-limit=%llu strict=yes", size, error, memlock);
+                return false;
+            }
+            // Explicitly permitted pageable fallback: the run continues unlocked.
+            LOG_WARN("Allocation: mlock failed bytes=%zu error=%d memlock-limit=%llu strict=no; continuing pageable",
+                     size, error, memlock);
         }
     }
     MemoryRegion observed;

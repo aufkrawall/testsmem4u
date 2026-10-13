@@ -14,6 +14,9 @@
   measured once in `runTests` (`MemoryRegion::page_coverage`, with `total_bytes`
   and `full()`); the regression proves RowHammer no longer queries the OS.
   The allocator's own pre-defrag query remains (second walk at startup only).
+- Windows hybrid tail-lock failure freed its chunk with unchecked raw
+  `VirtualFree`; it now stays owned by `MappingCleanup`. The new fixture failed
+  before the fix. Linux non-strict `mlock` failure is WARN, strict abort ERROR.
 
 ## 2026-10-13 - Integrate huge-page setup and expand operator documentation
 
