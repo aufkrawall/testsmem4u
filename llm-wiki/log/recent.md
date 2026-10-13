@@ -10,6 +10,10 @@
 - `hpage_pmd_size` absent now reads as MISSING (legacy global-only) instead of
   READ_ERROR, which made enabled policies fail inspection. Both its readers use
   `memory_pages::parsePageSize`; HugeTLB meminfo parsing is a separate helper.
+- RowHammer re-read `/proc/self/smaps` per worker/invocation. Coverage is now
+  measured once in `runTests` (`MemoryRegion::page_coverage`, with `total_bytes`
+  and `full()`); the regression proves RowHammer no longer queries the OS.
+  The allocator's own pre-defrag query remains (second walk at startup only).
 
 ## 2026-10-13 - Integrate huge-page setup and expand operator documentation
 

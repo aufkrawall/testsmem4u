@@ -43,6 +43,10 @@ struct MemoryRegion {
     size_t locked_offset = 0; // Offset into base where VirtualUnlock should start
     size_t locked_bytes = 0;
     size_t lp_chunk_size = 0;  // >0 when allocated as chunked large pages (each chunk freed separately)
+    // Whole-allocation large-page coverage, measured once after allocation and
+    // inherited unchanged by worker/sub-block slices. Linux THP measurement walks
+    // /proc/self/smaps, so tests must not re-query it per invocation.
+    memory_pages::Coverage page_coverage{};
 };
 
 class Platform {

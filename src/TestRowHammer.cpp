@@ -63,12 +63,14 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         return res;
     }
 
-    const auto page_coverage = Platform::queryLargePageCoverage(region);
-    if (!page_coverage.known || page_coverage.bytes < region.size) {
+    // Allocation-wide coverage measured once by runTests; re-measuring here would
+    // walk /proc/self/smaps per worker and invocation on Linux.
+    const auto& page_coverage = region.page_coverage;
+    if (!page_coverage.full()) {
         bool expected = false;
         if (g_rowhammer_large_page_warning_emitted.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            LOG_WARN("RowHammer: full large-page coverage is not confirmed (bytes=%zu..%zu of %zu, known=%s). Virtual strides do not establish physical row/bank adjacency.",
-                     page_coverage.bytes, page_coverage.possible_bytes, region.size, page_coverage.known ? "yes" : "no");
+            LOG_WARN("RowHammer: full large-page coverage of the test allocation is not confirmed (bytes=%zu..%zu of %zu, known=%s). Virtual strides do not establish physical row/bank adjacency.",
+                     page_coverage.bytes, page_coverage.possible_bytes, page_coverage.total_bytes, page_coverage.known ? "yes" : "no");
             LOG_WARN("Try reducing the test size, closing memory-heavy apps, or restarting the system.");
         }
     }

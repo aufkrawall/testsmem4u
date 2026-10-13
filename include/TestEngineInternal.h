@@ -2,9 +2,14 @@
 #include "TestEngine.h"
 #include "Logger.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 
 namespace testsmem4u {
+
+// One RowHammer coverage warning per run; reset by TestEngine::runTests.
+extern std::atomic<bool> g_rowhammer_large_page_warning_emitted;
+
 // Account verified blocks once, at the leaf kernel. Nested results are merged
 // for the return value only. Error deltas survive cancellation and unwinding.
 class VerificationProgress {

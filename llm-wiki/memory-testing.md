@@ -98,8 +98,10 @@ default HugeTLB page. Aligned anonymous mappings retain ownership of the target
 address range while trimming excess ends; failure/exception cleanup owns exactly
 the remaining mapping. Worker partitioning uses the OS base page size.
 
-`queryLargePageCoverage` reads Linux `/proc/self/smaps` after preparation and at
-RowHammer entry. It reports THP coverage and page-size targets alongside explicit
+`queryLargePageCoverage` reads Linux `/proc/self/smaps` after preparation and once
+in `runTests`, which stores the result in `MemoryRegion::page_coverage`; worker and
+sub-block slices inherit it unchanged and RowHammer judges `Coverage::full()` of the
+whole allocation (a per-invocation smaps walk scaled with window size and workers). It reports THP coverage and page-size targets alongside explicit
 large pages. Per-VMA totals cannot locate partial THPs within a worker/sub-block
 slice: report conservative lower/upper bounds, and require the lower bound to
 cover the whole slice before treating it as fully large. Missing or malformed

@@ -70,6 +70,9 @@ struct Coverage {
     size_t page_size = 0;
     bool known = false;
     bool transparent = false;
+    size_t total_bytes = 0; // Measured span; full() needs its lower bound covered.
+
+    bool full() const { return known && total_bytes > 0 && bytes >= total_bytes; }
 };
 
 // smaps gives per-VMA totals, not the positions of individual THPs. Partial
@@ -136,6 +139,7 @@ public:
 
     Coverage finish() const {
         Coverage result = result_;
+        result.total_bytes = end_ - begin_;
         result.known = valid_ && covered_ == end_ - begin_;
         if (!result.known) result.bytes = result.possible_bytes = 0;
         return result;

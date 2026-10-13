@@ -178,6 +178,10 @@ void testMemoryPageContracts() {
     auto result = full.finish();
     expect(result.known && result.bytes == 0x400000 && result.possible_bytes == result.bytes,
            "Full THP coverage is measured exactly");
+    expect(result.full() && result.total_bytes == 0x400000, "Measured coverage records its span and reports full coverage");
+    expect(!Coverage{}.full() && !Coverage{0x200000, 0x400000, 0, true, true, 0x400000}.full() &&
+           !Coverage{0x400000, 0x400000, 0, false, true, 0x400000}.full(),
+           "Unknown, unmeasured or lower-bound-partial coverage is never full");
 
     SmapsCoverage partial(0x400000, 0x200000);
     partial.consume("200000-600000 rw-p 00000000 00:00 0");

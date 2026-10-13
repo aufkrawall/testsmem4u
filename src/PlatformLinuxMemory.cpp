@@ -186,10 +186,13 @@ memory_pages::Coverage Platform::queryLargePageCoverage(const MemoryRegion& regi
     if (region.is_large_pages) {
         const size_t bytes = region.large_page_bytes > region.base_offset_bytes ?
             std::min(region.size, region.large_page_bytes - region.base_offset_bytes) : 0;
-        return {bytes, bytes, defaultHugePageSize(), true, false};
+        return {bytes, bytes, defaultHugePageSize(), true, false, region.size};
     }
     File file(std::fopen("/proc/self/smaps", "r"), &std::fclose);
-    if (!file) return {};
+    if (!file) {
+        LOG_DEBUG("Allocation: smaps unavailable error=%d; coverage unknown", errno);
+        return {};
+    }
     memory_pages::SmapsCoverage parser(reinterpret_cast<uintptr_t>(region.base), region.size);
     char line[512];
     bool continuation = false;
@@ -197,7 +200,10 @@ memory_pages::Coverage Platform::queryLargePageCoverage(const MemoryRegion& regi
         if (!continuation) parser.consume(line);
         continuation = std::strchr(line, '\n') == nullptr;
     }
-    if (std::ferror(file.get())) return {};
+    if (std::ferror(file.get())) {
+        LOG_DEBUG("Allocation: smaps read failed; coverage unknown");
+        return {};
+    }
     auto result = parser.finish();
     result.page_size = getPreferredLargePageSize();
     return result;

@@ -126,7 +126,6 @@ static std::vector<WorkerAssignment> buildWorkerAssignments(const MemoryRegion& 
 
 }
 
-extern std::atomic<bool> g_rowhammer_large_page_warning_emitted;
 // Static lifetime keeps asynchronous shutdown safe during teardown.
 static std::atomic<bool> g_stop_requested{false};
 
@@ -276,6 +275,7 @@ RunResult TestEngine::runTests(const Config& config
     region.large_page_bytes = guard.large_page_bytes();
     region.is_locked = guard.is_locked();
     const auto page_coverage = Platform::queryLargePageCoverage(region);
+    region.page_coverage = page_coverage;
     LOG_DEBUG("Allocation: coverage bytes=%zu..%zu known=%s transparent=%s page-size=%zu total=%zu",
               page_coverage.bytes, page_coverage.possible_bytes, page_coverage.known ? "yes" : "no",
               page_coverage.transparent ? "yes" : "no", page_coverage.page_size, region.size);

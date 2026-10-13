@@ -25,6 +25,7 @@
 
 ### Changed
 
+- **RowHammer coverage check:** RowHammer reuses the large-page coverage measured once after allocation instead of re-reading `/proc/self/smaps` for every worker and invocation, which walked the page tables of the whole test window while other workers were testing. Its warning now reports allocation-wide coverage.
 - **Windows aggressive preparation:** ordinary full large-page attempts now run first. Only failure permits one system-wide preparation and retry; allocation no longer relies on fixed sleeps or increasing delays.
 - **Linux huge-page preparation:** automatic huge-page provisioning uses process-owned transparent pages instead of changing the persistent HugeTLB pool, preventing reservations from remaining after a kill or overwriting concurrent pool changes. Preconfigured HugeTLB pools remain supported; `--aggressive-defrag` retains optional cache dropping, compaction and one process-local collapse attempt without fixed delays.
 
