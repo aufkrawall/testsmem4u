@@ -298,7 +298,8 @@ Parameter 1-100 (0 = 1) is a pass multiplier; >100 is an explicit per-region acc
 count (`randomAccessIterations`). executeSuite warns about the latter at startup.
 Expected/written values use a `uint64_t` word start: a `size_t` complement on
 32-bit targets left the upper half unflipped (fixed 2026-10-14, covered by
-`tests/test_random_access_width.h`, which only fails on 32-bit runners).
+`tests/test_random_access_width.h`, which only fails on 32-bit runners; the default
+`--tests` `x86` runner fails it with the old `size_t` word start).
 
 RandomAccess prepares band starts/sizes once, retaining the original native
 remainder calculation, RNG sequence, addresses and partial-batch counts. Written

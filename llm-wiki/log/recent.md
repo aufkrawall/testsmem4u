@@ -1,5 +1,15 @@
 # Recent Log
 
+## 2026-10-14 - Post-1.9 review fixes
+
+- Review of the RandomAccess audit merge found that the 32-bit inversion regression
+  could not fail on any automated runner (all were x86_64). `--tests` now adds a
+  32-bit `x86` runner (`i686-w64-mingw32` via the pinned llvm-mingw multi-target
+  sysroot, run under WOW64; its runtime DLLs come from `i686-w64-mingw32/bin`).
+  Reverting `word_start` to `size_t` fails exactly the width check on that runner.
+  Enabling it exposed two `%zu`/`SIZE_T` format mismatches in
+  `PlatformWindowsMemory.cpp` (`SIZE_T` is `unsigned long` on Win32), now `size_t`.
+
 ## 2026-10-14 - Merge the RandomAccess audit into main
 
 - Integrated the audit regressions, mismatch diagnostics and x86 flush granule fix

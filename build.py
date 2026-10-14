@@ -445,7 +445,7 @@ def get_cxx_command(target: dict, compile_flags: list[str]) -> list[str]:
                  if not f.startswith("-l") and not f.startswith("-Xlinker")]
         return [
             str(MINGW_CXX),
-            "--target=x86_64-w64-mingw32",
+            f"--target={target.get('mingw_triple', 'x86_64-w64-mingw32')}",
             *filtered,
             *extra,
             f"-I{INCLUDE_DIR}",
@@ -598,7 +598,22 @@ TEST_ISA_FLAGS = {
     "baseline": {"zig": [], "mingw": []},
     "v3": {"zig": HOST_V3_FLAGS, "mingw": HOST_V3_FLAGS_MINGW},
     "v4": {"zig": HOST_V4_FLAGS, "mingw": HOST_V4_FLAGS_MINGW},
+    "x86": {"zig": [], "mingw": []},
 }
+
+# The x86 test runner is a 32-bit (ILP32) Windows build that runs natively via
+# WOW64. It catches word-width defects that 64-bit runners cannot observe, such
+# as 64-bit pattern values computed in 32-bit size_t (the linux-x86 release
+# target shares that data model). It is test-only, not a release target.
+# -msse2/-Wno-atomic-alignment match the linux-x86 release target's rationale.
+TEST_TARGET_X86 = {
+    "zig_target": "x86-windows-gnu",
+    "mingw_triple": "i686-w64-mingw32",
+    "extra_flags": ["-msse2", "-Wno-atomic-alignment", "-ladvapi32"],
+    "extra_flags_mingw": ["-msse2", "-Wno-atomic-alignment"],
+    "obj_ext": ".obj",
+}
+DEFAULT_TEST_ISAS = ["baseline", "v3", "x86"]
 
 
 def build_tests(run_tests: bool = True, isa_variants: list[str] | None = None) -> bool:
@@ -632,7 +647,7 @@ def build_tests_variant(isa: str, run_tests: bool) -> bool:
         print(f"[!] Test source not found: {TEST_SRC_FILE}")
         return False
 
-    target = TARGETS["windows-x86_64"]
+    target = TEST_TARGET_X86 if isa == "x86" else TARGETS["windows-x86_64"]
     variant_dir = "tests" if isa == "baseline" else f"tests-{isa}"
     obj_dir = BUILD_DIR / "obj" / _current_toolchain / _current_build_mode / variant_dir
     obj_dir.mkdir(parents=True, exist_ok=True)
@@ -681,7 +696,7 @@ def build_tests_variant(isa: str, run_tests: bool) -> bool:
                          and not f.startswith("-mcpu=")]
         link_cmd = [
             str(MINGW_CXX),
-            "--target=x86_64-w64-mingw32",
+            f"--target={target.get('mingw_triple', 'x86_64-w64-mingw32')}",
             *link_filtered,
             *[str(obj) for obj in obj_files],
             f"-o{test_exe}",
@@ -712,6 +727,9 @@ def build_tests_variant(isa: str, run_tests: bool) -> bool:
     test_env = os.environ.copy()
     if _current_toolchain == "mingw" and MINGW_CXX.exists():
         mingw_bin = str(MINGW_CXX.parent)
+        if "mingw_triple" in target:
+            # Prefer the target's runtime DLLs over the host-architecture ones.
+            mingw_bin = f"{MINGW_CXX.parent.parent / target['mingw_triple'] / 'bin'};{mingw_bin}"
         test_env["PATH"] = f"{mingw_bin};{test_env.get('PATH', '')}"
     result = subprocess.run([str(test_exe)], cwd=PROJECT_ROOT, capture_output=True, text=True, env=test_env)
     if result.stdout.strip():
@@ -720,7 +738,7 @@ def build_tests_variant(isa: str, run_tests: bool) -> bool:
         print(result.stderr)
     if result.returncode != 0:
         print(f"[!] Internal tests ({isa}) failed with exit code {result.returncode}")
-        if isa != "baseline":
+        if isa in ("v3", "v4"):
             print(f"    Note: the {isa} runner requires a CPU supporting the corresponding ISA "
                   f"(AVX2 for v3, AVX-512 for v4).")
         return False
@@ -998,7 +1016,7 @@ def main() -> int:
     parser.add_argument(
         "--tests",
         action="store_true",
-        help="Build and run the small internal C++ test runner.",
+        help="Build and run the internal C++ test runners (SSE2 baseline, AVX2 and 32-bit x86).",
     )
     parser.add_argument(
         "--no-run-tests",
@@ -1128,7 +1146,7 @@ def main() -> int:
         # Tests use the first available toolchain; prefer mingw for native host.
         if args.toolchain == "all":
             _current_toolchain = "mingw"
-        isa_variants = ["baseline", "v3"] + (["v4"] if args.tests_v4 else [])
+        isa_variants = DEFAULT_TEST_ISAS + (["v4"] if args.tests_v4 else [])
         return 0 if build_tests(run_tests=not args.no_run_tests, isa_variants=isa_variants) else 1
 
     # Partition targets by their required toolchain, then build each group with

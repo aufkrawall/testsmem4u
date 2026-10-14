@@ -123,13 +123,16 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `--compile-commands` with the default `all` toolchain selects native Windows
   targets for the LSP profile when present, otherwise the requested Zig targets.
 - `python build.py --fuzz`: Builds fuzzing harness for preset/config parsers (requires Linux or MSVC/Clang-cl; libFuzzer unavailable on Windows MinGW). The harness uses unique temporary files, including absolute temp paths.
-- `python build.py --tests`: Builds and runs the internal tests twice — an SSE2
-  baseline runner and an AVX2 (`-v3`) runner so the AVX2 generate/verify paths
-  are exercised. `--tests-v4` adds an AVX-512 runner (requires AVX-512 host).
+- `python build.py --tests`: Builds and runs the internal tests three times — an
+  SSE2 baseline runner, an AVX2 (`-v3`) runner so the AVX2 generate/verify paths
+  are exercised, and a 32-bit `x86` runner (`i686-w64-mingw32`, runs via WOW64,
+  test-only `TEST_TARGET_X86`) so ILP32 word-width defects shared with the
+  `linux-x86` release target are observable. `--tests-v4` adds an AVX-512 runner
+  (requires AVX-512 host). Sanitizer runs still use only baseline/AVX2.
   It also builds the baseline application and runs Python CLI/build-tool tests,
   including a real analyzer null-dereference fixture that must fail the lint gate.
   `--no-run-tests` only builds the C++ runners.
-- `python build.py --run-sanitizers`: Runs ASan + UBSan builds and tests (both ISA runners each).
+- `python build.py --run-sanitizers`: Runs ASan + UBSan builds and tests (baseline and AVX2 runners each).
 
 ## Test Coverage
 - Internal tests covering: Utils parsing, strict Test Sequence parsing, Preset loading/validation, explicit absolute preset paths, Config save/load round-trip and invalid-load rollback, SIMD pattern generation/verification (including recorded-observed-value pinning and verify_pattern_pair), LFSR vectors, independent workers, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess, Modulo20, active retention, and RowHammer.

@@ -142,9 +142,9 @@ bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t 
     }
 
     // Set working set size before allocating so VirtualLock can reserve enough pages.
-    SIZE_T overhead = size_t{128} * 1024 * 1024;
-    SIZE_T min_ws = size + overhead;
-    SIZE_T max_ws = size + overhead + (size_t{512} * 1024 * 1024);
+    const size_t overhead = size_t{128} * 1024 * 1024;
+    const size_t min_ws = size + overhead;
+    const size_t max_ws = size + overhead + (size_t{512} * 1024 * 1024);
 
     if (!setWorkingSet(min_ws, max_ws)) {
         DWORD err = GetLastError();
@@ -536,10 +536,10 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size, b
                             continue;
                         }
 
-                        SIZE_T remaining_bytes = (num_chunks - i) * aligned_chunk;
-                        SIZE_T overhead = size_t{128} * 1024 * 1024;
-                        SIZE_T min_ws = remaining_bytes + overhead;
-                        SIZE_T max_ws = remaining_bytes + overhead + (size_t{512} * 1024 * 1024);
+                        const size_t remaining_bytes = (num_chunks - i) * aligned_chunk;
+                        const size_t overhead = size_t{128} * 1024 * 1024;
+                        const size_t min_ws = remaining_bytes + overhead;
+                        const size_t max_ws = remaining_bytes + overhead + (size_t{512} * 1024 * 1024);
                         if (!setWorkingSet(min_ws, max_ws)) {
                             hybrid_ok = false;
                             break;
