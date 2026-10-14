@@ -107,6 +107,14 @@ inline uint64_t globalWordStart(const MemoryRegion& region, size_t local_start_i
 // (0 means 1 pass); larger values are an explicit access count per region.
 constexpr uint32_t kRandomAccessPassLimit = 100;
 
+// RandomAccess checks up to this many words per batch, one per disjoint address
+// band, each through original/inverted/restored phases.
+constexpr size_t kRandomAccessLanes = 16;
+
+// Per-region cap on `RandomAccess mismatch:` debug lines; later mismatching
+// batches are only counted in the region summary line.
+constexpr uint64_t kRandomAccessMismatchLogLimit = 8;
+
 inline uint64_t randomAccessIterations(uint32_t parameter, size_t words) {
     if (parameter > kRandomAccessPassLimit) return parameter;
     return static_cast<uint64_t>(words) * std::max(1U, parameter);

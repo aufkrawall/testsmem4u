@@ -17,6 +17,14 @@
   `start_idx` parameters are `uint64_t`, so no caller can repeat the 32-bit
   complement truncation (previously only RandomAccess was widened locally). No
   live defect elsewhere: other callers only add/multiply into 64-bit values.
+- `RandomAccess mismatch:` debug lines are capped at 8 per region with a
+  `mismatch-batches` total in the summary (a failing DIMM could previously add up
+  to three lines per 16 accesses under `--debug`). Verified with a scratch
+  (uncommitted) probe: 13 mismatching batches -> 8 detail lines, summary 13. No
+  automated test: the test runner has no log-capture API and `Logger` cannot
+  restore its level after a DEBUG `init`, so a test would leak state.
+- RandomAccess tests use the exported `kRandomAccessLanes`, `kRandomAccessPassLimit`
+  and `randomAccessIterations` instead of hard-coded 16/100/formula copies.
 
 ## 2026-10-14 - Merge the RandomAccess audit into main
 

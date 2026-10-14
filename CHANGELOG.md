@@ -5,7 +5,7 @@
 ### Improved
 
 - **32-bit regression coverage:** `python build.py --tests` now also builds and runs a 32-bit x86 Windows test runner, so defects specific to 32-bit builds such as `linux-x86` (for example the RandomAccess inversion fix below) are caught automatically instead of only by manual cross-builds.
-- **RandomAccess error diagnosis:** debug logs identify the original, inverted or restored phase and the batch's access offset when a mismatch occurs. Focused regressions check clean runs at large logical offsets, partial batches, exact coverage, boundary preservation, transient/persistent errors in every phase and halt/continue behavior.
+- **RandomAccess error diagnosis:** debug logs identify the original, inverted or restored phase and the batch's access offset when a mismatch occurs, for the first 8 mismatching batches per region; the region summary counts the rest, so a failing module cannot flood the debug log. Focused regressions check clean runs at large logical offsets, partial batches, exact coverage, boundary preservation, transient/persistent errors in every phase and halt/continue behavior.
 
 ### Fixed
 

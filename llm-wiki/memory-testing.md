@@ -323,7 +323,12 @@ and SIMD implementation with the pinned Zig 0.14.0/Clang 19.1.7 release flags,
 adding only the post-load observation hook to its test build. A deliberate wrong
 restoration mutation fails the new checks. These checks cannot prove absence of
 compiler or hardware faults on other systems. Mismatch-only `RandomAccess mismatch:` debug lines record
-region offset, batch access start, phase, active lanes and sample count. Existing
+region offset, batch access start, phase, active lanes and sample count; only the
+first `kRandomAccessMismatchLogLimit` (8) per region are logged (the eighth says
+so), and the region summary line reports the total `mismatch-batches`. The tests
+derive lane/observation indices from `kRandomAccessLanes` and access counts from
+`randomAccessIterations`/`kRandomAccessPassLimit`, so changing either constant
+keeps the per-phase injections aimed at the phase they claim. Existing
 error lines retain the original wrong value for soft observations.
 
 The v1.7 algorithm also uses disjoint bands, volatile first loads and a completed

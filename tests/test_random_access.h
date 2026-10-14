@@ -10,7 +10,8 @@ void testRandomAccessContracts() {
             ? static_cast<size_t>(uint64_t{0x100000000} * 8 - 64) : size_t{0x80000000}};
     for (size_t offset : offsets) {
         for (size_t count : {0U, 1U, 2U, 7U, 15U, 16U, 17U, 31U, 32U, 33U, 511U, 513U, 1027U}) {
-            for (uint32_t parameter : {0U, 1U, 3U, 100U, 101U, 113U}) {
+            for (uint32_t parameter : {0U, 1U, 3U, kRandomAccessPassLimit, kRandomAccessPassLimit + 1,
+                                       kRandomAccessPassLimit + 13}) {
                 memory.fill(sentinel);
                 MemoryRegion region{};
                 // Keep NT-store alignment while guarding both ends of the region.
@@ -21,7 +22,7 @@ void testRandomAccessContracts() {
                 TestConfig tc;
                 tc.parameter = parameter;
                 const auto result = TestEngine::runRandomAccess(ctx, region, tc, false);
-                const uint64_t accesses = parameter > 100 ? parameter : uint64_t{count} * std::max(1U, parameter);
+                const uint64_t accesses = randomAccessIterations(parameter, count);
                 expect(result.total_errors() == 0 && !ctx.shouldStop(),
                        "RandomAccess clean phases never invent errors at offset/size/parameter boundaries");
                 expect(result.bytes_tested == (count ? 2 * region.size + 3 * accesses * sizeof(uint64_t) : 0),
@@ -36,16 +37,25 @@ void testRandomAccessContracts() {
         }
     }
 
-    // With 17 words, the first fifteen bands contain one word each. Lane 0's
-    // post-load hook can therefore corrupt lane 1 before its load, at any phase.
-    // Repairing in lane 1's post-load hook models a transient observation exactly,
-    // without races, sleeps, or a second implementation of the random generator.
+    // With lanes + 1 words, every band but the last contains one word, so lane k
+    // reads word k and each phase of a batch makes kRandomAccessLanes
+    // observations. Lane 0's post-load hook can therefore corrupt lane 1 before
+    // its load, at any phase. Repairing in lane 1's post-load hook models a
+    // transient observation exactly, without races, sleeps, or a second
+    // implementation of the random generator.
+    constexpr size_t lanes = kRandomAccessLanes;
+    constexpr size_t words = lanes + 1;
+    // An explicit access count spanning more than two batches lets restored-phase
+    // damage be observed again by the next batch.
+    constexpr uint32_t accesses = kRandomAccessPassLimit + 1;
+    static_assert(lanes >= 2 && words <= memory.size() - 8 && accesses > 2 * lanes,
+                  "Fault injection needs two single-word lanes and a following batch");
     for (size_t phase = 0; phase < 3; ++phase) {
         for (bool transient : {false, true}) {
             for (bool halt : {false, true}) {
                 MemoryRegion region{};
                 region.base = reinterpret_cast<uint8_t*>(memory.data());
-                region.size = 17 * sizeof(uint64_t);
+                region.size = words * sizeof(uint64_t);
                 region.base_offset_bytes = 0x10000;
                 size_t observations = 0;
                 bool injected = false;
@@ -54,16 +64,16 @@ void testRandomAccessContracts() {
                 ctx.phase_hook = [&](const char* name, const MemoryRegion&) {
                     if (std::string(name) != "Random observed") return;
                     const size_t observation = observations++;
-                    if (observation == phase * 16) {
+                    if (observation == phase * lanes) {
                         memory[1] ^= 0x74;
                         injected = true;
-                    } else if (transient && observation == phase * 16 + 1) {
+                    } else if (transient && observation == phase * lanes + 1) {
                         memory[1] ^= 0x74;
                         repaired = true;
                     }
                 };
                 TestConfig tc;
-                tc.parameter = 101;
+                tc.parameter = accesses;
                 const auto result = TestEngine::runRandomAccess(ctx, region, tc, halt);
                 // Persistent restored-phase damage is also seen at the next
                 // original read, then repaired by the next inversion/restore.
@@ -75,7 +85,7 @@ void testRandomAccessContracts() {
                        "RandomAccess classifies first observations in original/inverted/restored phases exactly");
                 if (!halt) {
                     bool restored = true;
-                    for (size_t i = 0; i < 17; ++i) restored &= memory[i] == region.base_offset_bytes / 8 + i;
+                    for (size_t i = 0; i < words; ++i) restored &= memory[i] == region.base_offset_bytes / 8 + i;
                     expect(restored, "RandomAccess continues and restores the region after a reported error");
                 }
             }

@@ -133,13 +133,14 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     const auto started = std::chrono::steady_clock::now();
     const uint64_t iterations = randomAccessIterations(config.parameter, count);
     uint64_t state = 0x1234567890ABCDEFULL ^ word_start;
-    constexpr size_t lanes = 16;
+    constexpr size_t lanes = kRandomAccessLanes;
     std::array<size_t, lanes> indices{};
     std::array<size_t, lanes> band_starts{};
     std::array<size_t, lanes> band_sizes{};
     std::array<void*, lanes> flush_lines{};
     std::vector<std::pair<uint64_t, uint64_t>> errors;
     errors.reserve(lanes);
+    uint64_t mismatch_batches = 0;
     const size_t width = std::min(lanes, count);
     const size_t band_words = count / width;
     for (size_t lane = 0; lane < width; ++lane) {
@@ -170,10 +171,12 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
 #endif
                 if (observed != expected) errors.emplace_back(idx, observed);
             }
-            if (!errors.empty()) {
-                LOG_DEBUG("RandomAccess mismatch: offset=%zu batch-start=%llu phase=%s lanes=%zu samples=%zu",
+            if (!errors.empty() && ++mismatch_batches <= kRandomAccessMismatchLogLimit) {
+                LOG_DEBUG("RandomAccess mismatch: offset=%zu batch-start=%llu phase=%s lanes=%zu samples=%zu%s",
                           region.base_offset_bytes, static_cast<unsigned long long>(done),
-                          phase == 0 ? "original" : phase == 1 ? "inverted" : "restored", n, errors.size());
+                          phase == 0 ? "original" : phase == 1 ? "inverted" : "restored", n, errors.size(),
+                          mismatch_batches == kRandomAccessMismatchLogLimit
+                              ? " (limit reached; further batches only counted)" : "");
             }
             classifyAndLogErrors(region, ptr, errors, errors.size(), 0,
                                  [&](size_t idx) { return phase == 1 ? ~(word_start + idx) : word_start + idx; },
@@ -189,10 +192,11 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
         done += n;
     }
     LOG_DEBUG("RandomAccess: offset=%zu words=%zu accesses=%llu (Parameter=%u) lanes=%zu "
-              "flush=batch errors=%llu in %.3fs%s",
+              "flush=batch errors=%llu mismatch-batches=%llu in %.3fs%s",
               region.base_offset_bytes, count, static_cast<unsigned long long>(iterations), config.parameter,
               width,
               static_cast<unsigned long long>(res.total_errors()),
+              static_cast<unsigned long long>(mismatch_batches),
               std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
               ctx.shouldStop() ? " [stopped]" : "");
     // Catch damage to non-selected cells and the last restored values too.
