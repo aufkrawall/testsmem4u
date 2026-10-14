@@ -1,6 +1,10 @@
 #include "ConsoleDisplay.h"
 #include "TestEngine.h"
 #include "simd_ops.h"
+#include "SimdCacheGeometry.h"
+#if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+#endif
 #include "Utils.h"
 #include "ConfigManager.h"
 #include "testsmem4u.h"
@@ -664,6 +668,8 @@ void testRunResultMerge() {
 #include "test_progress_regressions.h"
 #include "test_step_progress.h"
 #include "test_random_access_width.h"
+#include "test_random_access.h"
+#include "test_cache_geometry.h"
 
 } // namespace
 
@@ -717,6 +723,8 @@ int main() try {
 
     testEngineRegressions();
     testRandomAccessInvertsFullWords();
+    testRandomAccessContracts();
+    testCacheFlushGeometry();
     testUniformMarchSpecialization();
     testLfsrParallelGeneration();
     testTrafficKernelSpecializations();

@@ -172,6 +172,11 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
 #endif
                 if (observed != expected) errors.emplace_back(idx, observed);
             }
+            if (!errors.empty()) {
+                LOG_DEBUG("RandomAccess mismatch: offset=%zu batch-start=%llu phase=%s lanes=%zu samples=%zu",
+                          region.base_offset_bytes, static_cast<unsigned long long>(done),
+                          phase == 0 ? "original" : phase == 1 ? "inverted" : "restored", n, errors.size());
+            }
             classifyAndLogErrors(region, ptr, errors, errors.size(), 0,
                                  [&](size_t idx) { return phase == 1 ? ~(word_start + idx) : word_start + idx; },
                                  res, ctx, "RandomAccess", stop);

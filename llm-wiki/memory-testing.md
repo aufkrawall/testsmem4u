@@ -1,6 +1,8 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-10-14 for Linux lock-before-prefault ordering; 2026-10-13 for
+Last verified: 2026-10-14 for RandomAccess false-positive contracts, 32-bit full-width
+inversion, x86 flush geometry, release cross-builds and Linux lock-before-prefault
+ordering; 2026-10-13 for
 page-allocation defaults, native kernel contracts, performance and progress/result
 reporting; 2026-09-30 for other runtime paths. Stale risk: medium for hardware effectiveness and unobserved
 long-run stalls; low for tested native progress/accounting paths.
@@ -305,6 +307,29 @@ original observation is retained; a repaired-after-load fault still counts as so
 Reciprocal remainders and a separate load-then-compare array were tested but
 rejected: longer one-/sixteen-worker measurements showed no throughput gain.
 
+False-positive audit (2026-10-14): `tests/test_random_access.h` exercises clean
+original/inverted/restored checks with empty, tiny, uneven and partial-batch regions,
+Parameter 0/1/3/100/101/113, exact verified-byte counts, range sentinels and synthetic
+logical offsets crossing 32-bit word indices on 64-bit builds. Deterministic
+post-load hooks inject and optionally repair a mismatch in each of the three
+phases, checking hard/soft classification and halt/continue behavior. No timing
+assumptions or actual large allocation are required. The initial Windows and WSL
+baseline/AVX2 runs pass. An isolated probe also passes against v1.7's RandomAccess
+and SIMD implementation with the pinned Zig 0.14.0/Clang 19.1.7 release flags,
+adding only the post-load observation hook to its test build. A deliberate wrong
+restoration mutation fails the new checks. These checks cannot prove absence of
+compiler or hardware faults on other systems. Mismatch-only `RandomAccess mismatch:` debug lines record
+region offset, batch access start, phase, active lanes and sample count. Existing
+error lines retain the original wrong value for soft observations.
+
+The v1.7 algorithm also uses disjoint bands, volatile first loads and a completed
+flush/fence before each reread/next phase. Its expected original/restored value is
+the allocation-relative byte offset divided by eight; the complement is expected
+only in the inverted phase. Workers own disjoint native-page slices. Soft means
+the first observation mismatched and the forced reread matched; this classification
+does not isolate a DIMM cell from CPU/cache/controller instability. Ordinary locked
+pages and independent worker progress do not themselves create data mismatches.
+
 Modulo20 holds one word in every 20 at one polarity while repeatedly writing the
 other 19 with its complement. Software never reads or writes a protected word during
 disturbance, but it shares a cache line with peers: the RFO fetches it and the flush
@@ -335,6 +360,32 @@ point/iteration budgets are unchanged. The software contracts are regression
 tested; physical activation rates and fault-detection gains remain unmeasured.
 
 ## Diagnostics and interpretation
+
+### x86 cache-flush geometry
+
+Sources: `include/SimdCacheGeometry.h::x86FlushLineSize`,
+`src/simd_ops.cpp::detect_x86_capabilities`, `flush_cache_region`,
+`tests/test_cache_geometry.h`. Verified 2026-10-14.
+
+The flush stride comes directly from CPUID leaf 1, EBX bits 15:8, multiplied by
+eight when EDX.CLFSH is present. This field describes both CLFLUSH and CLFLUSHOPT
+on Intel/AMD; missing, zero or non-power-of-two values keep the existing 64-byte
+fallback. The old implementation compared the basic maximum leaf with an extended
+leaf number (making its AMD branch unreachable), then decoded Intel leaf-4 EAX
+instead of EBX with the wrong scale. A wrong stride can skip cache lines or flush
+them redundantly, affecting coverage/throughput rather than inventing a mismatch.
+The current startup `Kernels:` debug line already reports the selected line size
+and flush method; no additional hot-path logging is needed.
+
+Synthetic fixtures cover 8..1024-byte power-of-two granules, unrelated EBX fields,
+missing CLFSH and malformed values; native x86 checks compare runtime capabilities
+with the actual CPUID leaf. An isolated process-local CPUID fixture advertising
+32-byte flush lines detects 64 before the fix and 32 afterwards. This is synthetic
+regression evidence, not a claim of reproducing the defect on affected hardware.
+The decoding follows the [Intel CPUID specification](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2a-manual.pdf)
+and [AMD family-17h CPUID reference](https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/programmer-references/55803-ppr-family-17h-model-31h-b0-processors.pdf).
+
+### Runtime observations
 
 - Startup logs describe independent scheduling and active retention. Debug logs
   (`--debug`) identify worker region offsets/weights, test starts, and elapsed test

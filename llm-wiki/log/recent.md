@@ -1,11 +1,58 @@
 # Recent Log
 
+## 2026-10-14 - Merge the RandomAccess audit into main
+
+- Integrated the audit regressions, mismatch diagnostics and x86 flush granule fix
+  while retaining the independent 32-bit inversion correction and its direct
+  memory regression. Changelog/wiki conflicts retain both sets of findings.
+- Combined Windows baseline/AVX2 suites, 20 Python checks (one Linux-only skip),
+  and WSL Linux x86, x86-64 baseline and AVX2 suites pass. Strict static analysis
+  of the merged traffic kernel and test runner passes; wiki links are valid.
+
+## 2026-10-14 - Correct x86 cache-flush geometry after the error audit
+
+- Flush loops now use CPUID.1 EBX[15:8] in eight-byte units with CLFSH validation,
+  replacing unreachable AMD detection and wrongly decoded Intel cache-topology
+  fields. Existing startup debug logs expose the chosen granule/method. This is a
+  coverage/throughput defect; no link to the reported transient error was found.
+- Pure decoding and native CPUID regressions pass. An isolated synthetic 32-byte
+  CPU fixture fails on the previous 64-byte result and passes after the fix.
+- Windows and WSL baseline/AVX2 internal suites pass; all nine pinned-toolchain
+  release targets build. Bounded WSL baseline/AVX2 runs alternate RandomAccess and
+  address-pattern SimpleTest using 64 MiB, 12 available workers and two complete
+  cycles, with locked native pages and locked THP: all four runs find zero errors
+  and leave no smoke processes. ARM and AVX-512 runtime behavior remain untested.
+- RandomAccess ASan/UBSan baseline/AVX2 checks passed before isolation. The audit
+  was developed in a dedicated worktree while another agent owned concurrent main
+  edits, including a separate 32-bit inversion-coverage correction.
+- Strict native static analysis passes after correcting an implicit-widening
+  warning in the new helper; production helper users were rechecked in all three
+  compilation-database ISA profiles, plus the baseline test runner. Wiki links and
+  semantic scope were checked; no private report paths, logs or captures are tracked.
+
+## 2026-10-14 - Audit RandomAccess false-positive paths
+
+- Reviewed v1.7 and current pattern indices, exclusive worker regions, first-load
+  preservation, original/inverted/restored ordering, cache flush/fences and forced
+  reread classification. No software false-positive cause was established.
+- Added focused clean-boundary and deterministic per-phase transient/persistent
+  fault regressions, including large synthetic logical offsets, exact byte totals,
+  boundary sentinels and halt/continue behavior. Windows baseline/AVX2 and WSL
+  baseline/AVX2 suites pass. Debug-only mismatch summaries identify phase/batch.
+- The focused probe passes on v1.7's RandomAccess and SIMD source under the pinned
+  Zig 0.14.0 (Clang 19.1.7), baseline and AVX2 release flags. Its only added code is
+  the post-load test hook. Deliberately restoring the wrong value produces 446
+  assertion failures, establishing that the new coverage detects phase damage.
+- Cache-line CPUID decoding was tracked separately (see the correction above),
+  rather than treated as an explanation for a transient wrong observation.
+  Physical fault attribution remains unproven.
+
 ## 2026-10-14 - RandomAccess false-positive review and 32-bit inversion fix
 
 - Triggered by a user-reported RandomAccess soft error (v1.7, Linux SSE2 baseline,
   mlock'd 4 KiB pages, overclocked RAM). Reviewed fill/sweep/random phases,
   `classifyAndLogErrors`, `safe_read_u64`, SIMD verifiers and worker partitioning:
-  no path can invent a mismatch (expected/written formulas match, regions and lane
+  no false-positive path was identified (expected/written formulas match, regions and lane
   bands are disjoint, volatile load cannot be reordered before the same-address
   store, mismatches are recorded from the first load). 1.7's RandomAccess is
   semantically identical to 1.9. Conclusion: the report is very likely genuine.

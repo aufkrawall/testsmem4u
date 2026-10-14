@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+### Improved
+
+- **RandomAccess error diagnosis:** debug logs identify the original, inverted or restored phase and the batch's access offset when a mismatch occurs. Focused regressions check clean runs at large logical offsets, partial batches, exact coverage, boundary preservation, transient/persistent errors in every phase and halt/continue behavior.
+
 ### Fixed
 
 - **RandomAccess on 32-bit Linux:** the inverted phase now flips all 64 bits of each checked word. The `linux-x86` build previously left the upper 32 bits at zero in both phases, so faults in those bits went undetected there. Other targets were unaffected, and no build could report false errors from this.
+- **x86 cache-flush stride:** use the CPU's advertised CLFLUSH/CLFLUSHOPT granule instead of incorrectly decoded cache-topology fields. This prevents a wrong stride from skipping cache lines on affected CPUs; it was not established as a cause of false-positive errors.
 
 ## 1.9 - 2026-10-14
 
