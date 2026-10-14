@@ -1,7 +1,7 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-10-14 for RandomAccess false-positive contracts and Linux
-lock-before-prefault ordering; 2026-10-13 for
+Last verified: 2026-10-14 for RandomAccess false-positive contracts, x86 flush
+geometry, release cross-builds and Linux lock-before-prefault ordering; 2026-10-13 for
 page-allocation defaults, native kernel contracts, performance and progress/result
 reporting; 2026-09-30 for other runtime paths. Stale risk: medium for hardware effectiveness and unobserved
 long-run stalls; low for tested native progress/accounting paths.
@@ -356,6 +356,32 @@ point/iteration budgets are unchanged. The software contracts are regression
 tested; physical activation rates and fault-detection gains remain unmeasured.
 
 ## Diagnostics and interpretation
+
+### x86 cache-flush geometry
+
+Sources: `include/SimdCacheGeometry.h::x86FlushLineSize`,
+`src/simd_ops.cpp::detect_x86_capabilities`, `flush_cache_region`,
+`tests/test_cache_geometry.h`. Verified 2026-10-14.
+
+The flush stride comes directly from CPUID leaf 1, EBX bits 15:8, multiplied by
+eight when EDX.CLFSH is present. This field describes both CLFLUSH and CLFLUSHOPT
+on Intel/AMD; missing, zero or non-power-of-two values keep the existing 64-byte
+fallback. The old implementation compared the basic maximum leaf with an extended
+leaf number (making its AMD branch unreachable), then decoded Intel leaf-4 EAX
+instead of EBX with the wrong scale. A wrong stride can skip cache lines or flush
+them redundantly, affecting coverage/throughput rather than inventing a mismatch.
+The current startup `Kernels:` debug line already reports the selected line size
+and flush method; no additional hot-path logging is needed.
+
+Synthetic fixtures cover 8..1024-byte power-of-two granules, unrelated EBX fields,
+missing CLFSH and malformed values; native x86 checks compare runtime capabilities
+with the actual CPUID leaf. An isolated process-local CPUID fixture advertising
+32-byte flush lines detects 64 before the fix and 32 afterwards. This is synthetic
+regression evidence, not a claim of reproducing the defect on affected hardware.
+The decoding follows the [Intel CPUID specification](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2a-manual.pdf)
+and [AMD family-17h CPUID reference](https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/programmer-references/55803-ppr-family-17h-model-31h-b0-processors.pdf).
+
+### Runtime observations
 
 - Startup logs describe independent scheduling and active retention. Debug logs
   (`--debug`) identify worker region offsets/weights, test starts, and elapsed test

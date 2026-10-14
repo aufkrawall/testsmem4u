@@ -1,5 +1,26 @@
 # Recent Log
 
+## 2026-10-14 - Correct x86 cache-flush geometry after the error audit
+
+- Flush loops now use CPUID.1 EBX[15:8] in eight-byte units with CLFSH validation,
+  replacing unreachable AMD detection and wrongly decoded Intel cache-topology
+  fields. Existing startup debug logs expose the chosen granule/method. This is a
+  coverage/throughput defect; no link to the reported transient error was found.
+- Pure decoding and native CPUID regressions pass. An isolated synthetic 32-byte
+  CPU fixture fails on the previous 64-byte result and passes after the fix.
+- Windows and WSL baseline/AVX2 internal suites pass; all nine pinned-toolchain
+  release targets build. Bounded WSL baseline/AVX2 runs alternate RandomAccess and
+  address-pattern SimpleTest using 64 MiB, 12 available workers and two complete
+  cycles, with locked native pages and locked THP: all four runs find zero errors
+  and leave no smoke processes. ARM and AVX-512 runtime behavior remain untested.
+- RandomAccess ASan/UBSan baseline/AVX2 checks passed before isolation. Changes live
+  in a dedicated worktree because another agent owns concurrent edits to the main
+  checkout, including a separate 32-bit inversion-coverage correction.
+- Strict native static analysis passes after correcting an implicit-widening
+  warning in the new helper; the final helper and test runner were rechecked in
+  all three compilation-database ISA profiles. Wiki links and semantic scope were
+  checked; no private report paths, logs or captures are tracked.
+
 ## 2026-10-14 - Audit RandomAccess false-positive paths
 
 - Reviewed v1.7 and current pattern indices, exclusive worker regions, first-load
@@ -13,9 +34,9 @@
   Zig 0.14.0 (Clang 19.1.7), baseline and AVX2 release flags. Its only added code is
   the post-load test hook. Deliberately restoring the wrong value produces 446
   assertion failures, establishing that the new coverage detects phase damage.
-- Cache-line CPUID decoding is a separate stale-risk found during this audit;
-  investigate the hardware flush granule rather than treating it as an explanation
-  for a transient wrong observation. Physical fault attribution remains unproven.
+- Cache-line CPUID decoding was tracked separately (see the correction above),
+  rather than treated as an explanation for a transient wrong observation.
+  Physical fault attribution remains unproven.
 
 ## 2026-10-14 - Release v1.9
 

@@ -1,5 +1,6 @@
 #include "simd_ops.h"
 #include "SimdPatternMath.h"
+#include "SimdCacheGeometry.h"
 #include <atomic>
 #include <cstring>
 
@@ -54,6 +55,8 @@ static SimdCapabilities detect_x86_capabilities() {
     const bool cpu_has_avx = (info[2] & (1 << 28)) != 0;
     const bool cpu_has_osxsave = (info[2] & (1 << 27)) != 0;
     caps.has_clflush = (info[3] & (1 << 19)) != 0;
+    caps.cache_line_size = detail::x86FlushLineSize(static_cast<uint32_t>(info[1]),
+                                                  static_cast<uint32_t>(info[3]));
 
     // Detect XSAVE-enabled OS state support. AVX-512 state is probed
     // unconditionally (not behind __AVX512F__) so baseline/v3 binaries can tell
@@ -102,31 +105,6 @@ static SimdCapabilities detect_x86_capabilities() {
         caps.has_nt_stores = true;
         caps.vector_width = 16;
     }
-    // Detect cache line size
-    caps.cache_line_size = 64; // Safe default
-    // AMD method: CPUID leaf 0x80000005, EBX[15:8] = L1 data cache line size
-    if (static_cast<unsigned int>(max_leaf) >= 0x80000006U) {
-        int ext_info[4] = {0, 0, 0, 0};
-        queryCpuId(ext_info, 0x80000005, 0);
-        unsigned int amd_line = (static_cast<unsigned int>(ext_info[1]) >> 8) & 0xFFU;
-        if (amd_line >= 16 && amd_line <= 256) {
-            caps.cache_line_size = amd_line;
-        }
-    }
-    // Intel method: CPUID leaf 0x04 subleaf 0 returns line size in EAX[11:0]
-    // bits 11:0 = (line size / 8) - 1
-    if (max_leaf >= 4) {
-        int cache_info[4] = {0, 0, 0, 0};
-        queryCpuId(cache_info, 4, 0);
-        unsigned int raw = static_cast<unsigned int>(cache_info[0]) & 0xFFFU;
-        if (raw > 0) {
-            unsigned int detected = (raw + 1) * 8;
-            if (detected >= 16 && detected <= 256) {
-                caps.cache_line_size = detected;
-            }
-        }
-    }
-
     return caps;
 }
 
