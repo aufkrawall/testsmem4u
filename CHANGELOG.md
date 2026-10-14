@@ -10,7 +10,7 @@
 ### Fixed
 
 - **RandomAccess on 32-bit Linux:** the inverted phase now flips all 64 bits of each checked word. The `linux-x86` build previously left the upper 32 bits at zero in both phases, so faults in those bits went undetected there. Other targets were unaffected, and no build could report false errors from this.
-- **x86 cache-flush stride:** use the CPU's advertised CLFLUSH/CLFLUSHOPT granule instead of incorrectly decoded cache-topology fields. This prevents a wrong stride from skipping cache lines on affected CPUs; it was not established as a cause of false-positive errors.
+- **x86 cache-flush stride:** use the CPU's advertised CLFLUSH/CLFLUSHOPT granule instead of incorrectly decoded cache-topology fields, capped at 64 bytes so an over-reported granule (for example from a virtual machine) can never skip cache lines and let verification read cached data instead of RAM. The debug log reports both the advertised granule and the stride used. This was not established as a cause of false-positive errors.
 
 ## 1.9 - 2026-10-14
 

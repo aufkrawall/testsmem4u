@@ -9,6 +9,10 @@
   Reverting `word_start` to `size_t` fails exactly the width check on that runner.
   Enabling it exposed two `%zu`/`SIZE_T` format mismatches in
   `PlatformWindowsMemory.cpp` (`SIZE_T` is `unsigned long` on Win32), now `size_t`.
+- x86 flush stride is now capped at 64 bytes (`kMaxFlushStride`): the granule fix
+  had dropped the old 16..256 bound and trusted up to 1024, so an over-reported
+  granule would skip lines. Startup `Kernels:` debug line now also logs the raw
+  advertised granule. Updated fixtures fail on the uncapped implementation.
 
 ## 2026-10-14 - Merge the RandomAccess audit into main
 

@@ -55,6 +55,8 @@ static SimdCapabilities detect_x86_capabilities() {
     const bool cpu_has_avx = (info[2] & (1 << 28)) != 0;
     const bool cpu_has_osxsave = (info[2] & (1 << 27)) != 0;
     caps.has_clflush = (info[3] & (1 << 19)) != 0;
+    caps.flush_granule_advertised = detail::x86AdvertisedFlushGranule(static_cast<uint32_t>(info[1]),
+                                                                      static_cast<uint32_t>(info[3]));
     caps.cache_line_size = detail::x86FlushLineSize(static_cast<uint32_t>(info[1]),
                                                   static_cast<uint32_t>(info[3]));
 

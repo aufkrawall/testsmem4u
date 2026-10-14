@@ -419,8 +419,9 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                  built_isa,
                  caps.has_avx2 ? "yes" : "no",
                  caps.has_avx512 ? "yes" : "no", threads);
-        LOG_DEBUG("Kernels: uniform-march=register-pattern cache-line=%zu flush=%s LFSR-lanes=%zu",
-                  caps.cache_line_size, caps.has_clflushopt ? "CLFLUSHOPT region/batch" :
+        LOG_DEBUG("Kernels: uniform-march=register-pattern flush-stride=%zu advertised-granule=%zu flush=%s "
+                  "LFSR-lanes=%zu",
+                  caps.cache_line_size, caps.flush_granule_advertised, caps.has_clflushopt ? "CLFLUSHOPT region/batch" :
                   caps.has_clflush ? "CLFLUSH" : "platform fallback", simd::kLfsrGenerationLanes);
 #if !defined(__AVX512F__)
         if (caps.has_avx512) {

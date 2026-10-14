@@ -28,7 +28,8 @@ struct SimdCapabilities {
     bool has_clflush = false;
     bool has_clflushopt = false;
     size_t vector_width = 16;
-    size_t cache_line_size = 64; // Default 64 bytes; detected via CPUID on x86
+    size_t cache_line_size = 64; // Flush-loop stride; x86: CPUID granule capped at 64
+    size_t flush_granule_advertised = 0; // x86 CPUID.1 CLFLUSH granule (0 = none/invalid)
 };
 
 // Maximum mismatch samples retained per verification block. The verifier still

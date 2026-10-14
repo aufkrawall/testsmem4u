@@ -364,22 +364,27 @@ tested; physical activation rates and fault-detection gains remain unmeasured.
 
 ### x86 cache-flush geometry
 
-Sources: `include/SimdCacheGeometry.h::x86FlushLineSize`,
+Sources: `include/SimdCacheGeometry.h::x86AdvertisedFlushGranule`/`x86FlushLineSize`,
 `src/simd_ops.cpp::detect_x86_capabilities`, `flush_cache_region`,
 `tests/test_cache_geometry.h`. Verified 2026-10-14.
 
-The flush stride comes directly from CPUID leaf 1, EBX bits 15:8, multiplied by
+The advertised granule comes from CPUID leaf 1, EBX bits 15:8, multiplied by
 eight when EDX.CLFSH is present. This field describes both CLFLUSH and CLFLUSHOPT
 on Intel/AMD; missing, zero or non-power-of-two values keep the existing 64-byte
-fallback. The old implementation compared the basic maximum leaf with an extended
+fallback. Invariant: the flush stride is `min(granule, kMaxFlushStride = 64)`. A
+stride at or below the real line size flushes every line (larger lines are just
+flushed more than once); a stride above it skips lines and lets verification read
+stale cache, so an over-reported granule (e.g. hypervisor CPUID) must never widen
+the stride (cap added 2026-10-14; the first granule fix trusted up to 1024 bytes). The old implementation compared the basic maximum leaf with an extended
 leaf number (making its AMD branch unreachable), then decoded Intel leaf-4 EAX
 instead of EBX with the wrong scale. A wrong stride can skip cache lines or flush
 them redundantly, affecting coverage/throughput rather than inventing a mismatch.
-The current startup `Kernels:` debug line already reports the selected line size
-and flush method; no additional hot-path logging is needed.
+The startup `Kernels:` debug line reports `flush-stride`, the raw
+`advertised-granule` (0 = absent/invalid) and the flush method; no additional
+hot-path logging is needed.
 
-Synthetic fixtures cover 8..1024-byte power-of-two granules, unrelated EBX fields,
-missing CLFSH and malformed values; native x86 checks compare runtime capabilities
+Synthetic fixtures cover 8..1024-byte power-of-two granules (strides capped at 64),
+unrelated EBX fields, missing CLFSH and malformed values; native x86 checks compare runtime capabilities
 with the actual CPUID leaf. An isolated process-local CPUID fixture advertising
 32-byte flush lines detects 64 before the fix and 32 afterwards. This is synthetic
 regression evidence, not a claim of reproducing the defect on affected hardware.
