@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.10 - 2026-10-14
+
 ### Improved
 
 - **32-bit regression coverage:** `python build.py --tests` now also builds and runs a 32-bit x86 Windows test runner, so defects specific to 32-bit builds such as `linux-x86` (for example the RandomAccess inversion fix below) are caught automatically instead of only by manual cross-builds.
