@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **RandomAccess on 32-bit Linux:** the inverted phase now flips all 64 bits of each checked word. The `linux-x86` build previously left the upper 32 bits at zero in both phases, so faults in those bits went undetected there. Other targets were unaffected, and no build could report false errors from this.
+
 ## 1.9 - 2026-10-14
 
 ### New

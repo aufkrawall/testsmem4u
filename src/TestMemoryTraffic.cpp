@@ -114,7 +114,9 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     VerificationProgress progress(ctx, res, region);
     auto* ptr = reinterpret_cast<uint64_t*>(region.base);
     const size_t count = region.size / sizeof(uint64_t);
-    const size_t word_start = globalWordStart(region);
+    // 64-bit on every target: on 32-bit builds a size_t complement would leave
+    // the upper half of each word unflipped in the inverted phase.
+    const uint64_t word_start = globalWordStart(region);
     if (!count || ctx.shouldStop()) return res;
     simd::generate_pattern_increment(ptr, count, word_start, true);
     simd::flush_cache_region(ptr, region.size);

@@ -663,6 +663,7 @@ void testRunResultMerge() {
 #include "test_huge_page_setup.h"
 #include "test_progress_regressions.h"
 #include "test_step_progress.h"
+#include "test_random_access_width.h"
 
 } // namespace
 
@@ -715,6 +716,7 @@ int main() try {
     testErrorClassification();
 
     testEngineRegressions();
+    testRandomAccessInvertsFullWords();
     testUniformMarchSpecialization();
     testLfsrParallelGeneration();
     testTrafficKernelSpecializations();

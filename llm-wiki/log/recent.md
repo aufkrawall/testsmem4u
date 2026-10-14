@@ -1,5 +1,21 @@
 # Recent Log
 
+## 2026-10-14 - RandomAccess false-positive review and 32-bit inversion fix
+
+- Triggered by a user-reported RandomAccess soft error (v1.7, Linux SSE2 baseline,
+  mlock'd 4 KiB pages, overclocked RAM). Reviewed fill/sweep/random phases,
+  `classifyAndLogErrors`, `safe_read_u64`, SIMD verifiers and worker partitioning:
+  no path can invent a mismatch (expected/written formulas match, regions and lane
+  bands are disjoint, volatile load cannot be reordered before the same-address
+  store, mismatches are recorded from the first load). 1.7's RandomAccess is
+  semantically identical to 1.9. Conclusion: the report is very likely genuine.
+- Found and fixed a coverage gap: `word_start` was `size_t`, so `~(word_start+idx)`
+  on `linux-x86` complemented only 32 bits (upper half zero in both phases). Now
+  `uint64_t`. New regression checks memory directly during phase 1.
+- Verification: test runner cross-built for `x86-linux-musl` and run in WSL fails
+  exactly the new check before the fix and passes all after; native baseline+AVX2
+  suites and 20 Python checks (one Linux-only skip) pass.
+
 ## 2026-10-14 - Release v1.9
 
 Bumped version string to `1.9` across runtime and changelog:
