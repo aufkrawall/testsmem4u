@@ -269,7 +269,7 @@ void sfence() {
 }
 
 template<>
-void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, [[maybe_unused]] bool use_nt, size_t start_idx) {
+void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, [[maybe_unused]] bool use_nt, uint64_t start_idx) {
     [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;
 
@@ -332,7 +332,7 @@ void generate_pattern_linear<uint64_t>(uint64_t* dst, size_t count, uint64_t par
 }
 
 template<>
-void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, [[maybe_unused]] bool use_nt, size_t start_idx) {
+void generate_pattern_xor<uint64_t>(uint64_t* dst, size_t count, uint64_t param0, uint64_t param1, [[maybe_unused]] bool use_nt, uint64_t start_idx) {
     size_t i = 0;
 #if defined(__AVX512F__) || defined(__AVX2__) || defined(__x86_64__) || defined(_M_X64)
     [[maybe_unused]] const SimdCapabilities caps = getCapabilities();

@@ -13,6 +13,10 @@
   had dropped the old 16..256 bound and trusted up to 1024, so an over-reported
   granule would skip lines. Startup `Kernels:` debug line now also logs the raw
   advertised granule. Updated fixtures fail on the uncapped implementation.
+- `globalWordStart` now returns `uint64_t`, and the generate/verify pattern
+  `start_idx` parameters are `uint64_t`, so no caller can repeat the 32-bit
+  complement truncation (previously only RandomAccess was widened locally). No
+  live defect elsewhere: other callers only add/multiply into 64-bit values.
 
 ## 2026-10-14 - Merge the RandomAccess audit into main
 

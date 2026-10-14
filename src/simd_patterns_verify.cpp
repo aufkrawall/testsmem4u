@@ -20,7 +20,7 @@ static inline __m512i load_verify_u512(const uint64_t* src) {
 #endif
 
 template<>
-size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1,
+size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, uint64_t start_idx, uint64_t param0, uint64_t param1,
                                        std::vector<std::pair<uint64_t, uint64_t>>& errors, size_t max_error_samples) {
     size_t i = 0;
     size_t mismatches = 0;
@@ -108,7 +108,7 @@ size_t verify_pattern_linear<uint64_t>(const uint64_t* src, size_t count, size_t
 }
 
 template<>
-size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1,
+size_t verify_pattern_xor<uint64_t>(const uint64_t* src, size_t count, uint64_t start_idx, uint64_t param0, uint64_t param1,
                                     std::vector<std::pair<uint64_t, uint64_t>>& errors, size_t max_error_samples) {
     size_t i = 0;
     size_t mismatches = 0;

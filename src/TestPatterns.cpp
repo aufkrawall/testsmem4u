@@ -33,7 +33,7 @@ size_t TestEngine::verifyAndReport(const MemoryRegion& region, const uint64_t* p
     std::vector<std::pair<uint64_t, uint64_t>> errors;
     errors.reserve(std::min<size_t>(128, max_error_samples));
 
-    const size_t global_start_idx = globalWordStart(region, start_idx);
+    const uint64_t global_start_idx = globalWordStart(region, start_idx);
     size_t found = 0;
     if (pattern_mode == 0) {
         found = verify_uniform(ptr, count, param0, errors, max_error_samples);
@@ -88,7 +88,7 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
     VerificationProgress progress(ctx, res, region);
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
-    size_t word_start = globalWordStart(region);
+    const uint64_t word_start = globalWordStart(region);
 
     bool use_nt = true;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
@@ -136,7 +136,7 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
     VerificationProgress progress(ctx, res, region);
     uint64_t* ptr = reinterpret_cast<uint64_t*>(region.base);
     size_t count = region.size / 8;
-    size_t word_start = globalWordStart(region);
+    const uint64_t word_start = globalWordStart(region);
     bool use_nt = true;
     uint32_t repeats = config.parameter > 0 ? config.parameter : 1;
     size_t block = size_t{256} * 1024;

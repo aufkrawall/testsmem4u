@@ -96,8 +96,11 @@ inline uint64_t reportAddress(const MemoryRegion& region, const void* ptr) {
     return static_cast<uint64_t>(region.base_offset_bytes + static_cast<size_t>(byte_ptr - region.base));
 }
 
-inline size_t globalWordStart(const MemoryRegion& region, size_t local_start_idx = 0) {
-    return (region.base_offset_bytes / sizeof(uint64_t)) + local_start_idx;
+// Global word number: the index that address-dependent patterns turn into 64-bit
+// values. It is uint64_t on every target, so arithmetic on it (e.g. a complement)
+// covers all 64 bits even where size_t is 32-bit (linux-x86).
+inline uint64_t globalWordStart(const MemoryRegion& region, size_t local_start_idx = 0) {
+    return uint64_t{region.base_offset_bytes / sizeof(uint64_t)} + local_start_idx;
 }
 
 // RandomAccess Parameter: values up to this limit are passes over the region

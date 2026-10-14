@@ -33,6 +33,8 @@
 #include <sstream>
 #include <cmath>
 #include <limits>
+#include <type_traits>
+#include <utility>
 
 #include <cstdint>
 #include <iostream>

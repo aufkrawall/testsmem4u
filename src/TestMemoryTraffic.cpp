@@ -114,8 +114,6 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     VerificationProgress progress(ctx, res, region);
     auto* ptr = reinterpret_cast<uint64_t*>(region.base);
     const size_t count = region.size / sizeof(uint64_t);
-    // 64-bit on every target: on 32-bit builds a size_t complement would leave
-    // the upper half of each word unflipped in the inverted phase.
     const uint64_t word_start = globalWordStart(region);
     if (!count || ctx.shouldStop()) return res;
     simd::generate_pattern_increment(ptr, count, word_start, true);
@@ -212,7 +210,7 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
     if (count < 2) return runSimpleTest(ctx, region, config, stop);
     VerificationProgress progress(ctx, res, region);
     const size_t half = count / 2;
-    const size_t start = globalWordStart(region);
+    const uint64_t start = globalWordStart(region);
     const uint64_t step = 0x9E3779B97F4A7C15ULL;
     const uint32_t repeats = config.parameter ? config.parameter : 1;
     constexpr size_t block = size_t{256} * 1024;

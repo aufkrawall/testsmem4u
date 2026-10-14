@@ -299,7 +299,10 @@ count (`randomAccessIterations`). executeSuite warns about the latter at startup
 Expected/written values use a `uint64_t` word start: a `size_t` complement on
 32-bit targets left the upper half unflipped (fixed 2026-10-14, covered by
 `tests/test_random_access_width.h`, which only fails on 32-bit runners; the default
-`--tests` `x86` runner fails it with the old `size_t` word start).
+`--tests` `x86` runner fails it with the old `size_t` word start). Invariant:
+`globalWordStart` and the SIMD pattern `start_idx` parameters are `uint64_t` on
+every target (a `static_assert` in the width test guards the former);
+verifyAndReport's local `start_idx` stays a `size_t` memory index.
 
 RandomAccess prepares band starts/sizes once, retaining the original native
 remainder calculation, RNG sequence, addresses and partial-batch counts. Written

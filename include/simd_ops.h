@@ -56,10 +56,10 @@ void flush_cache_region(void* ptr, size_t bytes);
 
 // Pattern Generators (Write to Memory)
 template<typename T>
-void generate_pattern_linear(T* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, size_t start_idx = 0);
+void generate_pattern_linear(T* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, uint64_t start_idx = 0);
 
 template<typename T>
-void generate_pattern_xor(T* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, size_t start_idx = 0);
+void generate_pattern_xor(T* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, uint64_t start_idx = 0);
 
 template<typename T>
 void generate_pattern_increment(T* dst, size_t count, uint64_t start, bool use_nt);
@@ -75,12 +75,12 @@ void invert_array(T* dst, size_t count, bool use_nt);
 // Returns the total mismatch count and stores at most max_error_samples pairs
 // of (offset, observed_value). Uses SIMD comparison for speed where possible.
 template<typename T>
-size_t verify_pattern_linear(const T* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1,
+size_t verify_pattern_linear(const T* src, size_t count, uint64_t start_idx, uint64_t param0, uint64_t param1,
                              std::vector<std::pair<uint64_t, uint64_t>>& errors,
                              size_t max_error_samples = MAX_ERROR_SAMPLES_PER_BLOCK);
 
 template<typename T>
-size_t verify_pattern_xor(const T* src, size_t count, size_t start_idx, uint64_t param0, uint64_t param1,
+size_t verify_pattern_xor(const T* src, size_t count, uint64_t start_idx, uint64_t param0, uint64_t param1,
                           std::vector<std::pair<uint64_t, uint64_t>>& errors,
                           size_t max_error_samples = MAX_ERROR_SAMPLES_PER_BLOCK);
 

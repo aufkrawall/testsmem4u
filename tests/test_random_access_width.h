@@ -1,5 +1,11 @@
 #pragma once
 
+// Word numbers become 64-bit pattern values in every address-dependent test.
+// A size_t result would truncate complements and wide arithmetic on 32-bit
+// targets for all callers, not only RandomAccess.
+static_assert(std::is_same_v<decltype(globalWordStart(std::declval<const MemoryRegion&>())), uint64_t>,
+              "globalWordStart must return a 64-bit word number on every target");
+
 // The inverted phase must flip all 64 bits of each selected word on every
 // target. On 32-bit builds a size_t complement once left the upper half zero,
 // which only a direct memory check catches: expected and stored values agreed.
