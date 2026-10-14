@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Improved
+
+- **RandomAccess error diagnosis:** debug logs identify the original, inverted or restored phase and the batch's access offset when a mismatch occurs. Focused regressions check clean runs at large logical offsets, partial batches, exact coverage, boundary preservation, transient/persistent errors in every phase and halt/continue behavior.
+
 ## 1.9 - 2026-10-14
 
 ### New

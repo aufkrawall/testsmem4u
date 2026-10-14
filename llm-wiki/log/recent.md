@@ -1,5 +1,22 @@
 # Recent Log
 
+## 2026-10-14 - Audit RandomAccess false-positive paths
+
+- Reviewed v1.7 and current pattern indices, exclusive worker regions, first-load
+  preservation, original/inverted/restored ordering, cache flush/fences and forced
+  reread classification. No software false-positive cause was established.
+- Added focused clean-boundary and deterministic per-phase transient/persistent
+  fault regressions, including large synthetic logical offsets, exact byte totals,
+  boundary sentinels and halt/continue behavior. Windows baseline/AVX2 and WSL
+  baseline/AVX2 suites pass. Debug-only mismatch summaries identify phase/batch.
+- The focused probe passes on v1.7's RandomAccess and SIMD source under the pinned
+  Zig 0.14.0 (Clang 19.1.7), baseline and AVX2 release flags. Its only added code is
+  the post-load test hook. Deliberately restoring the wrong value produces 446
+  assertion failures, establishing that the new coverage detects phase damage.
+- Cache-line CPUID decoding is a separate stale-risk found during this audit;
+  investigate the hardware flush granule rather than treating it as an explanation
+  for a transient wrong observation. Physical fault attribution remains unproven.
+
 ## 2026-10-14 - Release v1.9
 
 Bumped version string to `1.9` across runtime and changelog:

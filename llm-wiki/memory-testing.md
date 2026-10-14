@@ -1,6 +1,7 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-10-14 for Linux lock-before-prefault ordering; 2026-10-13 for
+Last verified: 2026-10-14 for RandomAccess false-positive contracts and Linux
+lock-before-prefault ordering; 2026-10-13 for
 page-allocation defaults, native kernel contracts, performance and progress/result
 reporting; 2026-09-30 for other runtime paths. Stale risk: medium for hardware effectiveness and unobserved
 long-run stalls; low for tested native progress/accounting paths.
@@ -301,6 +302,29 @@ addresses use `flush_cache_lines` with one dispatch/fence. Each volatile read's
 original observation is retained; a repaired-after-load fault still counts as soft.
 Reciprocal remainders and a separate load-then-compare array were tested but
 rejected: longer one-/sixteen-worker measurements showed no throughput gain.
+
+False-positive audit (2026-10-14): `tests/test_random_access.h` exercises clean
+original/inverted/restored checks with empty, tiny, uneven and partial-batch regions,
+Parameter 0/1/3/100/101/113, exact verified-byte counts, range sentinels and synthetic
+logical offsets crossing 32-bit word indices on 64-bit builds. Deterministic
+post-load hooks inject and optionally repair a mismatch in each of the three
+phases, checking hard/soft classification and halt/continue behavior. No timing
+assumptions or actual large allocation are required. The initial Windows and WSL
+baseline/AVX2 runs pass. An isolated probe also passes against v1.7's RandomAccess
+and SIMD implementation with the pinned Zig 0.14.0/Clang 19.1.7 release flags,
+adding only the post-load observation hook to its test build. A deliberate wrong
+restoration mutation fails the new checks. These checks cannot prove absence of
+compiler or hardware faults on other systems. Mismatch-only `RandomAccess mismatch:` debug lines record
+region offset, batch access start, phase, active lanes and sample count. Existing
+error lines retain the original wrong value for soft observations.
+
+The v1.7 algorithm also uses disjoint bands, volatile first loads and a completed
+flush/fence before each reread/next phase. Its expected original/restored value is
+the allocation-relative byte offset divided by eight; the complement is expected
+only in the inverted phase. Workers own disjoint native-page slices. Soft means
+the first observation mismatched and the forced reread matched; this classification
+does not isolate a DIMM cell from CPU/cache/controller instability. Ordinary locked
+pages and independent worker progress do not themselves create data mismatches.
 
 Modulo20 holds one word in every 20 at one polarity while repeatedly writing the
 other 19 with its complement. Software never reads or writes a protected word during
