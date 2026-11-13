@@ -1,5 +1,39 @@
 # Recent Log
 
+## 2026-11-13 - Audit: detection per hour of the default preset (no code changes)
+
+Source review of every kernel plus bounded measurements on the Ryzen 5700X/DDR4 dev
+host with the v1.10 AVX2 binary: a partial default cycle (1 GiB, 16 workers, locked
+4 KiB pages, `--debug`, stopped after 4.5 min) and a scratch NT-fill/CLFLUSHOPT/verify
+microbenchmark. Scratch sources/logs are not in the repository. All items below are
+open findings; nothing is implemented. Hardware fault-detection gains are unmeasured.
+
+- No detection hole found: first-observation capture, forced rereads, widths and tails
+  hold. Baseline `verify_uniform` is scalar and compiles to one load per word
+  (standalone `-O3`, without LTO). Release flags contain nothing that weakens checks.
+- Identical data every loop and cycle: no kernel receives the loop/cycle index. LFSR
+  seed, RandomAccess RNG state and all patterns repeat exactly; only RowHammer varies.
+- SMT-secondary weight 50 is wrong for memory-bound work: with equal regions every
+  logical CPU gets the same bandwidth share (about 2.3 GiB/s fill, 3.6 GiB/s verify at
+  16 threads). Half-size regions therefore finish each test about 2.3x sooner and lap
+  the other 67% of the window. Worker 0 (logical CPU 0) was a further 2x outlier.
+- Whole-region CLFLUSHOPT after an NT fill adds 31% to fill+verify (per GiB at 16
+  threads: fill 0.038 s, flush 0.019 s, verify 0.024 s) with no DRAM traffic. The cost
+  is the same after a verify pass and does not scale with threads (about 52 GiB/s
+  aggregate at 1 and at 16 threads). Peak here: 26 GiB/s NT fill, 42 GiB/s verify.
+- Cycle shape (half-size workers, seconds on 43 MiB regions; RowHammer not reached):
+  MirrorMove128 48.8, Walking pair 21.7, RandomAccess 18.6, BlockMove 17.4,
+  MirrorMove 16.6, MovingInversion 14.6, five SimpleTests 8.9, MovingInversionWalking
+  5.5, MovingInversionLFSR 4.9, Modulo20 3.0, LFSRPattern 1.8; RefreshStable is a
+  fixed 120 s. Later tests ran under less contention, so their share is understated.
+  Extrapolated to a 27 GiB window, one cycle is roughly 2.5-3 h for full-size regions
+  and RandomAccess/RefreshStable/Modulo20/RowHammer first start after about 2 h.
+- `lfsrNext` shifts one bit per word, so consecutive words are shifted copies and
+  neighbouring data bits carry the same stream one word apart.
+- RowHammer strides are 8-64 KiB of virtual address. Unverified claim: same-bank
+  adjacent rows are usually 128-512 KiB apart in physical address on dual-channel
+  systems, so these strides rarely form a double-sided pair.
+
 ## 2026-10-14 - Release v1.10
 
 Bumped version string to `1.10` across runtime and changelog:
