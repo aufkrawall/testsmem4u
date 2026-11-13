@@ -111,7 +111,7 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
             generate_pattern_linear(ptr, count, param0, config.pattern_param1, use_nt, word_start);
         }
 
-        simd::flush_cache_region(ptr, region.size);
+        simd::flush_after_streaming_fill(ptr, region.size);
 
         testPhase(ctx, "Simple filled", region);
         testPhase(ctx, "Simple verify", region);
@@ -151,7 +151,7 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
         const uint64_t param0 = config.pattern_param0 ^ variationMask(config.variation, r);
         generate_pattern_xor(ptr, count, param0, config.pattern_param1, use_nt, word_start);
 
-        simd::flush_cache_region(ptr, region.size);
+        simd::flush_after_streaming_fill(ptr, region.size);
         testPhase(ctx, "Mirror verify initial", region);
 
         for (size_t i = 0; i < count; i += block) {
@@ -235,15 +235,19 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
                 ptr[i+1] = p1;
             }
 #endif
-            // Handle odd tail
+            // Handle odd tail (non-temporal too, so no fill line stays cached)
             if (count % 2 == 1) {
+#if defined(__x86_64__) || defined(_M_X64)
+                _mm_stream_si64(reinterpret_cast<long long*>(ptr + count - 1), static_cast<long long>(p0));
+#else
                 ptr[count - 1] = p0;
+#endif
             }
         }
         sfence();
 
-        // Flush the region before verification so reads come from DRAM, not CPU cache.
-        simd::flush_cache_region(ptr, region.size);
+        // Reads must come from DRAM: flush unless the streaming fill evicted every line.
+        simd::flush_after_streaming_fill(ptr, region.size);
 
         constexpr size_t VERIFY_BLOCK = size_t{256} * 1024;
         std::vector<std::pair<uint64_t, uint64_t>> errors;
@@ -309,7 +313,7 @@ TestResult TestEngine::runWalkingBit(TestContext& ctx, const MemoryRegion& regio
 
         testPhase(ctx, "Walking fill", region);
         simd::generate_pattern_uniform(ptr, count, pattern, true);
-        simd::flush_cache_region(ptr, region.size);
+        simd::flush_after_streaming_fill(ptr, region.size);
         testPhase(ctx, "Walking verify", region);
 
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {

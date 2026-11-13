@@ -232,3 +232,27 @@ void testScheduledPassesUseNewData() {
     expect(result.cycles_completed == 2 && result.total_errors() == 0 && fills == 4 && first_words.size() == 4,
            "Two loops in each of two cycles write four different pseudo-random streams");
 }
+
+void testStreamingFillCacheContract() {
+    // Post-fill flushes are skipped only where every streaming-fill word is a
+    // non-temporal store that evicts cached lines (x86-64 with NT support).
+#if defined(__x86_64__) || defined(_M_X64)
+    expect(simd::streaming_fill_bypasses_cache() == simd::getCapabilities().has_nt_stores,
+           "x86-64 skips post-fill flushes exactly when non-temporal fills are available");
+#else
+    expect(!simd::streaming_fill_bypasses_cache(), "Builds with cached scalar fills keep the post-fill flush");
+#endif
+    // Streaming tails are now non-temporal too; they must still write every word.
+    alignas(64) std::array<uint64_t, 40> memory{};
+    for (size_t count : {size_t{1}, size_t{2}, size_t{3}, size_t{5}, size_t{7}, size_t{9}, size_t{15}, size_t{17},
+                         size_t{31}, size_t{33}}) {
+        memory.fill(0x5A5A5A5A5A5A5A5AULL);
+        simd::generate_pattern_uniform(memory.data(), count, 0x0123456789ABCDEFULL, true);
+        simd::flush_after_streaming_fill(memory.data(), count * sizeof(uint64_t));
+        bool exact = true;
+        for (size_t i = 0; i < memory.size(); ++i) {
+            exact &= memory[i] == (i < count ? 0x0123456789ABCDEFULL : 0x5A5A5A5A5A5A5A5AULL);
+        }
+        expect(exact, "Streaming uniform fills write every word including odd tails, and nothing beyond");
+    }
+}

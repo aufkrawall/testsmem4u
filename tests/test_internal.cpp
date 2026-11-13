@@ -732,6 +732,7 @@ int main() try {
     testCpuTopologyPairsSmtSiblings();
     testRegionSchedulerContracts();
     testSlowWorkerCannotStarveAChunk();
+    testStreamingFillCacheContract();
     testPassVariationChangesData();
     testScheduledPassesUseNewData();
     testUniformMarchSpecialization();

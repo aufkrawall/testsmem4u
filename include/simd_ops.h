@@ -54,6 +54,21 @@ void flush_cache_lines(void* const* lines, size_t count);
 // This ensures subsequent reads come from DRAM, not CPU cache
 void flush_cache_region(void* ptr, size_t bytes);
 
+// True when generate_pattern_* / fill_lfsr with use_nt=true write every word
+// with a non-temporal store: x86-64 with SSE4.1-era NT support. Such stores
+// evict any cached copy of the line (Intel SDM Vol. 1, "Caching of Temporal vs.
+// Non-Temporal Data"; measured on Zen 3 with tools/probes/nt_fill_cache_probe.cpp),
+// so after the generator's SFENCE the region is not cache-resident. Older CPUs
+// may update a cached line in place and have no SSE4.1, so they report false, as
+// do ARM64 and 32-bit x86 builds, whose scalar fills use cached stores.
+bool streaming_fill_bypasses_cache();
+
+// Call after a streaming fill (use_nt=true) and before verifying it: flushes
+// the region only where such a fill can leave lines cached. Never use it after
+// loads or cached stores (verify passes, march replace, memcpy, invert_array):
+// those leave lines cached, and prefetchers trained by loads can refill lines.
+void flush_after_streaming_fill(void* ptr, size_t bytes);
+
 // Pattern Generators (Write to Memory)
 template<typename T>
 void generate_pattern_linear(T* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, uint64_t start_idx = 0);

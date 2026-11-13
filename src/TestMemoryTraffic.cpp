@@ -61,7 +61,7 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
             const uint64_t pattern = polarity ? ~held_base : held_base;
             steps.begin(uint64_t{side} * 2 + polarity);
             simd::generate_pattern_uniform(ptr, count, pattern, true);
-            simd::flush_cache_region(ptr, held.size);
+            simd::flush_after_streaming_fill(ptr, held.size);
             const auto hold_start = now();
             const auto deadline = hold_start + std::chrono::milliseconds(delay_ms);
             testPhase(ctx, "Retention held", held);
@@ -123,7 +123,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     const uint64_t salt = variationMask(config.variation, 0);
     auto valueAt = [&](size_t idx) { return randomAccessValue(word_start + idx, salt); };
     simd::generate_pattern_linear(ptr, count, salt, kRandomAccessStep, true, word_start);
-    simd::flush_cache_region(ptr, region.size);
+    simd::flush_after_streaming_fill(ptr, region.size);
     testPhase(ctx, "Random filled", region);
     auto verifyAll = [&]() {
         constexpr size_t block = size_t{256} * 1024;
@@ -231,7 +231,7 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
         steps.begin(r);
         const uint64_t pattern = config.pattern_param0 ^ (step * r) ^ variationMask(config.variation, 0);
         simd::generate_pattern_linear(ptr, count, pattern, step, true, start);
-        simd::flush_cache_region(ptr, region.size);
+        simd::flush_after_streaming_fill(ptr, region.size);
         for (unsigned direction = 0; direction < 2 && !ctx.shouldStop(); ++direction) {
             auto* source = direction ? ptr + half : ptr;
             auto* destination = direction ? ptr : ptr + half;

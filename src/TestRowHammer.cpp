@@ -86,7 +86,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
 
         testPhase(ctx, "RowHammer fill", region);
         generate_pattern_uniform(ptr, count, victim_fill, true);
-        simd::flush_cache_region(ptr, region.size);
+        simd::flush_after_streaming_fill(ptr, region.size);
 
         testPhase(ctx, "RowHammer verify initial", region);
         size_t init_block = size_t{256} * 1024;

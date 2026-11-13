@@ -239,6 +239,19 @@ void flush_cache_lines(void* const* lines, size_t count) {
 }
 #endif
 
+bool streaming_fill_bypasses_cache() {
+#if defined(__x86_64__) || defined(_M_X64)
+    return getCapabilities().has_nt_stores;
+#else
+    return false;
+#endif
+}
+
+void flush_after_streaming_fill(void* ptr, size_t bytes) {
+    if (streaming_fill_bypasses_cache()) return; // the generator already fenced
+    flush_cache_region(ptr, bytes);
+}
+
 SimdCapabilities getCapabilities() {
     static SimdCapabilities caps = []() -> SimdCapabilities {
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -455,6 +468,12 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
     }
 #endif
 
+#if defined(__x86_64__) || defined(_M_X64)
+    // Odd tails stay non-temporal so a streaming fill never leaves a cached line.
+    if (use_nt && caps.has_nt_stores) {
+        for (; i < count; ++i) _mm_stream_si64(reinterpret_cast<long long*>(dst + i), static_cast<long long>(val));
+    }
+#endif
     for (; i < count; ++i) dst[i] = val;
     sfence();
 }

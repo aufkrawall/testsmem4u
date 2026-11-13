@@ -329,6 +329,27 @@ first loaded mismatch values, sample order/caps and scalar tails match
 `verify_words`; `tests/test_performance_regressions.h` compares those contracts
 directly and injects faults at all three real uniform-march boundaries.
 
+Post-fill flush elision (2026-11-13; `simd::streaming_fill_bypasses_cache` and
+`flush_after_streaming_fill` in `src/simd_ops.cpp`): after a pure streaming fill
+(`generate_pattern_*`/`fill_lfsr`/MirrorMove128's fill with use_nt) the whole-region
+flush is skipped on x86-64 when `has_nt_stores` (SSE4.1 era) is set. Invariant: on
+that path every word, including odd tails, is a non-temporal store (the uniform
+tail and MirrorMove128's odd tail became MOVNTI for this); NT stores evict any
+cached copy (Intel SDM Vol. 1 "Caching of Temporal vs. Non-Temporal Data"; older
+CPUs such as Pentium M could update a cached line in place, but lack SSE4.1).
+Measured with `tools/probes/nt_fill_cache_probe.cpp` on Zen 3: reads after an AVX2
+or MOVNTI fill of clean or dirty cached lines take DRAM time, equal to after
+CLFLUSHOPT (11.3-13.7 us per 256 KiB) against 1.9 us when cached. AMD's own manual
+text was not retrieved; run the probe on new CPU families. Kept flushes: after any
+load pass (verify sweeps, `invert_array`, whose loads also train prefetchers that
+could refill lines), march read/replace, memmove/memcpy, Modulo20 disturbance,
+RefreshStable before verifying the held half (its 64-byte split is not page-aligned,
+so prefetchers on the active half can touch it), RowHammer final sweep, and
+everything on ARM64/32-bit x86/non-SSE4.1 CPUs. Rejected: flushing only a
+cache-sized tail after cached passes; LLC replacement is not strict LRU, so older
+lines can survive a streaming pass. Effect (1 GiB, 16 threads, SimpleTest): 21.1 vs
+19.0 GiB/s verified. The startup `Kernels:` debug line reports `post-fill-flush=`.
+
 On x86, CLFLUSHOPT region and address-batch loops run entirely inside a function
 compiled for that instruction. Capability dispatch is outside the loop and each
 operation ends with MFENCE. This removes per-line calls/VZEROUPPER observed in

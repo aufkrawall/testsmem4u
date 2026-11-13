@@ -32,7 +32,7 @@ TestResult TestEngine::runModulo20(TestContext& ctx, const MemoryRegion& region,
             testPhase(ctx, "Modulo fill", region);
             for (size_t k = 0; k < period; ++k) expected[k] = k % stride == offset ? pattern : ~pattern;
             simd::generate_pattern_uniform(ptr, count, pattern, true);
-            simd::flush_cache_region(ptr, region.size);
+            simd::flush_after_streaming_fill(ptr, region.size);
             // Software never reads or writes the protected word (every twentieth)
             // while it repeatedly writes the complement into its peers. The peers
             // share its cache line, so at the DRAM interface the protected word

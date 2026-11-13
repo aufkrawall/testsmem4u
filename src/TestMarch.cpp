@@ -49,7 +49,7 @@ TestResult runMarch(TestContext& ctx, const MemoryRegion& region,
     } else {
         simd::generate_pattern_uniform(ptr, count, seed, true);
     }
-    simd::flush_cache_region(ptr, count * sizeof(uint64_t));
+    simd::flush_after_streaming_fill(ptr, count * sizeof(uint64_t));
     testPhase(ctx, "March filled", region);
 
     // Forward read/write complement, backward read/write original, final read.
@@ -147,7 +147,7 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
     const uint64_t seed = regionSeed(config.pattern_param0, region.base_offset_bytes, config.variation, 0);
     const auto started = std::chrono::steady_clock::now();
     fillLfsr(ctx, ptr, count, seed);
-    simd::flush_cache_region(ptr, count * sizeof(uint64_t));
+    simd::flush_after_streaming_fill(ptr, count * sizeof(uint64_t));
     testPhase(ctx, "LFSR filled", region);
     uint64_t state = seed;
     std::array<uint64_t, march_words> expected{};
