@@ -62,9 +62,6 @@ template<typename T>
 void generate_pattern_xor(T* dst, size_t count, uint64_t param0, uint64_t param1, bool use_nt, uint64_t start_idx = 0);
 
 template<typename T>
-void generate_pattern_increment(T* dst, size_t count, uint64_t start, bool use_nt);
-
-template<typename T>
 void generate_pattern_uniform(T* dst, size_t count, uint64_t val, bool use_nt);
 
 // Utility

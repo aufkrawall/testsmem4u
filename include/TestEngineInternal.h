@@ -144,6 +144,15 @@ constexpr size_t kRandomAccessLanes = 16;
 // batches are only counted in the region summary line.
 constexpr uint64_t kRandomAccessMismatchLogLimit = 8;
 
+// RandomAccess stores salt + word * step: an odd step keeps every word's value
+// unique (address aliasing stays detectable) while all 64 bits vary. The old
+// value, the word number itself, left the upper 32 bits constant everywhere.
+constexpr uint64_t kRandomAccessStep = 0x9E3779B97F4A7C15ULL;
+
+constexpr uint64_t randomAccessValue(uint64_t global_word, uint64_t salt) {
+    return salt + global_word * kRandomAccessStep;
+}
+
 inline uint64_t randomAccessIterations(uint32_t parameter, size_t words) {
     if (parameter > kRandomAccessPassLimit) return parameter;
     return static_cast<uint64_t>(words) * std::max(1U, parameter);

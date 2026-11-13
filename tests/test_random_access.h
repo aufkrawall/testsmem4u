@@ -29,7 +29,8 @@ void testRandomAccessContracts() {
                        "RandomAccess checks exactly two sweeps and three reads per selected word");
                 bool restored = true;
                 for (size_t i = 0; i < memory.size(); ++i) {
-                    const uint64_t expected = i >= 8 && i - 8 < count ? uint64_t{offset / 8} + i - 8 : sentinel;
+                    const uint64_t expected =
+                        i >= 8 && i - 8 < count ? randomAccessValue(uint64_t{offset / 8} + i - 8, 0) : sentinel;
                     restored &= memory[i] == expected;
                 }
                 expect(restored, "RandomAccess restores every word and preserves boundary sentinels");
@@ -85,7 +86,9 @@ void testRandomAccessContracts() {
                        "RandomAccess classifies first observations in original/inverted/restored phases exactly");
                 if (!halt) {
                     bool restored = true;
-                    for (size_t i = 0; i < words; ++i) restored &= memory[i] == region.base_offset_bytes / 8 + i;
+                    for (size_t i = 0; i < words; ++i) {
+                        restored &= memory[i] == randomAccessValue(region.base_offset_bytes / 8 + i, 0);
+                    }
                     expect(restored, "RandomAccess continues and restores the region after a reported error");
                 }
             }

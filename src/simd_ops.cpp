@@ -460,66 +460,6 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
 }
 
 template<>
-void generate_pattern_increment<uint64_t>(uint64_t* dst, size_t count, uint64_t start, [[maybe_unused]] bool use_nt) {
-    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
-    size_t i = 0;
-
-#if defined(__AVX512F__)
-    if (caps.has_avx512) {
-        // v_curr = {start+7, start+6, ..., start+0} (little endian load order)
-        // Set: [7, 6, 5, 4, 3, 2, 1, 0]
-        __m512i v_idx = _mm512_set_epi64(7, 6, 5, 4, 3, 2, 1, 0);
-        __m512i v_base = _mm512_set1_epi64(start);
-        __m512i v_curr = _mm512_add_epi64(v_base, v_idx);
-        __m512i v_step = _mm512_set1_epi64(8);
-
-        for (; i + 8 <= count; i += 8) {
-            if (use_nt && caps.has_nt_stores) {
-                _mm512_stream_si512((void*)(dst + i), v_curr);
-            } else {
-                _mm512_storeu_si512((void*)(dst + i), v_curr);
-            }
-            v_curr = _mm512_add_epi64(v_curr, v_step);
-        }
-    }
-#endif
-
-#if defined(__AVX2__)
-    if (caps.has_avx2) {
-        // AVX2 logic
-        __m256i v_idx = _mm256_set_epi64x(3, 2, 1, 0);
-        __m256i v_base = _mm256_set1_epi64x(start + i); // Start from current i
-        __m256i v_curr = _mm256_add_epi64(v_base, v_idx);
-        __m256i v_step = _mm256_set1_epi64x(4);
-        
-        for (; i + 4 <= count; i += 4) {
-            if (use_nt && caps.has_nt_stores) {
-                _mm256_stream_si256((__m256i*)(dst + i), v_curr);
-            } else {
-                _mm256_storeu_si256((__m256i*)(dst + i), v_curr);
-            }
-            v_curr = _mm256_add_epi64(v_curr, v_step);
-        }
-    }
-#endif
-
-#if defined(__x86_64__) || defined(_M_X64)
-    // NT-store scalar fallback keeps DRAM write stress on baseline binaries,
-    // where no wider SIMD path for this pattern was compiled in.
-    if (use_nt && caps.has_nt_stores) {
-        for (; i < count; ++i) {
-            _mm_stream_si64((long long*)(dst + i), (long long)(start + i));
-        }
-    }
-#endif
-    // Scalar fallback
-    for (; i < count; ++i) {
-        dst[i] = start + i;
-    }
-    sfence();
-}
-
-template<>
 void invert_array<uint64_t>(uint64_t* dst, size_t count, [[maybe_unused]] bool use_nt) {
     [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
     size_t i = 0;

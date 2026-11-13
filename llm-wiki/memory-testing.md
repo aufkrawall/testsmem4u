@@ -235,7 +235,7 @@ variation, repetition and a chunk/sub-block offset salt; zero state replaced);
 Modulo20 and RefreshStable vary their base value (both polarities kept), and the
 retention background test inherits the variation. Unchanged on purpose: uniform
 SimpleTest values, walking bits, MovingInversionWalking, RowHammer (already seeded
-from `std::random_device`). RandomAccess is handled separately below.
+from `std::random_device`). RandomAccess uses `randomAccessValue` (below).
 Why: before this, every cycle and loop rewrote identical bits (BlockMove's 200 loops,
 MovingInversionLFSR's 50 repetitions on one seed, MovingInversion's 75 identical
 pairs), so repeated passes re-tested the same cell/value/neighbour combinations.
@@ -336,6 +336,13 @@ region is flushed after the initial sweep so random reads cannot hit its cached 
 The configured access count remains exact, including the partial last batch.
 Parameter 1-100 (0 = 1) is a pass multiplier; >100 is an explicit per-region access
 count (`randomAccessIterations`). executeSuite warns about the latter at startup.
+Stored values are `randomAccessValue(word, salt) = salt + word * kRandomAccessStep`
+(odd golden-ratio step, so every word stays unique and aliasing remains detectable;
+`salt = variationMask(variation, 0)`, also XORed into the RNG state so pass 0 keeps
+the original access order). Changed 2026-11-13: the word number itself left the
+upper 32 bits constant across the window. The fill uses the linear generator and
+sweeps use linear verification with the same salt/step; the debug summary logs the
+salt. Tests compare memory with `randomAccessValue` and require distinct upper halves.
 Expected/written values use a `uint64_t` word start: a `size_t` complement on
 32-bit targets left the upper half unflipped (fixed 2026-10-14, covered by
 `tests/test_random_access_width.h`, which only fails on 32-bit runners; the default

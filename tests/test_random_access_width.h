@@ -28,7 +28,7 @@ void testRandomAccessInvertsFullWords() {
         const size_t observation = observations++;
         if (observation < lanes || observation >= 2 * lanes - 1) return;
         const size_t word = observation - lanes;
-        full_width &= memory[word] == ~(word_start + word);
+        full_width &= memory[word] == ~randomAccessValue(word_start + word, 0);
         ++checked;
     };
     TestConfig tc;

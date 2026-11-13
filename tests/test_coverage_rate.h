@@ -123,6 +123,7 @@ void testPassVariationChangesData() {
         kernel("LFSRPattern", 0, 0xACE1ACE2DEADBEEFULL, 0, 0),
         kernel("Modulo20", 0, 0xAAAAAAAAAAAAAAAAULL, 0, 1),
         kernel("RefreshStable", 0, ~0ULL, 0, 4),
+        kernel("RandomAccess", 0, 0, 0, 1),
     };
     for (const auto& tc : varied) {
         TestResult first, second, again;
@@ -150,6 +151,11 @@ void testPassVariationChangesData() {
     const auto chunk0 = kernelImage(kernel("LFSRPattern", 0, 0xACE1ACE2DEADBEEFULL, 0, 0), 0, 0, result);
     const auto chunk1 = kernelImage(kernel("LFSRPattern", 0, 0xACE1ACE2DEADBEEFULL, 0, 0), 0, 1 << 20, result);
     expect(chunk0 != chunk1 && result.total_errors() == 0, "Each chunk holds its own pseudo-random stream");
+    const auto random = kernelImage(kernel("RandomAccess", 0, 0, 0, 1), 0, 0, result);
+    std::set<uint64_t> upper_halves;
+    for (uint64_t word : random) upper_halves.insert(word >> 32);
+    expect(result.total_errors() == 0 && upper_halves.size() == random.size(),
+           "RandomAccess data varies in all 64 bits (upper halves were constant)");
 }
 
 void testScheduledPassesUseNewData() {

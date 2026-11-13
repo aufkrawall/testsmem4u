@@ -119,14 +119,17 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     const size_t count = region.size / sizeof(uint64_t);
     const uint64_t word_start = globalWordStart(region);
     if (!count || ctx.shouldStop()) return res;
-    simd::generate_pattern_increment(ptr, count, word_start, true);
+    // New values and a new access order on every pass; pass 0 keeps the old order.
+    const uint64_t salt = variationMask(config.variation, 0);
+    auto valueAt = [&](size_t idx) { return randomAccessValue(word_start + idx, salt); };
+    simd::generate_pattern_linear(ptr, count, salt, kRandomAccessStep, true, word_start);
     simd::flush_cache_region(ptr, region.size);
     testPhase(ctx, "Random filled", region);
     auto verifyAll = [&]() {
         constexpr size_t block = size_t{256} * 1024;
         for (size_t i = 0; i < count && !ctx.shouldStop(); i += block) {
             const size_t n = std::min(block, count - i);
-            verifyAndReport(region, ptr + i, n, i, 2, 0, 1, res, ctx, "RandomAccess (Sweep)", stop);
+            verifyAndReport(region, ptr + i, n, i, 2, salt, kRandomAccessStep, res, ctx, "RandomAccess (Sweep)", stop);
             progress.addBytes(n * sizeof(uint64_t));
         }
     };
@@ -135,7 +138,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     simd::flush_cache_region(ptr, region.size);
     const auto started = std::chrono::steady_clock::now();
     const uint64_t iterations = randomAccessIterations(config.parameter, count);
-    uint64_t state = 0x1234567890ABCDEFULL ^ word_start;
+    uint64_t state = 0x1234567890ABCDEFULL ^ word_start ^ salt;
     constexpr size_t lanes = kRandomAccessLanes;
     std::array<size_t, lanes> indices{};
     std::array<size_t, lanes> band_starts{};
@@ -167,7 +170,7 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
             errors.clear();
             for (size_t lane = 0; lane < n; ++lane) {
                 const size_t idx = indices[lane];
-                const uint64_t expected = phase == 1 ? ~(word_start + idx) : word_start + idx;
+                const uint64_t expected = phase == 1 ? ~valueAt(idx) : valueAt(idx);
                 const uint64_t observed = *static_cast<volatile uint64_t*>(ptr + idx);
 #ifdef TESTSMEM4U_TESTING
                 if (ctx.phase_hook) ctx.phase_hook("Random observed", region);
@@ -182,22 +185,22 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
                               ? " (limit reached; further batches only counted)" : "");
             }
             classifyAndLogErrors(region, ptr, errors, errors.size(), 0,
-                                 [&](size_t idx) { return phase == 1 ? ~(word_start + idx) : word_start + idx; },
+                                 [&](size_t idx) { return phase == 1 ? ~valueAt(idx) : valueAt(idx); },
                                  res, ctx, "RandomAccess", stop);
             progress.addBytes(n * sizeof(uint64_t));
             if (phase == 2 || ctx.shouldStop()) break;
             for (size_t lane = 0; lane < n; ++lane) {
                 const size_t idx = indices[lane];
-                ptr[idx] = phase == 0 ? ~(word_start + idx) : word_start + idx;
+                ptr[idx] = phase == 0 ? ~valueAt(idx) : valueAt(idx);
             }
             simd::flush_cache_lines(flush_lines.data(), n);
         }
         done += n;
     }
-    LOG_DEBUG("RandomAccess: offset=%zu words=%zu accesses=%llu (Parameter=%u) lanes=%zu "
+    LOG_DEBUG("RandomAccess: offset=%zu words=%zu accesses=%llu (Parameter=%u) lanes=%zu salt=0x%016llx "
               "flush=batch errors=%llu mismatch-batches=%llu in %.3fs%s",
               region.base_offset_bytes, count, static_cast<unsigned long long>(iterations), config.parameter,
-              width,
+              width, static_cast<unsigned long long>(salt),
               static_cast<unsigned long long>(res.total_errors()),
               static_cast<unsigned long long>(mismatch_batches),
               std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
