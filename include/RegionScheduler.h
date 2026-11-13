@@ -11,11 +11,14 @@ namespace testsmem4u {
 // Workers pull work instead of owning fixed regions. The window is split into
 // equal page-aligned chunks; each chunk walks the configured sequence in order
 // and is held by at most one worker at a time. A worker that finishes a test
-// takes the least advanced idle chunk, so coverage stays even across the window
-// however fast individual workers run (SMT siblings, E-cores, CPUs busy with OS
-// work). With at least as many chunks as workers an idle chunk always exists
-// when a worker claims, so no worker ever waits for a peer. Claims happen once
-// per test invocation (seconds to minutes), so a single mutex is uncontended.
+// takes the least advanced idle chunk other than the one it just finished, so
+// coverage stays even across the window however fast individual workers run
+// (SMT siblings, E-cores, CPUs busy with OS work). Re-claiming the finished
+// chunk would let a slow worker keep its own lagging chunk, which then advances
+// only at that worker's pace (simulated: 42% of the average rate with one 2.5x
+// slower worker of 16). With chunks >= workers an idle chunk always exists when
+// a worker claims, so no worker ever waits for a peer. Claims happen once per
+// test invocation (seconds to minutes), so a single mutex is uncontended.
 class RegionScheduler {
 public:
     static constexpr size_t kNone = std::numeric_limits<size_t>::max();
@@ -32,7 +35,8 @@ public:
     };
 
     RegionScheduler(size_t chunks, size_t workers)
-        : positions_(chunks, 0), holder_(chunks, kNone), released_(chunks, 0), serving_(workers, kNone) {
+        : positions_(chunks, 0), holder_(chunks, kNone), released_(chunks, 0), serving_(workers, kNone),
+          finished_(workers, kNone) {
         // Before any release, ties go to the lowest chunk index.
         for (size_t chunk = 0; chunk < chunks; ++chunk) released_[chunk] = chunk;
         release_counter_ = chunks;
@@ -42,22 +46,16 @@ public:
     size_t workers() const noexcept { return serving_.size(); }
 
     // Least completed position first; ties go to the chunk idle the longest.
+    // The worker's just-finished chunk is taken only when nothing else is idle.
     // Returns kNone only if every chunk is held (impossible with chunks >= workers).
     Claim claim(size_t worker) {
         std::lock_guard<std::mutex> lock(mutex_);
-        Claim best;
-        uint64_t best_release = 0;
-        for (size_t chunk = 0; chunk < positions_.size(); ++chunk) {
-            if (holder_[chunk] != kNone) continue;
-            if (best.chunk == kNone || positions_[chunk] < best.position ||
-                (positions_[chunk] == best.position && released_[chunk] < best_release)) {
-                best = {chunk, positions_[chunk]};
-                best_release = released_[chunk];
-            }
-        }
+        const size_t finished = worker < finished_.size() ? finished_[worker] : kNone;
+        Claim best = pick(finished);
+        if (best.chunk == kNone) best = pick(kNone);
         if (best.chunk != kNone) {
             holder_[best.chunk] = worker;
-            serving_[worker] = best.chunk;
+            if (worker < serving_.size()) serving_[worker] = best.chunk;
         }
         return best;
     }
@@ -91,10 +89,27 @@ public:
     }
 
 private:
+    Claim pick(size_t excluded) const {
+        Claim best;
+        uint64_t best_release = 0;
+        for (size_t chunk = 0; chunk < positions_.size(); ++chunk) {
+            if (holder_[chunk] != kNone || chunk == excluded) continue;
+            if (best.chunk == kNone || positions_[chunk] < best.position ||
+                (positions_[chunk] == best.position && released_[chunk] < best_release)) {
+                best = {chunk, positions_[chunk]};
+                best_release = released_[chunk];
+            }
+        }
+        return best;
+    }
+
     void releaseLocked(size_t worker, size_t chunk) {
         holder_[chunk] = kNone;
         released_[chunk] = release_counter_++;
-        if (worker < serving_.size()) serving_[worker] = kNone;
+        if (worker < serving_.size()) {
+            serving_[worker] = kNone;
+            finished_[worker] = chunk;
+        }
     }
 
     mutable std::mutex mutex_;
@@ -102,6 +117,7 @@ private:
     std::vector<size_t> holder_;
     std::vector<uint64_t> released_;
     std::vector<size_t> serving_;
+    std::vector<size_t> finished_; // per worker: chunk it released last
     uint64_t release_counter_ = 0;
 };
 

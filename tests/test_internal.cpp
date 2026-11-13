@@ -49,6 +49,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <set>
+#include <queue>
 #include <system_error>
 
 using namespace testsmem4u;
@@ -730,6 +731,7 @@ int main() try {
     testCacheFlushGeometry();
     testCpuTopologyPairsSmtSiblings();
     testRegionSchedulerContracts();
+    testSlowWorkerCannotStarveAChunk();
     testPassVariationChangesData();
     testScheduledPassesUseNewData();
     testUniformMarchSpecialization();

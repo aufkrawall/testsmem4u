@@ -67,13 +67,17 @@ static std::vector<CpuTarget> selectWorkerTargets(const MemoryRegion& region, ui
     return targets;
 }
 
-// Equal page-aligned chunks, one more than the worker count when the window has
-// the pages, so a worker finishing a test finds an idle chunk that is not ahead
-// of the rest. Remainder pages go to the first chunks; any sub-page tail to the
-// last one.
+// Equal page-aligned chunks, two more than the worker count when the window has
+// the pages: a finishing worker then always has at least one idle chunk besides
+// its own to choose from, and choosing the least advanced of them keeps chunks
+// within a few tests of each other (one spare chunk only rotates them FIFO and
+// lets them drift apart). Remainder pages go to the first chunks; any sub-page
+// tail to the last one.
+constexpr size_t kSpareChunks = 2;
+
 static std::vector<ChunkLayout> buildChunkLayout(const MemoryRegion& region, size_t workers, size_t page_size) {
     const size_t pages = memory_pages::workerLimit(region.size, page_size);
-    const size_t chunks = std::min(pages, workers > 1 ? workers + 1 : size_t{1});
+    const size_t chunks = std::min(pages, workers > 1 ? workers + kSpareChunks : size_t{1});
     if (region.size < page_size || chunks <= 1) return {{0, region.size}};
     const size_t total_pages = region.size / page_size;
     std::vector<ChunkLayout> layout(chunks);

@@ -42,6 +42,10 @@ void testRegionSchedulerContracts() {
     {
         ChunkLease lease(scheduler, 0, fourth.chunk);
     }
+    // The abandoned chunk 0 is now worker 0's finished chunk: another idle chunk wins.
+    const auto fifth = scheduler.claim(0);
+    expect(fifth.chunk == 2, "A worker does not immediately re-claim the chunk it just returned");
+    scheduler.abandon(0, fifth.chunk);
     Snapshot snapshot;
     scheduler.snapshot(snapshot);
     expect(snapshot.positions == std::vector<uint64_t>{1, 0, 1} && snapshot.holder[0] == RegionScheduler::kNone &&
@@ -52,6 +56,16 @@ void testRegionSchedulerContracts() {
     RegionScheduler single(1, 2);
     expect(single.claim(0).chunk == 0 && single.claim(1).chunk == RegionScheduler::kNone,
            "Claims never hand one chunk to two workers");
+    single.complete(0, 0, 1);
+    expect(single.claim(0).chunk == 0, "A worker re-claims its own chunk when nothing else is idle");
+
+    // Even when its own chunk is the least advanced, a worker leaves it to a peer.
+    RegionScheduler lagging(3, 1);
+    for (size_t chunk = 0; chunk < 3; ++chunk) {
+        const auto claim = lagging.claim(0);
+        lagging.complete(0, claim.chunk, claim.chunk == 2 ? 3 : 9);
+    }
+    expect(lagging.claim(0).chunk == 0, "The just-finished chunk is skipped even if it is the least advanced");
 
     // A worker stuck on one chunk cannot make the others drift apart: the free
     // worker alternates between the remaining chunks, least advanced first.
@@ -71,6 +85,37 @@ void testRegionSchedulerContracts() {
         spread = std::max(spread, high - low);
     }
     expect(spread <= 1, "Free chunks stay within one test of each other");
+}
+
+void testSlowWorkerCannotStarveAChunk() {
+    // Discrete-event model of the real claim policy: one worker 2.5x slower than
+    // its peers. Re-claiming the just-finished chunk let that worker keep its own
+    // chunk, which then advanced at about half the average rate. No threads or time.
+    for (size_t workers : {size_t{2}, size_t{4}, size_t{8}, size_t{16}}) {
+        const size_t chunks = workers + 2;
+        RegionScheduler scheduler(chunks, workers);
+        using Event = std::pair<uint64_t, std::pair<size_t, size_t>>; // finish time, (worker, chunk)
+        std::priority_queue<Event, std::vector<Event>, std::greater<Event>> events;
+        auto duration = [](size_t worker) { return uint64_t{worker == 1 ? 5U : 2U}; };
+        for (size_t worker = 0; worker < workers; ++worker) {
+            events.push({duration(worker), {worker, scheduler.claim(worker).chunk}});
+        }
+        RegionScheduler::Snapshot snapshot;
+        constexpr uint64_t items = 2000;
+        for (uint64_t done = 0; done < items; ++done) {
+            const auto [time, assignment] = events.top();
+            events.pop();
+            const auto [worker, chunk] = assignment;
+            scheduler.snapshot(snapshot);
+            scheduler.complete(worker, chunk, snapshot.positions[chunk] + 1);
+            events.push({time + duration(worker), {worker, scheduler.claim(worker).chunk}});
+        }
+        scheduler.snapshot(snapshot);
+        const uint64_t low = *std::min_element(snapshot.positions.begin(), snapshot.positions.end());
+        const uint64_t high = *std::max_element(snapshot.positions.begin(), snapshot.positions.end());
+        expect(low * chunks >= items * 95 / 100 && high - low <= 4,
+               "A slow worker cannot leave any chunk behind the others (" + std::to_string(workers) + " workers)");
+    }
 }
 
 namespace coverage_rate {

@@ -298,7 +298,7 @@ void testIndependentWorkerExecution() {
     expect(!result.infrastructure_failure && result.total_errors() == 0 && result.cycles_completed == 1,
            "Workers complete every chunk without a phase barrier");
     expect(fast_starts >= 2, "A free worker takes another idle chunk while its peer still holds one");
-    // Two workers get three equal page-aligned chunks that tile the window.
+    // Two workers get four equal page-aligned chunks that tile the window.
     size_t covered = 0;
     uint8_t* next = region.base;
     bool equal = true;
@@ -308,8 +308,8 @@ void testIndependentWorkerExecution() {
         next = base + size;
         covered += size;
     }
-    expect(chunks.size() == 3 && covered == region.size && equal,
-           "Two workers share three equal page-aligned chunks that exactly tile the window");
+    expect(chunks.size() == 4 && covered == region.size && equal,
+           "Two workers share four equal page-aligned chunks that exactly tile the window");
     TestContext cancelled;
     cancelled.phase_hook = [&](const char*, const MemoryRegion&) { cancelled.requestStop(); };
     const auto stopped = TestEngine::executeSuite(config, region, {0, 1}, configs, &cancelled);

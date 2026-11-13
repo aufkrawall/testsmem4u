@@ -262,10 +262,10 @@ offer follows it.
 
 ## Coverage and workload
 
-The window is split into equal page-aligned chunks, one more than the number of
+The window is split into equal page-aligned chunks, two more than the number of
 workers. Each chunk follows the preset sequence in order and is tested by one
 worker at a time; a worker that finishes a test takes the least advanced idle
-chunk. Slower CPUs (SMT siblings, efficiency cores, cores busy with other work)
+chunk other than the one it just finished. Slower CPUs (SMT siblings, efficiency cores, cores busy with other work)
 therefore run fewer tests instead of leaving part of the window tested less often.
 The displayed test/cycle represents the least advanced chunk; other chunks can
 already be in later tests. A completed cycle means every chunk completed the whole

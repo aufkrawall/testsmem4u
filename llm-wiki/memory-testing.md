@@ -14,7 +14,8 @@ long-run stalls; low for tested native progress/accounting paths.
 - `src/PlatformMemory.cpp::allocateMemoryRAII` and `include/PreparationStatus.h`:
   prefaulting and exception-safe preparation lifetime.
 - `include/RegionScheduler.h`: per-chunk completed sequence position, chunk claims
-  (least advanced idle chunk first, ties to the longest idle), `ChunkLease` and the
+  (least advanced idle chunk first excluding the worker's just-finished chunk, ties
+  to the longest idle), `ChunkLease` and the
   status line's least advanced chunk; the minimum defines completed cycles.
 - `include/TestProgress.h`, `TestContext` and `VerificationProgress` in
   `include/TestEngineInternal.h`: live per-worker totals, scoped binding, and
@@ -197,21 +198,34 @@ final observation of what the test actually obtained.
 ## Invariants
 
 Workers keep CPU affinity but no fixed memory (changed 2026-11-13). The window is
-split into equal native-page-aligned chunks, workers + 1 when the window has the
-pages (one chunk for one worker). A chunk is held by exactly one worker per test
-invocation, so cache-line ownership and retention isolation hold within an
-invocation; data never has to survive between invocations because every kernel
-fills its region first. With chunks >= workers, a worker claiming after its
-release always finds an idle chunk, so nobody waits. Least-advanced-first claims
-keep idle chunks within one test of each other.
+split into equal native-page-aligned chunks, workers + `kSpareChunks` (2) when the
+window has the pages (one chunk for one worker). A chunk is held by exactly one
+worker per test invocation, so cache-line ownership and retention isolation hold
+within an invocation; data never has to survive between invocations because every
+kernel fills its region first. With chunks >= workers, a worker claiming after its
+release always finds an idle chunk, so nobody waits.
+
+Claim policy invariant: least advanced idle chunk, but never the worker's
+just-finished chunk while another chunk is idle. Rejected (measured/simulated):
+workers + 1 chunks with plain least-advanced claims. The releasing worker's own
+chunk is usually the most behind (it was held longest), so a slow worker re-claimed
+it forever and that chunk advanced at the slow worker's pace: chunks ended at
+40..58 in a 1 GiB 40-cycle run, and a discrete-event simulation with one 2.5x
+slower worker of 16 gave the worst chunk 42% of the average rate (no better than
+static regions). Exclusion with one spare chunk only rotates chunks FIFO and lets
+them drift (spread ~17 tests over 3000 items); two spares add a choice and hold the
+worst chunk at 98% of average with a spread of about 6. Real run after the fix
+(1 GiB, 16 threads, 40 SimpleTest cycles): 18 chunks within 40..43, 7.8-8.2 s
+instead of 14.7-15.5 s. Cost: RefreshStable's fixed dwell runs once per chunk, so
+its per-cycle wall time is (workers + 2) / workers of the static layout.
 
 Why: static weighted regions were measured (2026-11-13, 5700X, 16 workers) to finish
 tests at very different rates. SMT siblings with half-size regions (weight 50)
 finished each test about twice as fast as full-size ones, and even with equal
 regions OS noise spread per-worker times from 42 s to 82 s. The slowest region
 bounded completed cycles and its cells were tested about half as often. With
-chunks, a slow CPU just completes fewer invocations (10 to 13 per worker in the
-1 GiB check); all 17 chunks reached the target. CPU weights no longer size memory.
+chunks, a slow CPU just completes fewer invocations. CPU weights no longer size
+memory (they only feed the `heterogeneous` diagnostic).
 
 Each chunk executes the configured sequence in order. Completed cycles are the
 minimum across chunks. Faster workers continue real tests, including extra cycles,

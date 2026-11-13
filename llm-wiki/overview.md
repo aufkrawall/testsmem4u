@@ -54,8 +54,8 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   fit the CPU; AVX-512 *instruction emission* stays `#if __AVX512F__`-guarded.
 - MovingInversionLFSR uses the inverse LFSR recurrence for backward traversal;
   no seed-table precomputation is needed, and partial blocks are supported.
-- Workers pull equal page-aligned chunks (workers + 1); each chunk walks the sequence
-  and a free worker takes the least advanced idle chunk. The minimum chunk position
+- Workers pull equal page-aligned chunks (workers + 2); each chunk walks the sequence
+  and a free worker takes the least advanced idle chunk other than its own last one. The minimum chunk position
   defines progress and cycle coverage. No per-test barriers, no idle workers.
 - RefreshStable tests disjoint active memory during each held-half retention dwell.
 - See [memory-testing.md](memory-testing.md) for algorithms, invariants, measurements,
