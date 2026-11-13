@@ -1,6 +1,5 @@
 #pragma once
 #include "Types.h"
-#include "WorkerProgress.h"
 #include <algorithm>
 #include <atomic>
 #include <limits>
@@ -133,27 +132,5 @@ private:
     bool repetitions_claimed_ = false;
     inline static thread_local ProgressBinding* current = nullptr;
 };
-
-// The status line follows the least advanced worker: lowest completed sequence
-// position, then lowest current-test step. Positions and steps are sampled once.
-struct SlowestWorker {
-    size_t worker = 0;
-    uint64_t position = 0;
-    uint32_t step = 0;
-};
-
-inline SlowestWorker findSlowestWorker(const WorkerProgress& progress,
-                                       const std::vector<ProgressCounters>& counters) {
-    SlowestWorker slowest{0, std::numeric_limits<uint64_t>::max(), ProgressCounters::kStepScale};
-    for (size_t i = 0; i < counters.size(); ++i) {
-        const uint64_t position = progress.completedTests(i);
-        const uint32_t step = counters[i].step();
-        if (position < slowest.position || (position == slowest.position && step < slowest.step)) {
-            slowest = {i, position, step};
-        }
-    }
-    if (counters.empty()) slowest = {};
-    return slowest;
-}
 
 } // namespace testsmem4u

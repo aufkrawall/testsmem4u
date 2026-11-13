@@ -9,12 +9,13 @@ long-run stalls; low for tested native progress/accounting paths.
 
 ## Sources and responsibilities
 
-- `src/TestEngine.cpp`: allocation, dispatch, page-aligned weighted worker regions,
-  independent sequence execution, monitoring, termination, exception containment.
+- `src/TestEngine.cpp`: allocation, dispatch, equal page-aligned chunks served
+  dynamically by CPU-bound workers, monitoring, termination, exception containment.
 - `src/PlatformMemory.cpp::allocateMemoryRAII` and `include/PreparationStatus.h`:
   prefaulting and exception-safe preparation lifetime.
-- `include/WorkerProgress.h`: per-worker completed sequence position; the minimum
-  defines whole-allocation progress and completed cycles.
+- `include/RegionScheduler.h`: per-chunk completed sequence position, chunk claims
+  (least advanced idle chunk first, ties to the longest idle), `ChunkLease` and the
+  status line's least advanced chunk; the minimum defines completed cycles.
 - `include/TestProgress.h`, `TestContext` and `VerificationProgress` in
   `include/TestEngineInternal.h`: live per-worker totals, scoped binding, and
   leaf-only verified-byte/error publication; joined totals are exact.
@@ -195,20 +196,33 @@ final observation of what the test actually obtained.
 
 ## Invariants
 
-Workers retain exclusive contiguous regions and CPU affinity. Their test phases
-are independent: a faster worker never waits at a test/cycle barrier. Keeping
-static regions preserves cache-line ownership and retention isolation; removing
-barriers does not require work stealing or tiny shared tiles.
+Workers keep CPU affinity but no fixed memory (changed 2026-11-13). The window is
+split into equal native-page-aligned chunks, workers + 1 when the window has the
+pages (one chunk for one worker). A chunk is held by exactly one worker per test
+invocation, so cache-line ownership and retention isolation hold within an
+invocation; data never has to survive between invocations because every kernel
+fills its region first. With chunks >= workers, a worker claiming after its
+release always finds an idle chunk, so nobody waits. Least-advanced-first claims
+keep idle chunks within one test of each other.
 
-Each worker executes the configured sequence in order. Completed cycles are the
-minimum across workers. Faster workers continue real tests, including extra cycles,
-until every region completes the requested count. Disabled sequence entries advance
+Why: static weighted regions were measured (2026-11-13, 5700X, 16 workers) to finish
+tests at very different rates. SMT siblings with half-size regions (weight 50)
+finished each test about twice as fast as full-size ones, and even with equal
+regions OS noise spread per-worker times from 42 s to 82 s. The slowest region
+bounded completed cycles and its cells were tested about half as often. With
+chunks, a slow CPU just completes fewer invocations (10 to 13 per worker in the
+1 GiB check); all 17 chunks reached the target. CPU weights no longer size memory.
+
+Each chunk executes the configured sequence in order. Completed cycles are the
+minimum across chunks. Faster workers continue real tests, including extra cycles,
+until every chunk completes the requested count. Disabled sequence entries advance
 progress without running; an empty/all-disabled or undefined sequence fails closed.
-The displayed test is the least advanced region's next test, not a claim that all
-workers run that test. Mid-test cancellation does not publish a completed boundary.
+The displayed test is the least advanced chunk's next test, not a claim that all
+chunks run that test. Mid-test cancellation does not publish a completed boundary
+(`ChunkLease` returns the chunk unpublished on every exit path).
 
-Because workers are unsynchronised, one region's RowHammer can overlap another
-region's unrelated test. Regions are native-page-aligned but DRAM rows are larger, so
+Because workers are unsynchronised, one chunk's RowHammer can overlap another
+chunk's unrelated test. Chunks are native-page-aligned but DRAM rows are larger, so
 hammering near a boundary can flip a peer's cells. This is accepted (a lockstep
 RowHammer barrier would reintroduce per-cycle idling, since RowHammer is last in
 default.cfg). Instead each invocation runs inside a `DisturbanceWindow`; if it
@@ -402,21 +416,22 @@ and [AMD family-17h CPUID reference](https://www.amd.com/content/dam/amd/en/docu
 ### Runtime observations
 
 - Startup logs describe independent scheduling and active retention. Debug logs
-  (`--debug`) identify worker region offsets/weights, test starts, and elapsed test
-  durations, plus per-invocation summaries from March/LFSRPattern (seed, errors,
+  (`--debug`) identify the CPU topology source, chunk layout, each worker's CPU/core/
+  efficiency class/SMT role, and per-chunk test starts and elapsed test durations, plus per-invocation summaries from March/LFSRPattern (seed, errors,
   unverified, time), Modulo20 (per polarity), RefreshStable (per dwell: actual dwell,
   active chunks, full sweeps, cursor), RandomAccess (access count), and BlockMove
   (per direction). `[stopped]` marks cancelled invocations.
 - Preparation debug logs record requested bytes/lock/large-page choices, the
   resulting allocation, and Linux prefault byte/page counts and elapsed time.
-- WARN "... while RowHammer ran on another worker region" marks errors that may be
-  cross-region disturbance rather than a failure specific to the named test.
-- Final `Coverage` is the number of complete cycles across every worker region.
+- WARN "... while RowHammer ran on another memory chunk" marks errors that may be
+  cross-chunk disturbance rather than a failure specific to the named test.
+- Final `Coverage` is the number of complete cycles across every memory chunk.
 - Byte totals count verified reads, including repeated checks and retention's useful
   active tests. They are neither unique memory coverage nor physical bus traffic.
-- The status line follows the least advanced worker (`findSlowestWorker`: lowest
-  completed position, then lowest step) and appends its current-test step as a
-  percentage. `ProgressBinding` combines worker loop (`beginLoop`), configured
+- The status line follows the least advanced chunk (`findSlowestRegion`: lowest
+  completed position, then lowest step; the step is the holding worker's, an idle
+  chunk counts as 0) and appends that step as a percentage. The monitor takes one
+  locked `RegionScheduler::Snapshot` per sample, so position and holder agree. `ProgressBinding` combines worker loop (`beginLoop`), configured
   sub-block (`runRegionWork` -> `beginBlock`) and the outermost kernel's
   `RepetitionProgress` into one per-worker parts-per-million atomic. Nested kernels
   (RefreshStable's background SimpleTest) cannot claim repetitions. Workers reset
@@ -432,7 +447,8 @@ and [AMD family-17h CPUID reference](https://www.amd.com/content/dam/amd/en/docu
   cycles, including partial work from cancellation or worker exceptions.
 - `--debug` adds one `Progress:` snapshot per ten seconds (subject to UI sampling):
   aggregate verified bytes/delta/errors, worker count, and up to four workers'
-  cycle/test position, byte count, phase and idle verified-byte age. The four
+  current chunk (`R<n>`, or `R-` between chunks) with that chunk's cycle/test
+  position, byte count, phase and idle verified-byte age. The four
   least-recently advancing workers are shown first; omitted workers are counted.
   Phase labels are capped at 32 characters and only static literals are published.
   Idle ages are approximate monitor observations, not hang warnings.
@@ -478,7 +494,7 @@ Accounting invariants:
   context totals and releases them. Never resize/clear slots while readers run.
 - Byte totals are verified reads, not writes, unique RAM coverage or bus traffic.
   Fill/flush/disturbance work can legitimately precede the next verified-byte change.
-  Completed cycles still require every worker region; partial cycles are uncredited.
+  Completed cycles still require every memory chunk; partial cycles are uncredited.
 - Diagnostics are allocated/sampled only with debug mode enabled. Workers publish
   phase labels at algorithm boundaries without locks, clocks or per-block logging.
   Monitor exceptions are logged as infrastructure failures, stop peers, and retain

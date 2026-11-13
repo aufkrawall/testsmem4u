@@ -45,16 +45,19 @@ void testStepProgressContracts() {
 
     {
         std::vector<ProgressCounters> counters(3);
-        WorkerProgress progress(3);
-        progress.publish(0, 5);
-        progress.publish(1, 4);
-        progress.publish(2, 4);
+        RegionScheduler::Snapshot regions;
+        regions.positions = {5, 4, 4, 6};
+        regions.holder = {0, 1, 2, RegionScheduler::kNone};
+        regions.serving = {0, 1, 2};
         counters[1].setStep(0.7);
         counters[2].setStep(0.3);
-        const auto slowest = findSlowestWorker(progress, counters);
-        expect(slowest.worker == 2 && slowest.position == 4 && stepNear(slowest.step, 0.3),
+        const auto slowest = findSlowestRegion(regions, counters);
+        expect(slowest.chunk == 2 && slowest.position == 4 && stepNear(slowest.step, 0.3),
                "Status follows the lowest position, then the least advanced current test");
-        expect(findSlowestWorker(WorkerProgress(0), {}).position == 0, "No workers report position zero");
+        regions.positions[3] = 4;
+        expect(findSlowestRegion(regions, counters).chunk == 3,
+               "An idle chunk has not started its next test, so it is the least advanced on a tie");
+        expect(findSlowestRegion(RegionScheduler::Snapshot{}, {}).position == 0, "No chunks report position zero");
     }
 
     {

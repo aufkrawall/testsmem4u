@@ -4,7 +4,7 @@
 #include "ConsoleDisplay.h"
 #include "simd_ops.h"
 #include "Utils.h"
-#include "WorkerProgress.h"
+#include "RegionScheduler.h"
 #include "DisturbanceWindow.h"
 #include "PreparationStatus.h"
 #include "TestEngineInternal.h"
@@ -52,79 +52,42 @@ bool isKnownFunctionNameInternal(const std::string& name) {
            name == "Modulo20";
 }
 
-struct WorkerAssignment {
-    CpuTarget target;
+struct ChunkLayout {
     size_t offset = 0;
     size_t size = 0;
 };
 
-static std::vector<WorkerAssignment> buildWorkerAssignments(const MemoryRegion& region, uint32_t requested_threads) {
+static std::vector<CpuTarget> selectWorkerTargets(const MemoryRegion& region, uint32_t requested_threads,
+                                                  size_t page_size) {
     std::vector<CpuTarget> targets = Platform::getPreferredCpuTargets(requested_threads);
-    if (targets.empty()) {
-        targets.resize(requested_threads == 0 ? 1 : requested_threads);
-    }
-
-    if (requested_threads > 0 && targets.size() > requested_threads) {
-        targets.resize(requested_threads);
-    }
-
-    if (targets.empty()) {
-        targets.push_back(CpuTarget{});
-    }
-    const size_t page_size = Platform::getNativePageSize();
-    if (page_size == 0) throw std::runtime_error("Native page size is unavailable");
+    if (targets.empty()) targets.resize(requested_threads == 0 ? 1 : requested_threads);
+    if (requested_threads > 0 && targets.size() > requested_threads) targets.resize(requested_threads);
+    if (targets.empty()) targets.push_back(CpuTarget{});
     targets.resize(std::min(targets.size(), memory_pages::workerLimit(region.size, page_size)));
-    if (region.size < page_size) return {{targets.front(), 0, region.size}};
-    const size_t aligned_region_size = (region.size / page_size) * page_size;
-    size_t total_pages = aligned_region_size / page_size;
-    if (total_pages == 0) total_pages = 1;
-
-    std::vector<WorkerAssignment> assignments(targets.size());
-    uint64_t total_weight = 0;
-    for (const auto& target : targets) {
-        total_weight += std::max<uint32_t>(1, target.weight);
-    }
-    if (total_weight == 0) total_weight = targets.size();
-
-    size_t assigned_pages = 0;
-    size_t running_offset = 0;
-    for (size_t i = 0; i < targets.size(); ++i) {
-        assignments[i].target = targets[i];
-        assignments[i].offset = running_offset;
-
-        size_t pages = 0;
-        if (i + 1 == targets.size()) {
-            pages = total_pages - assigned_pages;
-        } else {
-            uint64_t weighted_pages = (static_cast<uint64_t>(total_pages) * std::max<uint32_t>(1, targets[i].weight)) / total_weight;
-            pages = static_cast<size_t>(weighted_pages);
-            size_t remaining_workers = targets.size() - i;
-            size_t remaining_pages = total_pages - assigned_pages;
-            if (pages == 0) pages = 1;
-            if (pages > remaining_pages - (remaining_workers - 1)) {
-                pages = remaining_pages - (remaining_workers - 1);
-            }
-        }
-
-        assignments[i].size = pages * page_size;
-        assigned_pages += pages;
-        running_offset += assignments[i].size;
-    }
-
-    if (!assignments.empty()) {
-        size_t covered = 0;
-        for (const auto& assignment : assignments) {
-            covered += assignment.size;
-        }
-        if (covered < region.size) {
-            assignments.back().size += region.size - covered;
-        }
-    }
-
-    return assignments;
+    return targets;
 }
 
+// Equal page-aligned chunks, one more than the worker count when the window has
+// the pages, so a worker finishing a test finds an idle chunk that is not ahead
+// of the rest. Remainder pages go to the first chunks; any sub-page tail to the
+// last one.
+static std::vector<ChunkLayout> buildChunkLayout(const MemoryRegion& region, size_t workers, size_t page_size) {
+    const size_t pages = memory_pages::workerLimit(region.size, page_size);
+    const size_t chunks = std::min(pages, workers > 1 ? workers + 1 : size_t{1});
+    if (region.size < page_size || chunks <= 1) return {{0, region.size}};
+    const size_t total_pages = region.size / page_size;
+    std::vector<ChunkLayout> layout(chunks);
+    size_t offset = 0;
+    for (size_t i = 0; i < chunks; ++i) {
+        const size_t chunk_pages = total_pages / chunks + (i < total_pages % chunks ? 1 : 0);
+        layout[i] = {offset, chunk_pages * page_size};
+        offset += layout[i].size;
+    }
+    layout.back().size += region.size - offset;
+    return layout;
 }
+
+} // namespace
 
 // Static lifetime keeps asynchronous shutdown safe during teardown.
 static std::atomic<bool> g_stop_requested{false};
@@ -399,11 +362,20 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     threads = std::min(threads, max_threads_for_region);
     if (threads == 0) threads = 1;
 
-    std::vector<WorkerAssignment> assignments = buildWorkerAssignments(region, threads);
-    threads = static_cast<uint32_t>(assignments.size());
+    const std::vector<CpuTarget> targets = selectWorkerTargets(region, threads, native_page_size);
+    threads = static_cast<uint32_t>(targets.size());
+    const std::vector<ChunkLayout> layout = buildChunkLayout(region, threads, native_page_size);
+    std::vector<MemoryRegion> chunk_regions(layout.size(), region);
+    for (size_t i = 0; i < layout.size(); ++i) {
+        chunk_regions[i].base += layout[i].offset;
+        chunk_regions[i].size = layout[i].size;
+        chunk_regions[i].base_offset_bytes += layout[i].offset;
+    }
     LOG_DEBUG("CPU topology: source=%s logical-cpus=%u reserved-skipped=%u heterogeneous=%s workers=%u",
               platform_info.cpu_topology_source, platform_info.cpu_cores, platform_info.cpu_sets_reserved,
               platform_info.heterogeneous_cores ? "yes" : "no", threads);
+    LOG_DEBUG("Chunks: count=%zu first-bytes=%zu last-bytes=%zu (equal page-aligned slices served dynamically)",
+              layout.size(), layout.front().size, layout.back().size);
 
     {
         // Report the ISA this binary was compiled to emit (i.e. which variant is
@@ -466,7 +438,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
         for (const auto& [test_id, tc] : configs) {
             if (tc.enabled && tc.function == "RandomAccess" && tc.parameter > kRandomAccessPassLimit) {
                 LOG_WARN("Test %u (RandomAccess): Parameter=%u exceeds %u, so it is an explicit access count "
-                         "per worker region, not a pass multiplier. Use 1-%u for full-region passes.",
+                         "per memory chunk, not a pass multiplier. Use 1-%u for full-region passes.",
                          test_id, tc.parameter, kRandomAccessPassLimit, kRandomAccessPassLimit);
             }
         }
@@ -489,10 +461,11 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     }
     std::vector<std::thread> workers;
     workers.reserve(threads);
-    WorkerProgress progress(threads);
+    RegionScheduler scheduler(chunk_regions.size(), threads);
     ctx.worker_progress = std::vector<ProgressCounters>(threads);
-    LOG_INFO("Scheduling: independent workers; progress reports minimum completed coverage. "
-             "Faster workers continue genuine tests until every region completes the requested cycles.");
+    LOG_INFO("Scheduling: %u workers pull %zu equal memory chunks; each chunk runs the sequence in order and a free "
+             "worker takes the least advanced idle chunk, so coverage stays even however fast each CPU runs.",
+             threads, chunk_regions.size());
     LOG_INFO("Retention: alternate untouched halves while testing the other half; no whole-run sleep.");
     LOG_DEBUG("Progress: verified blocks publish to separate worker counters; completed cycles require every region.");
 
@@ -508,6 +481,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
         std::optional<ProgressDiagnostics> diagnostics;
         if (config.debug_mode) diagnostics.emplace(threads, start, initial_bytes);
         auto last_update = std::chrono::steady_clock::now();
+        RegionScheduler::Snapshot regions;
 
         while (!ctx.shouldStop()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -520,7 +494,8 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             last_update = now;
 
             StatusInfo info;
-            const SlowestWorker slowest = findSlowestWorker(progress, ctx.worker_progress);
+            scheduler.snapshot(regions);
+            const SlowestRegion slowest = findSlowestRegion(regions, ctx.worker_progress);
             const uint64_t position = slowest.position;
             info.test_step = slowest.step;
             info.cycle = static_cast<uint32_t>(position / seq.size() + 1);
@@ -536,7 +511,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 
             ConsoleDisplay::get().updateStatus(info);
             if (diagnostics) {
-                const auto diagnostic = diagnostics->update(now, totals, ctx.worker_progress, progress, seq.size());
+                const auto diagnostic = diagnostics->update(now, totals, ctx.worker_progress, regions, seq.size());
                 if (!diagnostic.empty()) LOG_DEBUG("%s", diagnostic.c_str());
             }
         }
@@ -563,68 +538,70 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             workers.emplace_back([&, t]() noexcept {
                 ProgressBinding binding(&ctx, ctx.worker_progress[t]);
                 try {
-                    const WorkerAssignment& assignment = assignments[t];
-                    if (!Platform::bindCurrentThread(assignment.target)) {
+                    const CpuTarget& target = targets[t];
+                    if (!Platform::bindCurrentThread(target)) {
                         LOG_WARN("Worker %u could not bind to target group=%u cpu=%u", t,
-                                 static_cast<unsigned>(assignment.target.group),
-                                 static_cast<unsigned>(assignment.target.logical_index));
+                                 static_cast<unsigned>(target.group), static_cast<unsigned>(target.logical_index));
                     }
-                    MemoryRegion my_region = region;
-                    my_region.base += assignment.offset;
-                    my_region.size = assignment.size;
-                    my_region.base_offset_bytes += assignment.offset;
-                    LOG_DEBUG("Worker %u owns offset=%zu bytes=%zu weight=%u cpu=%u:%u core=%u eff=%u smt-sibling=%s", t,
-                              my_region.base_offset_bytes, my_region.size, assignment.target.weight,
-                              static_cast<unsigned>(assignment.target.group),
-                              static_cast<unsigned>(assignment.target.logical_index),
-                              static_cast<unsigned>(assignment.target.core_index),
-                              static_cast<unsigned>(assignment.target.efficiency_class),
-                              assignment.target.smt_secondary ? "yes" : "no");
-                    uint64_t cycle = 0;
+                    LOG_DEBUG("Worker %u bound cpu=%u:%u core=%u eff=%u smt-sibling=%s", t,
+                              static_cast<unsigned>(target.group), static_cast<unsigned>(target.logical_index),
+                              static_cast<unsigned>(target.core_index), static_cast<unsigned>(target.efficiency_class),
+                              target.smt_secondary ? "yes" : "no");
                     while (!ctx.shouldStop()) {
-                        testPhase(ctx, "Memory residency", my_region);
-                        if (!Platform::checkMemoryResident(my_region.base, my_region.size)) {
-                            ctx.setInfrastructureFailure("Worker memory residency check failed.");
+                        const RegionScheduler::Claim claim = scheduler.claim(t);
+                        if (claim.chunk == RegionScheduler::kNone) {
+                            ctx.setInfrastructureFailure("Scheduler found no idle memory chunk for a free worker.");
                             break;
                         }
-                        for (size_t seq_idx = 0; seq_idx < seq.size() && !ctx.shouldStop(); ++seq_idx) {
-                            const TestConfig& tc = configs.at(seq[seq_idx]);
-                            const auto test_start = std::chrono::steady_clock::now();
-                            const uint64_t bytes_before = ctx.worker_progress[t].snapshot().bytes_tested;
-                            if (tc.enabled) {
-                                testPhase(ctx, "Worker test start", my_region);
-                                LOG_DEBUG("Worker %u cycle %llu test %zu: %s started", t,
-                                          static_cast<unsigned long long>(cycle + 1), seq_idx + 1, tc.function.c_str());
-                                const uint64_t loops = std::max<uint64_t>(1,
-                                    (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100);
-                                const bool disturbs = isCrossRegionDisturbanceTest(tc.function);
-                                for (uint64_t loop = 0; loop < loops && !ctx.shouldStop(); ++loop) {
-                                    ProgressBinding::beginLoop(&ctx, loop, loops);
-                                    DisturbanceWindow window(ctx, disturbs);
-                                    TestResult tr = runRegionWork(ctx, my_region, tc, config.halt_on_error);
-                                    if (tr.total_errors() && window.overlappedForeignDisturbance()) {
-                                        LOG_WARN("Worker %u: %llu error(s) in %s (region offset=%zu bytes=%zu) while "
-                                                 "RowHammer ran on another worker region. Rows can span region "
-                                                 "boundaries, so cross-region hammering may have caused them.",
-                                                 t, static_cast<unsigned long long>(tr.total_errors()),
-                                                 tc.function.c_str(), my_region.base_offset_bytes, my_region.size);
-                                    }
-                                    if (tr.total_errors() && config.halt_on_error) ctx.requestStop();
-                                }
-                            }
-                            if (ctx.shouldStop()) break;
-                            ProgressBinding::resetStep(&ctx);
-                            progress.publish(t, cycle * seq.size() + seq_idx + 1);
-                            LOG_DEBUG("Worker %u cycle %llu test %zu: %s completed in %.3fs verified-bytes=%llu", t,
-                                      static_cast<unsigned long long>(cycle + 1), seq_idx + 1, tc.function.c_str(),
-                                      std::chrono::duration<double>(std::chrono::steady_clock::now() - test_start).count(),
-                                      static_cast<unsigned long long>(ctx.worker_progress[t].snapshot().bytes_tested - bytes_before));
-                            if (config.cycles && progress.minimum() / seq.size() >= config.cycles) {
-                                ctx.requestStop();
+                        ChunkLease lease(scheduler, t, claim.chunk);
+                        const MemoryRegion& chunk = chunk_regions[claim.chunk];
+                        const uint64_t cycle = claim.position / seq.size();
+                        const size_t seq_idx = static_cast<size_t>(claim.position % seq.size());
+                        if (seq_idx == 0) {
+                            testPhase(ctx, "Memory residency", chunk);
+                            if (!Platform::checkMemoryResident(chunk.base, chunk.size)) {
+                                ctx.setInfrastructureFailure("Worker memory residency check failed.");
                                 break;
                             }
                         }
-                        ++cycle;
+                        const TestConfig& tc = configs.at(seq[seq_idx]);
+                        const auto test_start = std::chrono::steady_clock::now();
+                        const uint64_t bytes_before = ctx.worker_progress[t].snapshot().bytes_tested;
+                        if (tc.enabled) {
+                            testPhase(ctx, "Worker test start", chunk);
+                            LOG_DEBUG("Worker %u chunk %zu cycle %llu test %zu: %s started", t, claim.chunk,
+                                      static_cast<unsigned long long>(cycle + 1), seq_idx + 1, tc.function.c_str());
+                            const uint64_t loops = std::max<uint64_t>(1,
+                                (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100);
+                            const bool disturbs = isCrossRegionDisturbanceTest(tc.function);
+                            for (uint64_t loop = 0; loop < loops && !ctx.shouldStop(); ++loop) {
+                                ProgressBinding::beginLoop(&ctx, loop, loops);
+                                DisturbanceWindow window(ctx, disturbs);
+                                TestResult tr = runRegionWork(ctx, chunk, tc, config.halt_on_error);
+                                if (tr.total_errors() && window.overlappedForeignDisturbance()) {
+                                    LOG_WARN("Worker %u: %llu error(s) in %s (region offset=%zu bytes=%zu) while "
+                                             "RowHammer ran on another memory chunk. Rows can span chunk "
+                                             "boundaries, so cross-chunk hammering may have caused them.",
+                                             t, static_cast<unsigned long long>(tr.total_errors()),
+                                             tc.function.c_str(), chunk.base_offset_bytes, chunk.size);
+                                }
+                                if (tr.total_errors() && config.halt_on_error) ctx.requestStop();
+                            }
+                        }
+                        // A cancelled test must not count as covered; the lease returns the chunk.
+                        if (ctx.shouldStop()) break;
+                        ProgressBinding::resetStep(&ctx);
+                        lease.complete(claim.position + 1);
+                        LOG_DEBUG("Worker %u chunk %zu cycle %llu test %zu: %s completed in %.3fs verified-bytes=%llu",
+                                  t, claim.chunk, static_cast<unsigned long long>(cycle + 1), seq_idx + 1,
+                                  tc.function.c_str(),
+                                  std::chrono::duration<double>(std::chrono::steady_clock::now() - test_start).count(),
+                                  static_cast<unsigned long long>(ctx.worker_progress[t].snapshot().bytes_tested -
+                                                                  bytes_before));
+                        if (config.cycles && scheduler.minimum() / seq.size() >= config.cycles) {
+                            ctx.requestStop();
+                            break;
+                        }
                     }
                 } catch (const std::exception& error) {
                     reportInfrastructureFailure(ctx, "RAM-test worker failed", error.what(), t);
@@ -654,8 +631,8 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     result.soft_errors = ctx.total_soft_errors.load(std::memory_order_relaxed);
     result.unverified_errors = ctx.total_unverified_errors.load(std::memory_order_relaxed);
     result.bytes_tested = ctx.total_bytes.load(std::memory_order_relaxed);
-    result.cycles_completed = progress.minimum() / seq.size();
-    LOG_INFO("Coverage: %llu complete cycles across every worker region",
+    result.cycles_completed = scheduler.minimum() / seq.size();
+    LOG_INFO("Coverage: %llu complete cycles across every memory chunk",
              static_cast<unsigned long long>(result.cycles_completed));
     result.duration_seconds = std::chrono::duration<double>(end - start).count();
     result.infrastructure_failure = ctx.hasInfrastructureFailure();

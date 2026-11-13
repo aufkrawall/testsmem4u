@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Improved
+
+- **Even coverage across the whole test window:** workers no longer own fixed memory regions. The window is split into equal chunks (one more than the number of workers), each chunk runs the test sequence in order, and a worker that finishes a test takes the least advanced idle chunk. Previously, SMT-sibling threads got half-size regions but the same memory bandwidth, so they finished about twice as fast and lapped the others, and OS activity made some workers up to 2x slower than others. The slowest region set the completed-cycle count and was tested about half as often. Now a slow CPU simply runs fewer tests and every part of the window is tested at the same rate. Status, `Coverage` and `--debug` progress refer to chunks; debug logs record the chunk layout and each test's chunk.
+
 ### Fixed
 
 - **Windows CPU topology detection:** worker placement now actually uses Windows CPU sets. A wrong filter treated the "allocated" flag (which means reserved for one process's exclusive use, normally off) as required, so every ordinary CPU was discarded and the program always fell back to plain logical-processor numbering. Cores were never paired with their SMT siblings and hybrid Intel CPUs never had their P/E efficiency classes applied, so the intended P-core/E-core region weights (120/100) were never used. `--debug` now logs the topology source and each worker's core, efficiency class and SMT role.

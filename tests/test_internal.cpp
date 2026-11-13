@@ -20,7 +20,7 @@
 #include <cerrno>
 #endif
 #include "MemoryTestKernels.h"
-#include "WorkerProgress.h"
+#include "RegionScheduler.h"
 #include "DisturbanceWindow.h"
 #include "TestEngineInternal.h"
 #include "PreparationStatus.h"
@@ -729,6 +729,7 @@ int main() try {
     testRandomAccessContracts();
     testCacheFlushGeometry();
     testCpuTopologyPairsSmtSiblings();
+    testRegionSchedulerContracts();
     testUniformMarchSpecialization();
     testLfsrParallelGeneration();
     testTrafficKernelSpecializations();

@@ -245,17 +245,18 @@ void testEngineRegressions() {
         expect(!later.overlappedForeignDisturbance(), "Finished hammer does not overlap a later window");
     }
 
-    WorkerProgress progress(3);
-    progress.publish(0, 50);
-    progress.publish(1, 20);
-    expect(progress.minimum() == 0, "Progress cannot skip an untested worker");
-    progress.publish(2, 4);
-    expect(progress.minimum() == 4, "Progress reports minimum full-region coverage");
+    RegionScheduler progress(3, 3);
+    progress.complete(0, 0, 50);
+    progress.complete(1, 1, 20);
+    expect(progress.minimum() == 0, "Progress cannot skip an untested chunk");
+    progress.complete(2, 2, 4);
+    expect(progress.minimum() == 4, "Progress reports minimum full-window coverage");
 }
 
 void testIndependentWorkerExecution() {
     const auto platform = Platform::detectPlatform();
-    if (platform.cpu_cores < 2) return;
+    if (platform.cpu_cores < 2 || Platform::getNativePageSize() == 0) return;
+    const size_t page = Platform::getNativePageSize();
     auto guard = Platform::allocateMemoryRAII(size_t{64} * 1024, false, false, true);
     expect(guard.valid(), "Scheduler test allocation");
     if (!guard.valid()) return;
@@ -273,27 +274,42 @@ void testIndependentWorkerExecution() {
     std::mutex mutex;
     std::condition_variable cv;
     unsigned fast_starts = 0;
-    bool slow_started = false;
+    bool slow_seen = false;
+    std::thread::id slow_thread;
+    std::set<std::pair<uint8_t*, size_t>> chunks;
     TestContext ctx;
     ctx.phase_hook = [&](const char* phase, const MemoryRegion& part) {
         if (std::string(phase) != "Worker test start") return;
         std::unique_lock<std::mutex> lock(mutex);
-        if (part.base == region.base) {
+        chunks.insert({part.base, part.size});
+        if (!slow_seen) {
+            // The first worker to start a test holds its chunk until the other
+            // worker has started two tests: it must find another idle chunk.
+            // No sleeps, performance threshold, or scheduler timing.
+            slow_seen = true;
+            slow_thread = std::this_thread::get_id();
+            cv.wait(lock, [&]() { return fast_starts >= 2; });
+        } else if (std::this_thread::get_id() != slow_thread) {
             ++fast_starts;
             cv.notify_all();
-            if (fast_starts == 1) cv.wait(lock, [&]() { return slow_started; });
-        } else {
-            slow_started = true;
-            cv.notify_all();
-            // Fast worker must cross a test boundary before the slow worker is
-            // released. No sleeps, performance threshold, or scheduler timing.
-            cv.wait(lock, [&]() { return fast_starts >= 2; });
         }
     };
     const auto result = TestEngine::executeSuite(config, region, {0, 1}, configs, &ctx);
     expect(!result.infrastructure_failure && result.total_errors() == 0 && result.cycles_completed == 1,
-           "Independent workers complete every region without a phase barrier");
-    expect(fast_starts >= 2, "Fast worker proceeds while peer is still in preceding test");
+           "Workers complete every chunk without a phase barrier");
+    expect(fast_starts >= 2, "A free worker takes another idle chunk while its peer still holds one");
+    // Two workers get three equal page-aligned chunks that tile the window.
+    size_t covered = 0;
+    uint8_t* next = region.base;
+    bool equal = true;
+    for (const auto& [base, size] : chunks) {
+        equal &= base == next && size % page == 0 && size + page >= chunks.begin()->second &&
+                 size <= chunks.begin()->second;
+        next = base + size;
+        covered += size;
+    }
+    expect(chunks.size() == 3 && covered == region.size && equal,
+           "Two workers share three equal page-aligned chunks that exactly tile the window");
     TestContext cancelled;
     cancelled.phase_hook = [&](const char*, const MemoryRegion&) { cancelled.requestStop(); };
     const auto stopped = TestEngine::executeSuite(config, region, {0, 1}, configs, &cancelled);

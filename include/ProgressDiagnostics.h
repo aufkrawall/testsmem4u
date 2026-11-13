@@ -1,6 +1,6 @@
 #pragma once
 #include "TestProgress.h"
-#include "WorkerProgress.h"
+#include "RegionScheduler.h"
 #include <algorithm>
 #include <chrono>
 #include <iomanip>
@@ -24,7 +24,7 @@ public:
 
     std::string update(Clock::time_point now, const TestResult& totals,
                        const std::vector<ProgressCounters>& workers,
-                       const WorkerProgress& progress, size_t sequence_size) {
+                       const RegionScheduler::Snapshot& regions, size_t sequence_size) {
         for (size_t i = 0; i < workers.size(); ++i) {
             const uint64_t bytes = workers[i].snapshot().bytes_tested;
             if (bytes != samples_[i].bytes) samples_[i].changed = now;
@@ -43,9 +43,17 @@ public:
                << " omitted=" << workers.size() - shown;
         for (size_t j = 0; j < shown; ++j) {
             const size_t i = order_[j];
-            const uint64_t position = progress.completedTests(i);
-            output << " | w" << i << " C" << position / sequence_size + 1
-                   << " T" << position % sequence_size + 1 << " bytes=" << samples_[i].bytes
+            // A worker briefly between chunks (or not started) shows R-.
+            const size_t chunk = i < regions.serving.size() ? regions.serving[i] : RegionScheduler::kNone;
+            output << " | w" << i;
+            if (chunk < regions.positions.size()) {
+                const uint64_t position = regions.positions[chunk];
+                output << " R" << chunk << " C" << position / sequence_size + 1
+                       << " T" << position % sequence_size + 1;
+            } else {
+                output << " R-";
+            }
+            output << " bytes=" << samples_[i].bytes
                    << " step=" << std::fixed << std::setprecision(1)
                    << workers[i].step() / (ProgressCounters::kStepScale / 100.0) << "%"
                    << " idle=" << std::chrono::duration_cast<std::chrono::seconds>(now - samples_[i].changed).count()

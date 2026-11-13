@@ -180,8 +180,12 @@ void testSubBlockAndConcurrentProgress() {
 void testProgressDiagnosticsAndStatus() {
     const auto start = ProgressDiagnostics::Clock::time_point{};
     std::vector<ProgressCounters> workers(6);
-    WorkerProgress progress(6);
-    progress.publish(1, 3);
+    RegionScheduler::Snapshot progress;
+    progress.positions = {0, 3, 0, 0, 0, 0, 0};
+    progress.holder.assign(7, RegionScheduler::kNone);
+    progress.serving.assign(6, RegionScheduler::kNone);
+    progress.holder[1] = 1;
+    progress.serving[1] = 1;
     for (auto& worker : workers) worker.setPhase("Synthetic fill");
     TestResult totals;
     totals.bytes_tested = 65536;
@@ -192,7 +196,8 @@ void testProgressDiagnosticsAndStatus() {
     const auto first = diagnostics.update(start + std::chrono::seconds(10), totals, workers, progress, 2);
     expect(first.find("Progress: verified-bytes=65536 delta=65536") == 0 &&
            first.find("workers=6 omitted=2") != std::string::npos &&
-           first.find("w1 C2 T2 bytes=0 step=0.0% idle=10s phase=Synthetic fill") != std::string::npos &&
+           first.find("w1 R1 C2 T2 bytes=0 step=0.0% idle=10s phase=Synthetic fill") != std::string::npos &&
+           first.find("w2 R- bytes=0") != std::string::npos &&
            first.find("w0 ") == std::string::npos && first.find("w5 ") == std::string::npos,
            "Progress snapshots cap workers and prioritize the longest verification gaps");
     expect(diagnostics.update(start + std::chrono::seconds(11), totals, workers, progress, 2).empty(),

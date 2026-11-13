@@ -16,7 +16,7 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   requested percentage/all-core policies. Wizard/CLI normalization uses the
   preferred native large-page size on both platforms. Program/version/default-path
   constants now live in `include/RunConfiguration.h`.
-- `src/TestEngine.cpp`: allocation, dispatch, independent worker scheduling, and monitoring.
+- `src/TestEngine.cpp`: allocation, dispatch, dynamic chunk scheduling (`include/RegionScheduler.h`), and monitoring.
 - `src/HugePageSetup.cpp`, `include/HugePageSetup.h`: checked Linux THP policy
   inspection and stream-driven runtime setup component, with injectable controls
   for deterministic regression coverage. Linux startup invokes it after the final
@@ -54,8 +54,9 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   fit the CPU; AVX-512 *instruction emission* stays `#if __AVX512F__`-guarded.
 - MovingInversionLFSR uses the inverse LFSR recurrence for backward traversal;
   no seed-table precomputation is needed, and partial blocks are supported.
-- Workers keep fixed page-aligned regions but advance independently; minimum completed
-  sequence position defines progress and cycle coverage. No per-test barriers.
+- Workers pull equal page-aligned chunks (workers + 1); each chunk walks the sequence
+  and a free worker takes the least advanced idle chunk. The minimum chunk position
+  defines progress and cycle coverage. No per-test barriers, no idle workers.
 - RefreshStable tests disjoint active memory during each held-half retention dwell.
 - See [memory-testing.md](memory-testing.md) for algorithms, invariants, measurements,
   fault injection, error classification, and validation limits.

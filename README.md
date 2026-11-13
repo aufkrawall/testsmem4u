@@ -17,7 +17,7 @@ The current release is centered around `default.cfg` as the supported shipped pr
 
 Recent reliability work in this revision includes:
 
-- Independent workers with fixed, disjoint memory ownership and no per-test barriers.
+- Workers pull equal memory chunks dynamically, so coverage stays even across the window however fast each CPU runs; no per-test barriers.
 - Retention under genuine memory load: hold one half untouched while testing the other, then swap roles.
 - Forward/backward read-and-invert marches, a final restoration check, and lossless first-observation LFSR verification.
 - Address-sensitive bidirectional block copies, overlapping pair-pattern moves, and batched random-access verification.
@@ -262,22 +262,27 @@ offer follows it.
 
 ## Coverage and workload
 
-Each worker follows the preset sequence on its own contiguous memory region.
-The displayed test/cycle represents the least advanced region; other workers can
-already be running later tests. A completed cycle means every region completed the
-whole sequence. Faster workers continue genuine tests until all regions finish the
+The window is split into equal page-aligned chunks, one more than the number of
+workers. Each chunk follows the preset sequence in order and is tested by one
+worker at a time; a worker that finishes a test takes the least advanced idle
+chunk. Slower CPUs (SMT siblings, efficiency cores, cores busy with other work)
+therefore run fewer tests instead of leaving part of the window tested less often.
+The displayed test/cycle represents the least advanced chunk; other chunks can
+already be in later tests. A completed cycle means every chunk completed the whole
+sequence. Faster workers continue genuine tests until all chunks finish the
 requested cycle count. Stop and infrastructure failures never count incomplete
-cycles. Debug logs identify each worker's region, test transitions, and duration.
+cycles. Debug logs identify the chunk layout, each worker's CPU, and every test
+transition with its chunk and duration.
 
-The percentage after the test index is how far that least advanced region is
+The percentage after the test index is how far that least advanced chunk is
 through its current test, including the test's internal repetitions.
 
 The live byte count includes completed verification blocks from tests that are
 still running. Final results and `testsmem4u.log` record the exact verified-byte
 total and complete-cycle count, including completed checks from a stopped run.
 `--debug` adds progress snapshots every ten seconds: aggregate byte deltas and up
-to four workers' positions, current-test steps, phases, and time since their byte
-counts last advanced.
+to four workers' chunks and positions, current-test steps, phases, and time since
+their byte counts last advanced.
 A fill or disturbance phase can perform useful work before the next verification;
 an unchanged verified-byte count alone does not establish that a worker is stuck.
 
@@ -323,10 +328,10 @@ cache flushes, and OS scheduling affect CPU utilization differently. No software
 change guarantees maximum DIMM temperature or detection of every instability.
 Virtual addresses and large pages do not prove physical DRAM row/bank adjacency;
 RowHammer remains a heuristic disturbance test. Because workers run independently,
-one region's RowHammer can disturb rows shared with a neighbouring region running a
+one chunk's RowHammer can disturb rows shared with a neighbouring chunk running a
 different test; errors found during such an overlap are flagged with a warning in
 the log. `RandomAccess` Parameter 1-100 is a pass multiplier, while larger values
-are an explicit access count per worker region. Firmware-reserved and OS-owned RAM
+are an explicit access count per memory chunk. Firmware-reserved and OS-owned RAM
 is outside this user-space tester's allocation.
 
 Implementation details, regression coverage, and local performance measurements are
