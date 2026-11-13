@@ -20,7 +20,7 @@ void testEngineRegressions() {
         const auto result = TestEngine::runMovingInversionLFSR(ctx, region, tc, false);
         expect(result.total_errors() == 0, "LFSR march: partial reverse blocks do not invent errors");
         expect(result.bytes_tested == count * 8 * 3, "LFSR march: three verified passes");
-        uint64_t value = tc.pattern_param0;
+        uint64_t value = regionSeed(tc.pattern_param0, region.base_offset_bytes, tc.variation, 0);
         for (size_t i = 0; i < count; ++i) {
             expect(memory[i] == value, "LFSR march: backward writes restore original data");
             expect(simd::lfsrPrevious(simd::lfsrNext(value)) == value, "LFSR inverse round trip");

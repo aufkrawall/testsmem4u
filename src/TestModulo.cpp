@@ -24,7 +24,8 @@ TestResult TestEngine::runModulo20(TestContext& ctx, const MemoryRegion& region,
     const size_t offsets = std::min(stride, count);
     RepetitionProgress steps(ctx, uint64_t{2} * offsets);
     for (unsigned polarity = 0; polarity < 2 && !ctx.shouldStop(); ++polarity) {
-        const uint64_t pattern = polarity ? ~config.pattern_param0 : config.pattern_param0;
+        const uint64_t base = config.pattern_param0 ^ variationMask(config.variation, 0);
+        const uint64_t pattern = polarity ? ~base : base;
         const uint64_t errors_before = res.total_errors();
         for (size_t offset = 0; offset < offsets && !ctx.shouldStop(); ++offset) {
             steps.begin(uint64_t{polarity} * offsets + offset);

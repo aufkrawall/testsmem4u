@@ -50,12 +50,15 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
         TestConfig background;
         background.pattern_mode = 1;
         background.pattern_param1 = 0x9E3779B97F4A7C15ULL;
+        background.variation = config.variation;
         // The background cursor persists across dwell windows so short dwells
         // still sweep the whole active half instead of re-testing its start.
         size_t active_cursor = 0;
         bool background_inverted = false;
+        // Both polarities still give every cell both states; the value changes per pass.
+        const uint64_t held_base = config.pattern_param0 ^ variationMask(config.variation, 0);
         for (unsigned polarity = 0; polarity < 2 && !ctx.shouldStop(); ++polarity) {
-            const uint64_t pattern = polarity ? ~config.pattern_param0 : config.pattern_param0;
+            const uint64_t pattern = polarity ? ~held_base : held_base;
             steps.begin(uint64_t{side} * 2 + polarity);
             simd::generate_pattern_uniform(ptr, count, pattern, true);
             simd::flush_cache_region(ptr, held.size);
@@ -223,7 +226,7 @@ TestResult TestEngine::runBlockMove(TestContext& ctx, const MemoryRegion& region
     RepetitionProgress steps(ctx, repeats);
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
         steps.begin(r);
-        const uint64_t pattern = config.pattern_param0 ^ (step * r);
+        const uint64_t pattern = config.pattern_param0 ^ (step * r) ^ variationMask(config.variation, 0);
         simd::generate_pattern_linear(ptr, count, pattern, step, true, start);
         simd::flush_cache_region(ptr, region.size);
         for (unsigned direction = 0; direction < 2 && !ctx.shouldStop(); ++direction) {

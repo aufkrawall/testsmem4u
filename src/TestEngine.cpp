@@ -569,15 +569,19 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         const uint64_t bytes_before = ctx.worker_progress[t].snapshot().bytes_tested;
                         if (tc.enabled) {
                             testPhase(ctx, "Worker test start", chunk);
-                            LOG_DEBUG("Worker %u chunk %zu cycle %llu test %zu: %s started", t, claim.chunk,
-                                      static_cast<unsigned long long>(cycle + 1), seq_idx + 1, tc.function.c_str());
                             const uint64_t loops = std::max<uint64_t>(1,
                                 (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100);
+                            LOG_DEBUG("Worker %u chunk %zu cycle %llu test %zu: %s started loops=%llu variation=%llu",
+                                      t, claim.chunk, static_cast<unsigned long long>(cycle + 1), seq_idx + 1,
+                                      tc.function.c_str(), static_cast<unsigned long long>(loops),
+                                      static_cast<unsigned long long>(passVariation(cycle, loops, 0)));
                             const bool disturbs = isCrossRegionDisturbanceTest(tc.function);
+                            TestConfig pass = tc;
                             for (uint64_t loop = 0; loop < loops && !ctx.shouldStop(); ++loop) {
                                 ProgressBinding::beginLoop(&ctx, loop, loops);
                                 DisturbanceWindow window(ctx, disturbs);
-                                TestResult tr = runRegionWork(ctx, chunk, tc, config.halt_on_error);
+                                pass.variation = passVariation(cycle, loops, loop);
+                                TestResult tr = runRegionWork(ctx, chunk, pass, config.halt_on_error);
                                 if (tr.total_errors() && window.overlappedForeignDisturbance()) {
                                     LOG_WARN("Worker %u: %llu error(s) in %s (region offset=%zu bytes=%zu) while "
                                              "RowHammer ran on another memory chunk. Rows can span chunk "

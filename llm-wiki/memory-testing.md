@@ -221,6 +221,32 @@ The displayed test is the least advanced chunk's next test, not a claim that all
 chunks run that test. Mid-test cancellation does not publish a completed boundary
 (`ChunkLease` returns the chunk unpublished on every exit path).
 
+Pass data variation (added 2026-11-13; sources `include/Types.h::TestConfig::variation`,
+`include/TestEngineInternal.h::variationMask/passVariation/regionSeed`, the worker
+loop in `src/TestEngine.cpp`): each invocation gets `variation = cycle * loops + loop`
+of its chunk. Kernels XOR `variationMask(variation, repetition)` into their pattern
+or seed; the mask is zero only for (0, 0), so the first repetition of the first pass
+writes exactly the configured data and existing contracts hold. Per kernel: SimpleTest
+modes 1/2 and MirrorMove vary param0 per repetition; MirrorMove128 XORs one mask into
+both pair words (keeps complements); BlockMove adds mask(v, 0) to its existing
+per-repetition step; MovingInversion uses value/complement pairs with a new value
+per pair (r / 2); LFSRPattern/MovingInversionLFSR use `regionSeed` (configured seed,
+variation, repetition and a chunk/sub-block offset salt; zero state replaced);
+Modulo20 and RefreshStable vary their base value (both polarities kept), and the
+retention background test inherits the variation. Unchanged on purpose: uniform
+SimpleTest values, walking bits, MovingInversionWalking, RowHammer (already seeded
+from `std::random_device`). RandomAccess is handled separately below.
+Why: before this, every cycle and loop rewrote identical bits (BlockMove's 200 loops,
+MovingInversionLFSR's 50 repetitions on one seed, MovingInversion's 75 identical
+pairs), so repeated passes re-tested the same cell/value/neighbour combinations.
+On controllers that scramble data per address, a fixed software pattern is one
+fixed bit pattern per cell; only changing values reach new combinations.
+Regressions: `tests/test_coverage_rate.h` checks each varied kernel stays clean,
+writes different data for variation 1, reproduces it, keeps pass 0 exact and
+uniform SimpleTest fixed, and that a suite run with two loops in two cycles writes
+four different LFSR streams. Diagnostics: test-start debug lines log `loops=` and the
+first loop's `variation=`; error lines carry expected values.
+
 Because workers are unsynchronised, one chunk's RowHammer can overlap another
 chunk's unrelated test. Chunks are native-page-aligned but DRAM rows are larger, so
 hammering near a boundary can flip a peer's cells. This is accepted (a lockstep

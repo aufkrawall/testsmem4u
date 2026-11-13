@@ -99,13 +99,14 @@ uint64_t test_lfsr_next(uint64_t value) { return simd::lfsrNext(value); }
 TestResult TestEngine::runMovingInversion(TestContext& ctx, const MemoryRegion& region,
                                          const TestConfig& config, bool stop) {
     TestResult res;
-    uint64_t pattern = config.pattern_param0;
     const uint32_t repeats = config.parameter ? config.parameter : 1;
     RepetitionProgress steps(ctx, repeats);
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
         steps.begin(r);
-        res.merge(runMarch(ctx, region, pattern, false, stop));
-        pattern = ~pattern;
+        // Repetitions alternate a value and its complement; each pair gets a new
+        // value (the first pair of pass 0 is the configured pattern).
+        const uint64_t base = config.pattern_param0 ^ variationMask(config.variation, r / 2);
+        res.merge(runMarch(ctx, region, (r & 1) ? ~base : base, false, stop));
     }
     return res;
 }
@@ -127,11 +128,11 @@ TestResult TestEngine::runMovingInversionWalking(TestContext& ctx, const MemoryR
 TestResult TestEngine::runMovingInversionLFSR(TestContext& ctx, const MemoryRegion& region,
                                              const TestConfig& config, bool stop) {
     TestResult res;
-    const uint64_t seed = config.pattern_param0 ? config.pattern_param0 : 0xACE1ACE2DEADBEEFULL;
     const uint32_t repeats = config.parameter ? config.parameter : 1;
     RepetitionProgress steps(ctx, repeats);
     for (uint32_t r = 0; r < repeats && !ctx.shouldStop(); ++r) {
         steps.begin(r);
+        const uint64_t seed = regionSeed(config.pattern_param0, region.base_offset_bytes, config.variation, r);
         res.merge(runMarch(ctx, region, seed, true, stop));
     }
     return res;
@@ -143,7 +144,7 @@ TestResult TestEngine::runLFSRPattern(TestContext& ctx, const MemoryRegion& regi
     VerificationProgress progress(ctx, res, region);
     auto* ptr = reinterpret_cast<uint64_t*>(region.base);
     const size_t count = region.size / sizeof(uint64_t);
-    const uint64_t seed = config.pattern_param0 ? config.pattern_param0 : 0xACE1ACE2DEADBEEFULL;
+    const uint64_t seed = regionSeed(config.pattern_param0, region.base_offset_bytes, config.variation, 0);
     const auto started = std::chrono::steady_clock::now();
     fillLfsr(ctx, ptr, count, seed);
     simd::flush_cache_region(ptr, count * sizeof(uint64_t));

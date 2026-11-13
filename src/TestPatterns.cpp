@@ -99,13 +99,16 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
         steps.begin(r);
 
         testPhase(ctx, "Simple fill", region);
-        // Write pattern to memory
+        // Uniform patterns are explicit test values; address patterns get a new
+        // offset per pass/repetition (the first repetition of pass 0 is unchanged).
+        const uint64_t param0 = config.pattern_mode == 0 ? config.pattern_param0
+                                                         : config.pattern_param0 ^ variationMask(config.variation, r);
         if (config.pattern_mode == 0) {
-            generate_pattern_uniform(ptr, count, config.pattern_param0, use_nt);
+            generate_pattern_uniform(ptr, count, param0, use_nt);
         } else if (config.pattern_mode == 1) {
-            generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt, word_start);
+            generate_pattern_xor(ptr, count, param0, config.pattern_param1, use_nt, word_start);
         } else {
-            generate_pattern_linear(ptr, count, config.pattern_param0, config.pattern_param1, use_nt, word_start);
+            generate_pattern_linear(ptr, count, param0, config.pattern_param1, use_nt, word_start);
         }
 
         simd::flush_cache_region(ptr, region.size);
@@ -120,7 +123,7 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
             if (ctx.shouldStop()) break;
             size_t n = std::min(block, count - i);
 
-            TestEngine::verifyAndReport(region, ptr + i, n, i, config.pattern_mode, config.pattern_param0,
+            TestEngine::verifyAndReport(region, ptr + i, n, i, config.pattern_mode, param0,
                                         config.pattern_param1, res, ctx, "SimpleTest", stop);
             progress.addBytes(n * sizeof(uint64_t));
 
@@ -145,7 +148,8 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
     for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
         steps.begin(r);
-        generate_pattern_xor(ptr, count, config.pattern_param0, config.pattern_param1, use_nt, word_start);
+        const uint64_t param0 = config.pattern_param0 ^ variationMask(config.variation, r);
+        generate_pattern_xor(ptr, count, param0, config.pattern_param1, use_nt, word_start);
 
         simd::flush_cache_region(ptr, region.size);
         testPhase(ctx, "Mirror verify initial", region);
@@ -153,7 +157,7 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
         for (size_t i = 0; i < count; i += block) {
             if (ctx.shouldStop()) break;
             size_t n = std::min(block, count - i);
-            TestEngine::verifyAndReport(region, ptr + i, n, i, 1, config.pattern_param0,
+            TestEngine::verifyAndReport(region, ptr + i, n, i, 1, param0,
                                         config.pattern_param1, res, ctx, "MirrorMove (Init)", stop);
             progress.addBytes(n * sizeof(uint64_t));
             if (stop && ctx.shouldStop()) break;
@@ -172,7 +176,7 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
             if (ctx.shouldStop()) break;
             size_t n = std::min(block, count - i);
 
-            TestEngine::verifyAndReport(region, ptr + i, n, i, 1, ~config.pattern_param0,
+            TestEngine::verifyAndReport(region, ptr + i, n, i, 1, ~param0,
                                         config.pattern_param1, res, ctx, "MirrorMove (Inv)", stop);
             progress.addBytes(n * sizeof(uint64_t));
 
@@ -194,17 +198,17 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
     for (uint32_t r = 0; r < repeats; ++r) {
         if (ctx.shouldStop()) break;
         steps.begin(r);
-        // Write alternating pattern {param0, param1} using NT stores for true DRAM testing
+        // One mask on both words keeps their configured relation (e.g. complements)
+        // while each pass/repetition stores new absolute values.
+        const uint64_t mask = variationMask(config.variation, r);
+        const uint64_t p0 = config.pattern_param0 ^ mask;
+        const uint64_t p1 = config.pattern_param1 ^ mask;
+        // Write alternating pattern {p0, p1} using NT stores for true DRAM testing
         {
             size_t i = 0;
 #if defined(__AVX512F__)
             if (simd::getCapabilities().has_avx512) {
-                __m512i v = _mm512_set_epi64(
-                    config.pattern_param1, config.pattern_param0,
-                    config.pattern_param1, config.pattern_param0,
-                    config.pattern_param1, config.pattern_param0,
-                    config.pattern_param1, config.pattern_param0
-                );
+                __m512i v = _mm512_set_epi64(p1, p0, p1, p0, p1, p0, p1, p0);
                 for (; i + 8 <= count; i += 8) {
                     _mm512_stream_si512((void*)(ptr + i), v);
                 }
@@ -212,10 +216,7 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
 #endif
 #if defined(__AVX2__)
             if (simd::getCapabilities().has_avx2) {
-                __m256i v = _mm256_set_epi64x(
-                    config.pattern_param1, config.pattern_param0,
-                    config.pattern_param1, config.pattern_param0
-                );
+                __m256i v = _mm256_set_epi64x(p1, p0, p1, p0);
                 for (; i + 4 <= count; i += 4) {
                     _mm256_stream_si256((__m256i*)(ptr + i), v);
                 }
@@ -223,25 +224,20 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
 #endif
 #if defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
             {
-                __m128i v = _mm_set_epi64x(config.pattern_param1, config.pattern_param0);
+                __m128i v = _mm_set_epi64x(p1, p0);
                 for (; i + 2 <= count; i += 2) {
                     _mm_stream_si128((__m128i*)(ptr + i), v);
                 }
             }
-#elif defined(__aarch64__) || defined(_M_ARM64)
-            for (; i + 1 < count; i += 2) {
-                ptr[i] = config.pattern_param0;
-                ptr[i+1] = config.pattern_param1;
-            }
 #else
             for (; i + 1 < count; i += 2) {
-                ptr[i] = config.pattern_param0;
-                ptr[i+1] = config.pattern_param1;
+                ptr[i] = p0;
+                ptr[i+1] = p1;
             }
 #endif
             // Handle odd tail
             if (count % 2 == 1) {
-                ptr[count - 1] = config.pattern_param0;
+                ptr[count - 1] = p0;
             }
         }
         sfence();
@@ -268,8 +264,8 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
             testPhase(ctx, phase == 1 ? "Mirror128 moved" : "Mirror128 original", region);
             // The wrapped last word is handled separately on an odd-sized region.
             const size_t paired = phase == 1 && (count & 1) ? count - 1 : count;
-            const uint64_t even = phase == 1 ? config.pattern_param1 : config.pattern_param0;
-            const uint64_t odd = phase == 1 ? config.pattern_param0 : config.pattern_param1;
+            const uint64_t even = phase == 1 ? p1 : p0;
+            const uint64_t odd = phase == 1 ? p0 : p1;
             for (size_t i = 0; i < paired && !ctx.shouldStop(); i += VERIFY_BLOCK) {
                 const size_t n = std::min(VERIFY_BLOCK, paired - i);
                 errors.clear();
@@ -280,7 +276,7 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
                 progress.addBytes(n * sizeof(uint64_t));
             }
             if (paired != count && !ctx.shouldStop()) {
-                verifyAndReport(region, ptr + paired, 1, paired, 0, config.pattern_param0, 0,
+                verifyAndReport(region, ptr + paired, 1, paired, 0, p0, 0,
                                 res, ctx, "MirrorMove128 (Tail)", stop);
                 progress.addBytes(sizeof(uint64_t));
             }

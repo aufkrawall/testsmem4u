@@ -730,6 +730,8 @@ int main() try {
     testCacheFlushGeometry();
     testCpuTopologyPairsSmtSiblings();
     testRegionSchedulerContracts();
+    testPassVariationChangesData();
+    testScheduledPassesUseNewData();
     testUniformMarchSpecialization();
     testLfsrParallelGeneration();
     testTrafficKernelSpecializations();

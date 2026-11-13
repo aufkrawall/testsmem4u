@@ -91,6 +91,35 @@ inline void generatePatternValue(uint64_t index, uint8_t mode, uint64_t p0, uint
     else val = index;
 }
 
+// SplitMix64 finalizer: a bijective 64-bit mixer.
+constexpr uint64_t mix64(uint64_t value) {
+    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    value = (value ^ (value >> 27)) * 0x94D049BB133111EBULL;
+    return value ^ (value >> 31);
+}
+
+// XOR mask for one internal repetition of one scheduled pass. It is zero only
+// for the first repetition of the first pass, which therefore writes exactly the
+// configured pattern; every other (variation, repetition) pair gets new data.
+constexpr uint64_t variationMask(uint64_t variation, uint64_t repetition) {
+    return variation == 0 && repetition == 0 ? 0 : mix64(variation * 0x9E3779B97F4A7C15ULL + repetition + 1);
+}
+
+// Pass variation for loop `loop` of a sequence entry in chunk cycle `cycle`.
+constexpr uint64_t passVariation(uint64_t cycle, uint64_t loops, uint64_t loop) {
+    return cycle * loops + loop;
+}
+
+// Pseudo-random seeds additionally differ per chunk/sub-block, so no two regions
+// hold the same stream. A zero LFSR state never advances, so it is replaced.
+constexpr uint64_t regionSeed(uint64_t configured, uint64_t base_offset_bytes, uint64_t variation,
+                              uint64_t repetition) {
+    const uint64_t seed = (configured ? configured : 0xACE1ACE2DEADBEEFULL) ^
+                          variationMask(variation, repetition) ^
+                          (base_offset_bytes ? mix64(base_offset_bytes ^ 0x5851F42D4C957F2DULL) : 0);
+    return seed ? seed : 0xACE1ACE2DEADBEEFULL;
+}
+
 inline uint64_t reportAddress(const MemoryRegion& region, const void* ptr) {
     const auto* byte_ptr = static_cast<const uint8_t*>(ptr);
     return static_cast<uint64_t>(region.base_offset_bytes + static_cast<size_t>(byte_ptr - region.base));

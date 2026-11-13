@@ -72,3 +72,112 @@ void testRegionSchedulerContracts() {
     }
     expect(spread <= 1, "Free chunks stay within one test of each other");
 }
+
+namespace coverage_rate {
+
+// Runs one kernel on a fresh page-aligned buffer; returns the final memory image.
+std::vector<uint64_t> kernelImage(TestConfig tc, uint64_t variation, size_t offset_bytes, TestResult& result) {
+    constexpr size_t words = 2048;
+    auto guard = Platform::allocateMemoryRAII(words * sizeof(uint64_t), false, false, true);
+    if (!guard.valid()) return {};
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = words * sizeof(uint64_t);
+    region.base_offset_bytes = offset_bytes;
+    TestContext ctx;
+    auto time = std::chrono::steady_clock::time_point{};
+    ctx.retention_clock = [&]() { time += std::chrono::milliseconds(1); return time; };
+    tc.variation = variation;
+    result = TestEngine::runTest(ctx, tc.function, region, tc, false);
+    const auto* memory = reinterpret_cast<const uint64_t*>(region.base);
+    return {memory, memory + words};
+}
+
+TestConfig kernel(const char* function, uint8_t mode, uint64_t p0, uint64_t p1, uint32_t parameter) {
+    TestConfig tc;
+    tc.function = function;
+    tc.pattern_mode = mode;
+    tc.pattern_param0 = p0;
+    tc.pattern_param1 = p1;
+    tc.parameter = parameter;
+    return tc;
+}
+
+} // namespace coverage_rate
+
+void testPassVariationChangesData() {
+    using coverage_rate::kernel;
+    using coverage_rate::kernelImage;
+    expect(variationMask(0, 0) == 0 && variationMask(1, 0) != 0 && variationMask(0, 1) != 0 &&
+           variationMask(1, 0) != variationMask(0, 1) && passVariation(0, 5, 0) == 0 &&
+           passVariation(1, 5, 0) == 5 && passVariation(1, 5, 4) == 9,
+           "Only the first repetition of the first pass keeps the configured data");
+    const std::vector<TestConfig> varied{
+        kernel("SimpleTest", 1, 0xDEADBEEFCAFEBABEULL, 0x7654321089ABCDEFULL, 0),
+        kernel("SimpleTest", 2, 0x12345678, 0x9ABCDEF0, 0),
+        kernel("MirrorMove", 0, 0xF0F0F0F0F0F0F0F0ULL, 0x0F0F0F0F0F0F0F0FULL, 1),
+        kernel("MirrorMove128", 0, 0x5555555555555555ULL, 0xAAAAAAAAAAAAAAAAULL, 1),
+        kernel("BlockMove", 0, 0xCCCC3333CCCC3333ULL, 0, 1),
+        kernel("MovingInversion", 0, 0xAAAAAAAAAAAAAAAAULL, 0, 2),
+        kernel("MovingInversionLFSR", 0, 0xACE1ACE2DEADBEEFULL, 0, 1),
+        kernel("LFSRPattern", 0, 0xACE1ACE2DEADBEEFULL, 0, 0),
+        kernel("Modulo20", 0, 0xAAAAAAAAAAAAAAAAULL, 0, 1),
+        kernel("RefreshStable", 0, ~0ULL, 0, 4),
+    };
+    for (const auto& tc : varied) {
+        TestResult first, second, again;
+        const auto pass0 = kernelImage(tc, 0, 0, first);
+        const auto pass1 = kernelImage(tc, 1, 0, second);
+        const auto repeat = kernelImage(tc, 1, 0, again);
+        expect(!pass0.empty() && first.total_errors() == 0 && second.total_errors() == 0 &&
+               again.total_errors() == 0 && first.bytes_tested == second.bytes_tested,
+               tc.function + ": varied passes verify clean with unchanged coverage");
+        expect(pass0 != pass1, tc.function + ": a later pass writes different data");
+        expect(pass1 == repeat, tc.function + ": pass data is reproducible from the variation");
+    }
+
+    TestResult result;
+    const auto configured = kernelImage(kernel("SimpleTest", 1, 0xDEADBEEFCAFEBABEULL, 0x7654321089ABCDEFULL, 0),
+                                        0, 0, result);
+    bool exact = !configured.empty();
+    for (size_t i = 0; i < configured.size(); ++i) {
+        exact &= configured[i] == (0xDEADBEEFCAFEBABEULL ^ (uint64_t{i} * 0x7654321089ABCDEFULL));
+    }
+    expect(exact, "Pass 0 writes exactly the configured address pattern");
+    const auto uniform0 = kernelImage(kernel("SimpleTest", 0, 0xAAAAAAAAAAAAAAAAULL, 0, 0), 0, 0, result);
+    const auto uniform1 = kernelImage(kernel("SimpleTest", 0, 0xAAAAAAAAAAAAAAAAULL, 0, 0), 7, 0, result);
+    expect(uniform0 == uniform1, "Uniform SimpleTest values are explicit and never varied");
+    const auto chunk0 = kernelImage(kernel("LFSRPattern", 0, 0xACE1ACE2DEADBEEFULL, 0, 0), 0, 0, result);
+    const auto chunk1 = kernelImage(kernel("LFSRPattern", 0, 0xACE1ACE2DEADBEEFULL, 0, 0), 0, 1 << 20, result);
+    expect(chunk0 != chunk1 && result.total_errors() == 0, "Each chunk holds its own pseudo-random stream");
+}
+
+void testScheduledPassesUseNewData() {
+    // Every loop and cycle of a sequence entry must see new data; before pass
+    // variation each repeated invocation rewrote identical bits.
+    auto guard = Platform::allocateMemoryRAII(size_t{64} * 1024, false, false, true);
+    expect(guard.valid(), "Scheduled variation allocation");
+    if (!guard.valid()) return;
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    Config config;
+    config.cores = 1;
+    config.cycles = 2;
+    config.preset.time_percent = 100;
+    TestConfig tc;
+    tc.function = "LFSRPattern";
+    tc.pattern_param0 = 0xACE1ACE2DEADBEEFULL;
+    tc.time_percent = 2; // loops = 100% x 2% / 100 = 2
+    std::set<uint64_t> first_words;
+    size_t fills = 0;
+    TestContext ctx;
+    ctx.phase_hook = [&](const char* phase, const MemoryRegion& part) {
+        if (std::string(phase) != "LFSR filled") return;
+        ++fills;
+        first_words.insert(*reinterpret_cast<const uint64_t*>(part.base));
+    };
+    const auto result = TestEngine::executeSuite(config, region, {0}, {{0, tc}}, &ctx);
+    expect(result.cycles_completed == 2 && result.total_errors() == 0 && fills == 4 && first_words.size() == 4,
+           "Two loops in each of two cycles write four different pseudo-random streams");
+}

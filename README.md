@@ -277,6 +277,13 @@ transition with its chunk and duration.
 The percentage after the test index is how far that least advanced chunk is
 through its current test, including the test's internal repetitions.
 
+Every loop, cycle and internal repetition writes new data: address patterns,
+MirrorMove pairs, BlockMove, MovingInversion values, LFSR seeds, Modulo20 and
+RefreshStable derive a new value or seed per pass (pseudo-random streams also
+differ per chunk), while the first pass writes exactly the configured patterns.
+Uniform SimpleTest values and walking bits stay fixed. Later cycles therefore
+test new data combinations instead of repeating the first cycle bit for bit.
+
 The live byte count includes completed verification blocks from tests that are
 still running. Final results and `testsmem4u.log` record the exact verified-byte
 total and complete-cycle count, including completed checks from a stopped run.
