@@ -401,6 +401,9 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 
     std::vector<WorkerAssignment> assignments = buildWorkerAssignments(region, threads);
     threads = static_cast<uint32_t>(assignments.size());
+    LOG_DEBUG("CPU topology: source=%s logical-cpus=%u reserved-skipped=%u heterogeneous=%s workers=%u",
+              platform_info.cpu_topology_source, platform_info.cpu_cores, platform_info.cpu_sets_reserved,
+              platform_info.heterogeneous_cores ? "yes" : "no", threads);
 
     {
         // Report the ISA this binary was compiled to emit (i.e. which variant is
@@ -570,8 +573,13 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                     my_region.base += assignment.offset;
                     my_region.size = assignment.size;
                     my_region.base_offset_bytes += assignment.offset;
-                    LOG_DEBUG("Worker %u owns offset=%zu bytes=%zu weight=%u", t,
-                              my_region.base_offset_bytes, my_region.size, assignment.target.weight);
+                    LOG_DEBUG("Worker %u owns offset=%zu bytes=%zu weight=%u cpu=%u:%u core=%u eff=%u smt-sibling=%s", t,
+                              my_region.base_offset_bytes, my_region.size, assignment.target.weight,
+                              static_cast<unsigned>(assignment.target.group),
+                              static_cast<unsigned>(assignment.target.logical_index),
+                              static_cast<unsigned>(assignment.target.core_index),
+                              static_cast<unsigned>(assignment.target.efficiency_class),
+                              assignment.target.smt_secondary ? "yes" : "no");
                     uint64_t cycle = 0;
                     while (!ctx.shouldStop()) {
                         testPhase(ctx, "Memory residency", my_region);

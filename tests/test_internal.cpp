@@ -672,6 +672,7 @@ void testRunResultMerge() {
 #include "test_random_access_width.h"
 #include "test_random_access.h"
 #include "test_cache_geometry.h"
+#include "test_coverage_rate.h"
 
 } // namespace
 
@@ -727,6 +728,7 @@ int main() try {
     testRandomAccessInvertsFullWords();
     testRandomAccessContracts();
     testCacheFlushGeometry();
+    testCpuTopologyPairsSmtSiblings();
     testUniformMarchSpecialization();
     testLfsrParallelGeneration();
     testTrafficKernelSpecializations();

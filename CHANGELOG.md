@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Windows CPU topology detection:** worker placement now actually uses Windows CPU sets. A wrong filter treated the "allocated" flag (which means reserved for one process's exclusive use, normally off) as required, so every ordinary CPU was discarded and the program always fell back to plain logical-processor numbering. Cores were never paired with their SMT siblings and hybrid Intel CPUs never had their P/E efficiency classes applied, so the intended P-core/E-core region weights (120/100) were never used. `--debug` now logs the topology source and each worker's core, efficiency class and SMT role.
+
 ## 1.10 - 2026-10-14
 
 ### Improved

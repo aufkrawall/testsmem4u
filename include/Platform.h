@@ -30,6 +30,9 @@ struct PlatformInfo {
     uint32_t page_size;
     bool large_pages_available;
     bool heterogeneous_cores = false;
+    // Static literal naming how targets were discovered (diagnostics only).
+    const char* cpu_topology_source = "unknown";
+    uint32_t cpu_sets_reserved = 0; // Windows CPU sets reserved for other processes
     std::vector<CpuTarget> cpu_targets;
 };
 

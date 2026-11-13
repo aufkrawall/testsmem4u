@@ -89,7 +89,7 @@ static uint32_t bitCount64(uint64_t value) {
     return count;
 }
 
-static std::vector<CpuTarget> detectWindowsCpuTargets() {
+static std::vector<CpuTarget> detectWindowsCpuTargets(PlatformInfo& platform) {
     std::vector<CpuTarget> targets;
 
     WORD active_groups = GetActiveProcessorGroupCount();
@@ -100,12 +100,14 @@ static std::vector<CpuTarget> detectWindowsCpuTargets() {
     GetSystemCpuSetInformation_t get_cpu_set_information = getGetSystemCpuSetInformationFn();
     DWORD cpu_set_bytes = 0;
     std::vector<uint8_t> cpu_set_buffer;
+    // Query for this process so AllocatedToTargetProcess is meaningful.
+    HANDLE self = GetCurrentProcess();
     if (get_cpu_set_information != nullptr &&
-        !get_cpu_set_information(nullptr, 0, &cpu_set_bytes, nullptr, 0) &&
+        !get_cpu_set_information(nullptr, 0, &cpu_set_bytes, self, 0) &&
         GetLastError() == ERROR_INSUFFICIENT_BUFFER && cpu_set_bytes > 0) {
         cpu_set_buffer.resize(cpu_set_bytes);
         if (!get_cpu_set_information(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(cpu_set_buffer.data()),
-                                     cpu_set_bytes, &cpu_set_bytes, nullptr, 0)) {
+                                     cpu_set_bytes, &cpu_set_bytes, self, 0)) {
             cpu_set_buffer.clear();
         }
     }
@@ -154,6 +156,7 @@ static std::vector<CpuTarget> detectWindowsCpuTargets() {
         }
     };
 
+    uint32_t cpu_sets_reserved = 0;
     if (!cpu_set_buffer.empty()) {
         uint8_t* current = cpu_set_buffer.data();
         uint8_t* end = current + cpu_set_bytes;
@@ -161,7 +164,13 @@ static std::vector<CpuTarget> detectWindowsCpuTargets() {
             auto* info = reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(current);
             if (info->Type == CpuSetInformation) {
                 const auto& cpu = info->CpuSet;
-                if (!cpu.Allocated || cpu.Parked) {
+                // Allocated means reserved for exclusive use; ordinary CPUs report 0.
+                // (Skipping !Allocated discarded every ordinary CPU, so the topology
+                // fallback always ran: no core indices or efficiency classes.)
+                // Parking is transient idle-state power management: a parked CPU
+                // unparks under load, so it stays a target and only sorts last.
+                if (cpu.Allocated && !cpu.AllocatedToTargetProcess) {
+                    ++cpu_sets_reserved;
                     current += info->Size;
                     continue;
                 }
@@ -183,6 +192,8 @@ static std::vector<CpuTarget> detectWindowsCpuTargets() {
         }
     }
 
+    platform.cpu_sets_reserved = cpu_sets_reserved;
+    platform.cpu_topology_source = targets.empty() ? "logical-processor-fallback" : "cpu-sets";
     if (targets.empty()) {
         for (WORD group = 0; group < active_groups; ++group) {
             const DWORD count = GetActiveProcessorCount(group);
@@ -331,7 +342,8 @@ static uint32_t cpuSetCount(const cpu_set_t& set) {
     return count;
 }
 
-static std::vector<CpuTarget> detectLinuxCpuTargets() {
+static std::vector<CpuTarget> detectLinuxCpuTargets(PlatformInfo& platform) {
+    platform.cpu_topology_source = "sysfs";
     std::vector<CpuTarget> targets;
 
     cpu_set_t allowed;
@@ -399,11 +411,11 @@ static std::vector<CpuTarget> detectLinuxCpuTargets() {
 
 #endif
 
-static std::vector<CpuTarget> detectCpuTargets() {
+static std::vector<CpuTarget> detectCpuTargets(PlatformInfo& platform) {
 #ifdef _WIN32
-    return detectWindowsCpuTargets();
+    return detectWindowsCpuTargets(platform);
 #else
-    return detectLinuxCpuTargets();
+    return detectLinuxCpuTargets(platform);
 #endif
 }
 
@@ -449,7 +461,7 @@ static void initializeCpuTopologyCache() {
     info.large_pages_available = Platform::getPreferredLargePageSize() > 0;
 #endif
 
-    std::vector<CpuTarget> targets = detectCpuTargets();
+    std::vector<CpuTarget> targets = detectCpuTargets(info);
     info.cpu_targets = targets;
     info.cpu_cores = static_cast<uint32_t>(targets.size());
 
