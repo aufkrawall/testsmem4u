@@ -204,6 +204,10 @@ PresetInfo loadPreset(const std::string& filepath) {
                 parseHexField(tc.pattern_param1);
             } else if (key == "Parameter") {
                 parseUintField(tc.parameter);
+            } else if (key == "Line Stride") {
+                if (parseUintField(tc.line_stride)) {
+                    LOG_DEBUG("Test %u line stride: %u lines", current_test, tc.line_stride);
+                }
             } else if (key == "Test Block Size (Mb)" || key == "Block Size") {
                 uint32_t parsed = 0;
                 if (parseUintField(parsed)) {

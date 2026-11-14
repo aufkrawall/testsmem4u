@@ -37,6 +37,10 @@ struct TestConfig {
     uint32_t time_percent = 0;
     uint32_t parameter = 0;
     uint32_t block_size_mb = 0;
+    // SimpleTest "Line Stride": fill order in 64-byte lines. 0/1 write lines in
+    // address order; N > 1 writes lines 0, N, 2N, ..., then 1, N+1, ..., so
+    // consecutive writes land in different rows (no prefetch, no row hits).
+    uint32_t line_stride = 0;
     // Set per invocation by the scheduler from (cycle, loop); not a preset key.
     // 0 writes exactly the configured data. Other values derive new seeds and
     // pattern offsets so repeated passes test new data instead of identical bits.

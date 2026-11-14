@@ -200,3 +200,55 @@ void testMirrorMovesData() {
                std::string("Fault before a move travels with the data: ") + phase);
     }
 }
+
+void testStridedSimpleFill() {
+    // Write order: line 0, 3, 6, 1, 4, 7, 2, 5, then the partial final line.
+    std::vector<uint64_t> order;
+    alignas(64) std::array<uint64_t, 1027> memory{};
+    fillStridedLines(memory.data(), 68, 100, 3, [&](uint64_t g) {
+        order.push_back(g);
+        return g * 7;
+    });
+    std::vector<uint64_t> expected_order;
+    for (size_t phase = 0; phase < 3; ++phase) {
+        for (size_t line = phase; line < 8; line += 3) {
+            for (size_t w = 0; w < 8; ++w) expected_order.push_back(100 + line * 8 + w);
+        }
+    }
+    for (uint64_t k = 64; k < 68; ++k) expected_order.push_back(100 + k);
+    bool values = true;
+    for (size_t k = 0; k < 68; ++k) values &= memory[k] == (100 + k) * 7;
+    expect(order == expected_order && values, "Line Stride writes whole lines in strided order, partial line last");
+
+    MemoryRegion region{};
+    region.base = reinterpret_cast<uint8_t*>(memory.data());
+    region.size = memory.size() * sizeof(uint64_t);
+    region.base_offset_bytes = 0x20000;
+    for (uint8_t mode : {uint8_t{0}, uint8_t{1}, uint8_t{2}, kPatternModeBeat}) {
+        TestConfig tc;
+        tc.function = "SimpleTest";
+        tc.pattern_mode = mode;
+        tc.pattern_param0 = 0x0F1E2D3C4B5A6978ULL;
+        tc.pattern_param1 = 0x9E3779B97F4A7C15ULL;
+        tc.parameter = 1;
+        tc.line_stride = 5;
+        TestContext ctx;
+        const auto result = TestEngine::runSimpleTest(ctx, region, tc, false);
+        expect(result.total_errors() == 0 && result.bytes_tested == region.size,
+               "Strided SimpleTest fill verifies cleanly, mode " + std::to_string(mode));
+        TestContext faulty;
+        faulty.phase_hook = [&](const char* phase, const MemoryRegion& part) {
+            if (std::string(phase) == "Simple filled") reinterpret_cast<uint64_t*>(part.base)[1026] ^= 1;
+        };
+        expect(TestEngine::runSimpleTest(faulty, region, tc, true).total_errors() == 1,
+               "Strided SimpleTest detects a flipped bit in the partial last line, mode " + std::to_string(mode));
+    }
+    const auto path = uniqueTempPath("_stride.cfg");
+    {
+        std::ofstream file(path);
+        file << "Test Sequence=0\n[Test0]\nFunction=SimpleTest\nLine Stride=256\n";
+    }
+    const auto preset = loadPreset(path);
+    expect(preset.valid && preset.test_configs.at(0).line_stride == 256, "Preset key Line Stride is read");
+    cleanupFile(path);
+}

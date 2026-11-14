@@ -732,6 +732,7 @@ int main() try {
     testSimpleTestBeatMode();
     testMirrorKernels();
     testMirrorMovesData();
+    testStridedSimpleFill();
 
     // Concurrency and infrastructure tests
     testTestContextBasics();

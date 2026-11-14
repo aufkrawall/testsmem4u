@@ -106,7 +106,16 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
         // Mode 3 varies its address tag instead of Param0, keeping the configured
         // even/odd (and 32-bit half) complement relations on every pass.
         const BeatPattern beat = simpleBeatPattern(config, r);
-        if (config.pattern_mode == 0) {
+        if (config.line_stride > 1) {
+            const uint8_t mode = config.pattern_mode;
+            const uint64_t step = config.pattern_param1;
+            fillStridedLines(ptr, count, word_start, config.line_stride, [&](uint64_t g) {
+                if (mode == 0) return param0;
+                if (mode == 1) return param0 ^ (g * step);
+                if (mode == kPatternModeBeat) return beat_value(beat, g);
+                return param0 + g * step;
+            });
+        } else if (config.pattern_mode == 0) {
             generate_pattern_uniform(ptr, count, param0, use_nt);
         } else if (config.pattern_mode == 1) {
             generate_pattern_xor(ptr, count, param0, config.pattern_param1, use_nt, word_start);

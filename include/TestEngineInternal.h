@@ -7,6 +7,9 @@
 #include <chrono>
 #include <cstdint>
 #include <limits>
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 
 namespace testsmem4u {
 
@@ -274,6 +277,36 @@ constexpr uint8_t kPatternModeBeat = 3;
 inline simd::BeatPattern simpleBeatPattern(const TestConfig& config, uint64_t repetition) {
     return simd::BeatPattern{config.pattern_param0, ~config.pattern_param0,
                              variationMask(config.variation, repetition), config.pattern_param1};
+}
+
+// SimpleTest "Line Stride" fill: whole 64-byte lines (dst is line-aligned) in
+// the order 0, s, 2s, ..., then 1, s+1, ..., so consecutive writes land in
+// different rows and defeat prefetching; a partial final line comes last.
+// value(global_word) gives each word; on x86-64 every word is a non-temporal
+// store, so the streaming-fill contract (simd::flush_after_streaming_fill) holds.
+template <typename ValueFn>
+void fillStridedLines(uint64_t* dst, size_t count, uint64_t word_start, size_t stride, ValueFn&& value) {
+    constexpr size_t kWordsPerLine = 8;
+    const size_t lines = count / kWordsPerLine;
+    [[maybe_unused]] const bool nt = simd::getCapabilities().has_nt_stores;
+    auto store = [&](size_t k) {
+        const uint64_t word = value(word_start + k);
+#if defined(__x86_64__) || defined(_M_X64)
+        if (nt) {
+            _mm_stream_si64(reinterpret_cast<long long*>(dst + k), static_cast<long long>(word));
+            return;
+        }
+#endif
+        dst[k] = word;
+    };
+    const size_t phases = std::min(stride, lines);
+    for (size_t phase = 0; phase < phases; ++phase) {
+        for (size_t line = phase; line < lines; line += stride) {
+            for (size_t w = 0; w < kWordsPerLine; ++w) store(line * kWordsPerLine + w);
+        }
+    }
+    for (size_t k = lines * kWordsPerLine; k < count; ++k) store(k);
+    simd::sfence();
 }
 
 // Verifies base[start .. start+count) against a beat pattern numbered by global
