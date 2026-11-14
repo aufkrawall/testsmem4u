@@ -680,6 +680,7 @@ void testRunResultMerge() {
 #include "test_coverage_rate.h"
 #include "test_sequence_schedule.h"
 #include "test_time_limit.h"
+#include "test_beat_mirror.h"
 
 } // namespace
 
@@ -727,6 +728,8 @@ int main() try {
     testDeliberateLinearBitFlip();
     testVerifierObservedValues();
     testVerifyPatternPair();
+    testBeatPatternKernels();
+    testSimpleTestBeatMode();
 
     // Concurrency and infrastructure tests
     testTestContextBasics();

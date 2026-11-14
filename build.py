@@ -48,6 +48,7 @@ SRC_FILES = [
     PROJECT_ROOT / "src" / "PresetLoader.cpp",
     PROJECT_ROOT / "src" / "simd_ops.cpp",
     PROJECT_ROOT / "src" / "simd_patterns_verify.cpp",
+    PROJECT_ROOT / "src" / "simd_beat.cpp",
     PROJECT_ROOT / "src" / "Platform.cpp",
     PROJECT_ROOT / "src" / "PlatformCpu.cpp",
     PROJECT_ROOT / "src" / "PlatformMemory.cpp",

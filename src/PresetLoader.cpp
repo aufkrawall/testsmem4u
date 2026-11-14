@@ -192,8 +192,8 @@ PresetInfo loadPreset(const std::string& filepath) {
             } else if (key == "Pattern Mode") {
                 uint32_t parsed = 0;
                 if (parseUintField(parsed)) {
-                    if (parsed > 2) {
-                        invalidate("Pattern Mode must be 0, 1, or 2 in [Test" + std::to_string(current_test) + "]");
+                    if (parsed > 3) {
+                        invalidate("Pattern Mode must be 0, 1, 2 or 3 in [Test" + std::to_string(current_test) + "]");
                     } else {
                         tc.pattern_mode = static_cast<uint8_t>(parsed);
                     }

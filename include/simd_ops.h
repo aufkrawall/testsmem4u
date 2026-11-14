@@ -109,6 +109,43 @@ size_t verify_pattern_pair(const T* src, size_t count, uint64_t even_val, uint64
                            std::vector<std::pair<uint64_t, uint64_t>>& errors,
                            size_t max_error_samples = MAX_ERROR_SAMPLES_PER_BLOCK);
 
+// Per-beat complement ("beat") pattern. Global word g holds
+//   (g odd ? odd : even) ^ beat_tag(salt + (g >> 1) * step)
+// where beat_tag copies the low 32 bits into both halves. With odd == ~even
+// every second 64-bit bus beat is the exact complement of the one before (all
+// DQ lines toggle), and the symmetric tag also keeps any complement relation
+// between the two 32-bit halves of even/odd (DDR5 32-bit sub-channel beats).
+// An odd step gives every 16-byte unit within 64 GiB its own tag, so moved or
+// aliased data is detectable.
+struct BeatPattern {
+    uint64_t even = 0;
+    uint64_t odd = 0;
+    uint64_t salt = 0;
+    uint64_t step = 0;
+};
+
+constexpr uint64_t beat_tag(uint64_t x) { return (x & 0xFFFFFFFFULL) | (x << 32); }
+
+constexpr uint64_t beat_value(const BeatPattern& p, uint64_t global_word) {
+    return ((global_word & 1) ? p.odd : p.even) ^ beat_tag(p.salt + (global_word >> 1) * p.step);
+}
+
+// The pattern held after mirror_reverse_pairs on `pairs` 16-byte units starting
+// at the even global word g0: unit q then holds the former unit pairs-1-q.
+constexpr BeatPattern beat_mirrored(const BeatPattern& p, uint64_t g0, uint64_t pairs) {
+    return BeatPattern{p.even, p.odd, p.salt + (g0 + pairs - 1) * p.step, 0 - p.step};
+}
+
+// Writes beat_value(p, start_word + k) to dst[k]; with use_nt every word is a
+// non-temporal store on x86-64 (streaming_fill_bypasses_cache contract). Fences.
+void generate_pattern_beat(uint64_t* dst, size_t count, const BeatPattern& p, uint64_t start_word, bool use_nt);
+
+// Verifies dst[k] == beat_value(p, start_word + k); same sampling contract as
+// the other verifiers (each word read once, samples from the loaded register).
+size_t verify_pattern_beat(const uint64_t* src, size_t count, const BeatPattern& p, uint64_t start_word,
+                           std::vector<std::pair<uint64_t, uint64_t>>& errors,
+                           size_t max_error_samples = MAX_ERROR_SAMPLES_PER_BLOCK);
+
 // Safe forced memory read after cache flush
 // Use this instead of volatile casts (which are UB in C++)
 // Performs: flush cache line, memory fence, read value

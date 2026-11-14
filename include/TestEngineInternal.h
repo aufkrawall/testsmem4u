@@ -264,6 +264,32 @@ inline void classifyAndLogErrors(const MemoryRegion& region, const uint64_t* ptr
     }
 }
 
+// SimpleTest "Pattern Mode=3": per-beat complement (simd::BeatPattern). Param0
+// is the even word, its complement the odd word, Param1 the address-tag step
+// (odd values give every 16-byte unit its own tag; 0 makes the tag constant).
+// Passes vary the tag salt, never Param0, so the configured complement
+// relations (also between 32-bit halves) hold on every pass.
+constexpr uint8_t kPatternModeBeat = 3;
+
+inline simd::BeatPattern simpleBeatPattern(const TestConfig& config, uint64_t repetition) {
+    return simd::BeatPattern{config.pattern_param0, ~config.pattern_param0,
+                             variationMask(config.variation, repetition), config.pattern_param1};
+}
+
+// Verifies base[start .. start+count) against a beat pattern numbered by global
+// word and classifies mismatches (hard/soft re-read).
+inline size_t verifyBeatAndReport(const MemoryRegion& region, const uint64_t* base, size_t start, size_t count,
+                                  const simd::BeatPattern& pattern, TestResult& res, TestContext& ctx,
+                                  const char* name, bool halt_on_error) {
+    std::vector<std::pair<uint64_t, uint64_t>> errors;
+    const uint64_t first_word = globalWordStart(region);
+    const size_t found = simd::verify_pattern_beat(base + start, count, pattern, first_word + start, errors);
+    classifyAndLogErrors(region, base, errors, found, start,
+                         [&](size_t offset) { return simd::beat_value(pattern, first_word + offset); },
+                         res, ctx, name, halt_on_error);
+    return found;
+}
+
 
 inline void testPhase(TestContext& ctx, const char* phase, const MemoryRegion& region) {
     ProgressBinding::setPhase(&ctx, phase);

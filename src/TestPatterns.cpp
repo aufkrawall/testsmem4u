@@ -103,10 +103,15 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
         // offset per pass/repetition (the first repetition of pass 0 is unchanged).
         const uint64_t param0 = config.pattern_mode == 0 ? config.pattern_param0
                                                          : config.pattern_param0 ^ variationMask(config.variation, r);
+        // Mode 3 varies its address tag instead of Param0, keeping the configured
+        // even/odd (and 32-bit half) complement relations on every pass.
+        const BeatPattern beat = simpleBeatPattern(config, r);
         if (config.pattern_mode == 0) {
             generate_pattern_uniform(ptr, count, param0, use_nt);
         } else if (config.pattern_mode == 1) {
             generate_pattern_xor(ptr, count, param0, config.pattern_param1, use_nt, word_start);
+        } else if (config.pattern_mode == kPatternModeBeat) {
+            generate_pattern_beat(ptr, count, beat, word_start, use_nt);
         } else {
             generate_pattern_linear(ptr, count, param0, config.pattern_param1, use_nt, word_start);
         }
@@ -123,8 +128,12 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
             if (ctx.shouldStop()) break;
             size_t n = std::min(block, count - i);
 
-            TestEngine::verifyAndReport(region, ptr + i, n, i, config.pattern_mode, param0,
-                                        config.pattern_param1, res, ctx, "SimpleTest", stop);
+            if (config.pattern_mode == kPatternModeBeat) {
+                verifyBeatAndReport(region, ptr, i, n, beat, res, ctx, "SimpleTest", stop);
+            } else {
+                TestEngine::verifyAndReport(region, ptr + i, n, i, config.pattern_mode, param0,
+                                            config.pattern_param1, res, ctx, "SimpleTest", stop);
+            }
             progress.addBytes(n * sizeof(uint64_t));
 
             if (stop && ctx.shouldStop()) break;
