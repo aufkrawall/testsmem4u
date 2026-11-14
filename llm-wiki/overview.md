@@ -57,6 +57,8 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - Workers pull equal page-aligned chunks (workers + 2); each chunk walks the sequence
   and a free worker takes the least advanced idle chunk other than its own last one. The minimum chunk position
   defines progress and cycle coverage. No per-test barriers, no idle workers.
+  Opt-in staggered start (`Sequence Start=staggered` / `--sequence-start`) offsets
+  each chunk's first entry; `default.cfg` interleaves short slices (TestMem5 style).
 - RefreshStable tests disjoint active memory during each held-half retention dwell.
 - See [memory-testing.md](memory-testing.md) for algorithms, invariants, measurements,
   fault injection, error classification, and validation limits.
@@ -136,7 +138,7 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `python build.py --run-sanitizers`: Runs ASan + UBSan builds and tests (baseline and AVX2 runners each).
 
 ## Test Coverage
-- Internal tests covering: Utils parsing, strict Test Sequence parsing, Preset loading/validation, explicit absolute preset paths, Config save/load round-trip and invalid-load rollback, SIMD pattern generation/verification (including recorded-observed-value pinning and verify_pattern_pair), LFSR vectors, dynamic chunk scheduling (claim policy, slow-worker model, chunk tiling), pass data variation, LFSR word independence, independent workers, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess, Modulo20, active retention, and RowHammer.
+- Internal tests covering: Utils parsing, strict Test Sequence parsing, Preset loading/validation, explicit absolute preset paths, Config save/load round-trip and invalid-load rollback, SIMD pattern generation/verification (including recorded-observed-value pinning and verify_pattern_pair), LFSR vectors, dynamic chunk scheduling (claim policy, slow-worker model, chunk tiling), pass data variation (including per-occurrence passes of repeated entries), staggered sequence starts, per-function time totals, LFSR word independence, independent workers, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess, Modulo20, active retention, and RowHammer.
 - Fault hooks test positive error detection, destructive observation retention, partial blocks,
   cancellation and failed workers; virtual time tests retention without sleeping.
 - `tests/test_runtime_regressions.h`: fresh unlocked allocations, preparation

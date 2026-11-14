@@ -1,6 +1,9 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-11-14 for dynamic chunk scheduling (enabled entries only), CPU
+Last verified: 2026-11-14 for the interleaved default preset, per-occurrence pass
+data, opt-in staggered starts and per-function time totals (Windows baseline/AVX2/x86,
+WSL Linux x86_64/x86 suites, ASan/UBSan, clang-tidy, nine release targets, bounded
+128 MiB runs); also 2026-11-14 for dynamic chunk scheduling (enabled entries only), CPU
 targets under restricted affinity (Windows `start /affinity`, WSL `taskset`), pass
 data variation (including RefreshStable's active half), full-width RandomAccess values, post-fill flush elision, LFSR output
 mixing (SSE2/AVX2 lanes) and cycle timing logs (Windows and WSL suites, bounded
@@ -18,7 +21,8 @@ long-run stalls; low for tested native progress/accounting paths.
 - `src/PlatformMemory.cpp::allocateMemoryRAII` and `include/PreparationStatus.h`:
   prefaulting and exception-safe preparation lifetime.
 - `include/RegionScheduler.h`: per-chunk completed position in enabled sequence
-  entries (`EnabledSequence` maps it to cycle and original sequence index), chunk
+  entries (`EnabledSequence` maps position + chunk to slot, cycle, original sequence
+  index and data pass; `describeSequence` formats the startup composition line), chunk
   claims (least advanced idle chunk first excluding the worker's just-finished chunk,
   ties to the longest idle), `ChunkLease` and the status line's least advanced chunk;
   the minimum defines completed cycles.
@@ -51,7 +55,10 @@ long-run stalls; low for tested native progress/accounting paths.
 - `tests/test_runtime_regressions.h`: fresh unlocked residency/run and preparation
   exception regressions, using condition-variable/promise synchronization.
 - `src/ConsoleDisplay.cpp`: compact status with error count/time before the variable-length test name.
-- `default.cfg`: 18 configured entries covering 14 distinct test functions.
+- `tests/test_sequence_schedule.h`: occurrence numbering, repeated-entry data,
+  staggered slot coverage/first tests, per-function time totals.
+- `default.cfg`: 19 test definitions (14 functions) in a 37-entry interleaved
+  sequence; see "Default preset layout" below.
 
 ## Page-allocation defaults and limits
 
@@ -225,8 +232,8 @@ worst chunk at 98% of average with a spread of about 6. Real run after the fix
 (1 GiB, 16 threads, 40 SimpleTest cycles): 18 chunks within 40..43, 7.8-8.2 s
 instead of 14.7-15.5 s. Cost: RefreshStable's fixed dwell runs once per chunk, so
 its per-cycle worker time is (workers + 2) / workers of the static layout: +12.5% at
-16 workers, but +100% at `--cores 2` (4 chunks, two 120 s waves per cycle with
-`default.cfg`). The dwell is not idle (the active half runs SimpleTest), so this is
+16 workers, but +100% at `--cores 2` (4 chunks, 120 s per chunk per cycle with
+`default.cfg`, now as three 40 s slices). The dwell is not idle (the active half runs SimpleTest), so this is
 a share question for preset rebalancing, not lost coverage; shortening the dwell
 would weaken retention. Open, deliberately unchanged 2026-11-14.
 
@@ -256,6 +263,21 @@ weights are halved, so weight comparisons always said yes. Linux affinity-exclud
 counts come from `/sys/devices/system/cpu/online` (musl's `_SC_NPROCESSORS_ONLN`
 counts the affinity mask).
 
+Staggered start (opt-in, added 2026-11-14; `PresetInfo::staggered_start` from the
+`[Main Section]` key `Sequence Start=aligned|staggered`, `Config::sequence_start`
+from `--sequence-start`, which wins; `staggeredSequenceStart`). Chunk c begins at
+enabled slot `c * N / chunks` (`EnabledSequence::offset`); `slot = (position +
+offset) % N`. Positions still count completed invocations, so `cycle()`,
+`startsCycle()` (residency check), the claim policy and completed-cycle counting are
+unchanged and every chunk runs every slot once per chunk cycle. Status/diagnostics
+resolve the entry with the chunk. Default stays aligned (decided 2026-11-14: opt-in
+until A/B data on unstable hardware exists). Observed in a bounded 128 MiB run with
+shortened fixed-time tests: every function first ran within 0.7 s (aligned: up to
+16.5 s), and RowHammer's worker-time share rose from 21.5% to 34% because hammer
+iterations slow down under concurrent streaming traffic (fixed point budget, so time
+grows). With RowHammer overlapping everything, the cross-chunk disturbance WARN
+fires on most errors elsewhere; the startup INFO line says so.
+
 Each chunk executes the configured sequence in order. Completed cycles are the
 minimum across chunks. Faster workers continue real tests, including extra cycles,
 until every chunk completes the requested count. Disabled sequence entries are not
@@ -271,8 +293,13 @@ chunks run that test. Mid-test cancellation does not publish a completed boundar
 
 Pass data variation (added 2026-11-13; sources `include/Types.h::TestConfig::variation`,
 `include/TestEngineInternal.h::variationMask/passVariation/regionSeed`, the worker
-loop in `src/TestEngine.cpp`): each invocation gets `variation = cycle * loops + loop`
-of its chunk. Kernels XOR `variationMask(variation, repetition)` into their pattern
+loop in `src/TestEngine.cpp`): each invocation gets `variation = pass * loops + loop`
+with `pass = EnabledSequence::pass = chunk cycle * K + k` for occurrence k of K of
+its test ID among enabled slots (changed 2026-11-14: with `cycle` alone, every
+occurrence of a repeated ID in a cycle rewrote identical data; IDs listed once keep
+`pass == cycle`, so their data is unchanged; `testRepeatedEntriesUseNewData` failed
+before). Occurrences are keyed by test ID, not function: distinct IDs with identical
+settings are the preset author's choice. Kernels XOR `variationMask(variation, repetition)` into their pattern
 or seed; the mask is zero only for (0, 0), so the first repetition of the first pass
 writes exactly the configured data and existing contracts hold. Per kernel: SimpleTest
 modes 1/2 and MirrorMove vary param0 per repetition; MirrorMove128 XORs one mask into
@@ -301,8 +328,9 @@ first loop's `variation=`; error lines carry expected values.
 Because workers are unsynchronised, one chunk's RowHammer can overlap another
 chunk's unrelated test. Chunks are native-page-aligned but DRAM rows are larger, so
 hammering near a boundary can flip a peer's cells. This is accepted (a lockstep
-RowHammer barrier would reintroduce per-cycle idling, since RowHammer is last in
-default.cfg). Instead each invocation runs inside a `DisturbanceWindow`; if it
+RowHammer barrier would reintroduce idling at every RowHammer slice: two per cycle in
+default.cfg, and with a staggered start some chunk is nearly always hammering).
+Instead each invocation runs inside a `DisturbanceWindow`; if it
 reports errors and any peer RowHammer was active at its start or started during it,
 the worker logs a WARN naming the test and region. Disturbers register
 active-then-start and observers snapshot start-then-active, so no overlap is missed.
@@ -508,6 +536,49 @@ Aggressor writes retain SFENCE, both line flushes and MFENCE each iteration;
 point/iteration budgets are unchanged. The software contracts are regression
 tested; physical activation rates and fault-detection gains remain unmeasured.
 
+## Default preset layout (interleaved, 2026-11-14)
+
+Sources: `default.cfg`; projection inputs from the user's 64 MiB `default.cfg` run
+(old layout, 18 chunks, 16 workers, Ryzen 7 5700X/DDR4) and a bounded 128 MiB run of
+the new layout with RowHammer/RefreshStable shortened (scratch only).
+
+Old layout (one block per test per cycle) projected to 28 GiB (per-chunk invocation
+averages x 448; RowHammer by points, RefreshStable fixed): ~2.0 h wall per cycle,
+~6 h for 3 cycles; MirrorMove128 27 min at a stretch (25%), RowHammer 19 min (18%),
+RandomAccess first at 72 min, RefreshStable 83, Modulo20 85, RowHammer 87. At 64 MiB
+RefreshStable's fixed 120 s per chunk showed 87% of worker time; at 28 GiB ~2%, so
+small-window shares do not represent full-RAM runs.
+
+New layout: 37 entries; MirrorMove128 x6 (Parameter 40), RandomAccess x3 (2 passes),
+RefreshStable x3 (Time 1 = 4 x 10 s dwells; same 120 s total), MirrorMove (50),
+BlockMove (Time 50), MovingInversion (40), RowHammer (Parameter 250 points per chunk),
+MovingInversionLFSR (25), Modulo20 (1), XOR SimpleTest and new Test18 (XOR, 4 MiB
+blocks, 32 repetitions per block: TestMem5's small-block construct), LFSRPattern x2
+each; Walking pair (Time 1 = one 64-bit sweep each, was 5) and MovingInversionWalking
+once. Projected at 28 GiB: ~55 min per chunk cycle, ~61 min wall (unit costs from the
+64 MiB run and per-entry averages of the 128 MiB run agree), ~3.1 h for 3 cycles;
+longest slice ~2.7 min; first starts: MirrorMove128 0.3 min, RandomAccess 3,
+MovingInversion 6, MirrorMove 10.5, RowHammer 13, RefreshStable 14, BlockMove 18,
+Modulo20 22, last (MovingInversionWalking) 43.5. Shares: MirrorMove128 ~29%,
+RandomAccess ~12%, MirrorMove/BlockMove ~8% each, MovingInversion ~7%, SimpleTests ~7%.
+
+Rationale: a marginal setting fails at a rate that depends on stress type; until the
+sensitive type runs, nothing is found. Interleaving minimises the worst-case time to
+first exposure; over a full cycle order does not change exposure, weights do.
+TestMem5 anta777 Extreme (inspected locally): 31-entry sequence of only SimpleTest
+variants (7 of 13 on 4 MB blocks), MirrorMove x5 and MirrorMove128 x8; RefreshStable
+defined but not in the sequence; static per-thread blocks ("1680 MB x 14").
+Duration scales with RAM size / memory bandwidth (chunk = window / (workers + 2),
+per-worker bandwidth ~ total / workers), not with core count. Fixed-time entries
+(RefreshStable dwells, RowHammer with explicit points) dominate small windows.
+
+Open/stale-risk: no unstable-hardware time-to-first-error data for any layout or for
+aligned vs staggered (suggested protocol: deliberately marginal timing/voltage, several
+20-30 min runs per variant, compare `Time by function` and first-error times);
+RandomAccess/RowHammer per-access cost at 28 GiB may exceed the small-window
+extrapolation (TLB reach, row-buffer misses); Test18 and RowHammer efficacy unmeasured;
+the user's full-size run has not yet confirmed the projection.
+
 ## Diagnostics and interpretation
 
 ### x86 cache-flush geometry
@@ -555,13 +626,20 @@ and [AMD family-17h CPUID reference](https://www.amd.com/content/dam/amd/en/docu
 - WARN "... while RowHammer ran on another memory chunk" marks errors that may be
   cross-chunk disturbance rather than a failure specific to the named test.
 - Final `Coverage` is the number of complete cycles across every memory chunk.
+- INFO startup lines (2026-11-14): `Sequence: N enabled entries per cycle, M
+  distinct tests; repeated per cycle: <function>(TestID) xK, ...` (capped at 8) and
+  `Sequence start: aligned|staggered (source)`. Debug test-start lines add
+  `occurrence=k/K`; `variation=` is the first loop's.
 - INFO (file, no `--debug`; `include/SequenceTimings.h`, added 2026-11-13): one
   `Cycle N complete on every chunk after Xs` line per whole-window cycle, and a
   run-end `Time breakdown` header (wall, workers, chunks, chunk MiB, total worker
   seconds) plus one line per sequence entry: share of worker time, completed runs,
   average seconds, `first` (seconds after start of its first invocation), verified
   GiB (including bytes of stopped invocations, which count in the run total; they
-  were dropped until 2026-11-14), and `stopped=n/s` for invocations cut short. Shares include
+  were dropped until 2026-11-14), and `stopped=n/s` for invocations cut short, then
+  `Time by function` lines (2026-11-14: per function across its entries; share,
+  entries, runs, stopped, earliest first start, verified GiB; disabled entries
+  omitted, unreached named). Shares include
   faster workers' extra work after the target, so measure composition with several
   cycles. Workers record once per invocation under one mutex; formatting returns
   strings so `testSequenceTimingSummary` checks it without log capture.

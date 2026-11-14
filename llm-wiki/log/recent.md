@@ -1,5 +1,32 @@
 # Recent Log
 
+## 2026-11-14 - Detection speed: interleaved default preset, staggered start
+
+User goal: find unstable RAM quickly (28 GB in 2-4 h on the 5700X reference, without
+tuning for that CPU only). The user's 64 MiB `default.cfg` run (old layout) projected to
+~2 h per cycle at 28 GiB with RandomAccess/RefreshStable/Modulo20/RowHammer first
+starting 72-87 min in; TestMem5 anta777 Extreme (local cfg) instead interleaves short
+slices and repeats MirrorMove128 8x per cycle. Commits 536710a..HEAD:
+
+- Repeated sequence entries wrote identical data per cycle (pass variation keyed on
+  cycle/loop only); now per occurrence (`EnabledSequence::pass`). Regression failed
+  before. Single-occurrence presets unchanged.
+- `Time by function` run-end lines; startup `Sequence:` composition and
+  `Sequence start:` lines; debug `occurrence=k/K`.
+- Opt-in staggered start (`Sequence Start=staggered`, `--sequence-start`), default
+  aligned. Bounded 128 MiB check: every function first within 0.7 s; RowHammer share
+  21.5% -> 34% (hammering slows under concurrent traffic).
+- `default.cfg`: 37-entry interleaved sequence, projected ~61 min per cycle at 28 GiB
+  (~3.1 h for 3 cycles), longest slice ~2.7 min, every test within ~45 min. Details
+  and open questions in [memory-testing](../memory-testing.md#default-preset-layout-interleaved-2026-11-14).
+- Verification: `python build.py --tests` (Windows baseline/AVX2/x86 + CLI incl. new
+  `--sequence-start` cases), zig Linux x86_64/x86 runners in WSL, `--run-sanitizers`,
+  `--lint` (one widening warning in the new test fixed), all nine release targets,
+  bounded 128 MiB one-cycle CLI runs (aligned and staggered; RowHammer/RefreshStable
+  shortened in a scratch copy). No full-size run (user asked to avoid long tests).
+- Open: user's full-size run to confirm the projection; A/B of aligned vs staggered
+  on deliberately marginal settings; Test18/RowHammer efficacy.
+
 ## 2026-11-14 - Review of the coverage-per-hour commits (97b4e84..196482b)
 
 An external review listed seven findings; all were confirmed against code and, where
@@ -67,7 +94,7 @@ background load (noisy to a few percent).
 - Verification: Windows baseline/AVX2/32-bit suites, zig-built Linux baseline/AVX2/
   x86 suites in WSL, all nine release targets build (ARM64 runtime untested), probe
   `tools/probes/nt_fill_cache_probe.cpp` on Zen 3. Bounded CLI runs at 64 MiB-1 GiB.
-- Open: default preset rebalancing (shorter cycles, less fixed-pattern share) waits
+- Open (rebalanced 2026-11-14, see top entry): default preset rebalancing (shorter cycles, less fixed-pattern share) waited
   for the user's manual full-cycle measurement with the new `Time breakdown`; 512 MiB
   partial data: MirrorMove128 28%, RowHammer 15%, RandomAccess 10%, Walking 10%,
   MirrorMove 9%, MovingInversion 9%, BlockMove 8% of data-proportional time, plus a
