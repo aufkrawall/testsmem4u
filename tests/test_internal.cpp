@@ -676,6 +676,7 @@ void testRunResultMerge() {
 #include "test_random_access.h"
 #include "test_cache_geometry.h"
 #include "test_coverage_rate.h"
+#include "test_sequence_schedule.h"
 
 } // namespace
 
@@ -740,6 +741,8 @@ int main() try {
     testSequenceTimingSummary();
     testPassVariationChangesData();
     testScheduledPassesUseNewData();
+    testSequenceOccurrencesNumberPasses();
+    testRepeatedEntriesUseNewData();
     testUniformMarchSpecialization();
     testLfsrParallelGeneration();
     testTrafficKernelSpecializations();

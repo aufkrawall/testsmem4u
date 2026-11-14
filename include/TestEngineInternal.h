@@ -101,9 +101,11 @@ constexpr uint64_t variationMask(uint64_t variation, uint64_t repetition) {
     return variation == 0 && repetition == 0 ? 0 : mix64(variation * 0x9E3779B97F4A7C15ULL + repetition + 1);
 }
 
-// Pass variation for loop `loop` of a sequence entry in chunk cycle `cycle`.
-constexpr uint64_t passVariation(uint64_t cycle, uint64_t loops, uint64_t loop) {
-    return cycle * loops + loop;
+// Pass variation for loop `loop` of a sequence entry's data pass `pass`
+// (EnabledSequence::pass: chunk cycle x occurrences per cycle + occurrence, so
+// an entry listed once per cycle has pass == cycle).
+constexpr uint64_t passVariation(uint64_t pass, uint64_t loops, uint64_t loop) {
+    return pass * loops + loop;
 }
 
 // Pseudo-random seeds additionally differ per chunk/sub-block, so no two regions

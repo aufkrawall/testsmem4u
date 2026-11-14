@@ -325,7 +325,7 @@ void testIndependentWorkerExecution() {
 
 void testDisabledEntriesAreNotScheduled() {
     const EnabledSequence sequence({1, 3});
-    expect(sequence.cycle(5) == 2 && sequence.entry(5) == 3 && sequence.entry(4) == 1 && sequence.startsCycle(4) &&
+    expect(sequence.cycle(5) == 2 && sequence.entry(5, 0) == 3 && sequence.entry(4, 0) == 1 && sequence.startsCycle(4) &&
                !sequence.startsCycle(5),
            "Positions count enabled entries and map back to their sequence index");
 

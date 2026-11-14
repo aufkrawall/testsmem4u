@@ -49,7 +49,7 @@ public:
             if (chunk < regions.positions.size()) {
                 const uint64_t position = regions.positions[chunk];
                 output << " R" << chunk << " C" << sequence.cycle(position) + 1
-                       << " T" << sequence.entry(position) + 1;
+                       << " T" << sequence.entry(position, chunk) + 1;
             } else {
                 output << " R-";
             }

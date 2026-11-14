@@ -481,7 +481,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             first_disabled = i + 1;
         }
     }
-    const EnabledSequence enabled(std::move(enabled_entries));
+    const EnabledSequence enabled(std::move(enabled_entries), seq, chunk_regions.size(), false);
     if (first_disabled) {
         LOG_DEBUG("Sequence: %zu of %zu entries enabled; disabled entries are not scheduled (first disabled #%zu)",
                   enabled.size(), seq.size(), first_disabled);
@@ -525,7 +525,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             scheduler.snapshot(regions);
             const SlowestRegion slowest = findSlowestRegion(regions, ctx.worker_progress);
             const uint64_t position = slowest.position;
-            const size_t seq_idx = enabled.entry(position);
+            const size_t seq_idx = enabled.entry(position, slowest.chunk);
             info.test_step = slowest.step;
             info.cycle = static_cast<uint32_t>(enabled.cycle(position) + 1);
             info.total_cycles = config.cycles;
@@ -586,7 +586,8 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         ChunkLease lease(scheduler, t, claim.chunk);
                         const MemoryRegion& chunk = chunk_regions[claim.chunk];
                         const uint64_t cycle = enabled.cycle(claim.position);
-                        const size_t seq_idx = enabled.entry(claim.position);
+                        const size_t seq_idx = enabled.entry(claim.position, claim.chunk);
+                        const uint64_t data_pass = enabled.pass(claim.position, claim.chunk);
                         if (enabled.startsCycle(claim.position)) {
                             testPhase(ctx, "Memory residency", chunk);
                             if (!Platform::checkMemoryResident(chunk.base, chunk.size)) {
@@ -600,16 +601,19 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         testPhase(ctx, "Worker test start", chunk);
                         const uint64_t loops = std::max<uint64_t>(1,
                             (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100);
-                        LOG_DEBUG("Worker %u chunk %zu cycle %llu test %zu: %s started loops=%llu variation=%llu",
+                        const size_t slot = enabled.slot(claim.position, claim.chunk);
+                        LOG_DEBUG("Worker %u chunk %zu cycle %llu test %zu: %s started loops=%llu occurrence=%u/%u "
+                                  "variation=%llu",
                                   t, claim.chunk, static_cast<unsigned long long>(cycle + 1), seq_idx + 1,
                                   tc.function.c_str(), static_cast<unsigned long long>(loops),
-                                  static_cast<unsigned long long>(passVariation(cycle, loops, 0)));
+                                  enabled.occurrence[slot] + 1, enabled.occurrences[slot],
+                                  static_cast<unsigned long long>(passVariation(data_pass, loops, 0)));
                         const bool disturbs = isCrossRegionDisturbanceTest(tc.function);
                         TestConfig pass = tc;
                         for (uint64_t loop = 0; loop < loops && !ctx.shouldStop(); ++loop) {
                             ProgressBinding::beginLoop(&ctx, loop, loops);
                             DisturbanceWindow window(ctx, disturbs);
-                            pass.variation = passVariation(cycle, loops, loop);
+                            pass.variation = passVariation(data_pass, loops, loop);
                             TestResult tr = runRegionWork(ctx, chunk, pass, config.halt_on_error);
                             if (tr.total_errors() && window.overlappedForeignDisturbance()) {
                                 LOG_WARN("Worker %u: %llu error(s) in %s (region offset=%zu bytes=%zu) while "

@@ -128,16 +128,65 @@ private:
 // could re-claim the lagging chunk it had just finished. Disabled entries also
 // logged zero-second completions and could name the status line's test.
 // Logs, status and timings keep the original sequence index (entry()).
+//
+// Interleaved presets list one test ID several times per cycle (TestMem5
+// style: short slices of MirrorMove128 between other tests). Pass variation
+// used to depend on (cycle, loop) only, so every occurrence of an ID in a cycle
+// rewrote identical data. pass() numbers occurrences instead: occurrence k of
+// K in chunk cycle c is pass c * K + k. An ID listed once keeps pass == cycle,
+// so single-occurrence presets write exactly the data they wrote before.
+//
+// Staggered start (opt-in): chunk c begins its sequence at enabled slot
+// c * N / chunks, so concurrently running workers execute different tests and
+// the traffic mix stays constant over the run. Each chunk still runs every
+// enabled slot exactly once per chunk cycle; cycle() and startsCycle() count
+// completed invocations of the chunk, independent of its starting slot.
 struct EnabledSequence {
-    std::vector<size_t> entries; // sequence index of each enabled entry, in order
+    std::vector<size_t> entries;        // sequence index of each enabled entry, in order
+    std::vector<uint32_t> occurrence;   // per slot: earlier enabled slots with the same test ID
+    std::vector<uint32_t> occurrences;  // per slot: enabled slots with that test ID per cycle
+    size_t chunks = 1;
+    bool staggered = false;
 
     EnabledSequence() = default;
-    explicit EnabledSequence(std::vector<size_t> enabled) : entries(std::move(enabled)) {}
+    // Treats every slot as a distinct test ID (one occurrence each).
+    explicit EnabledSequence(std::vector<size_t> enabled)
+        : entries(std::move(enabled)), occurrence(entries.size(), 0), occurrences(entries.size(), 1) {}
+    // sequence: the full configured sequence of test IDs that entries index.
+    EnabledSequence(std::vector<size_t> enabled, const std::vector<uint32_t>& sequence, size_t chunk_count,
+                    bool stagger)
+        : entries(std::move(enabled)), occurrence(entries.size(), 0), occurrences(entries.size(), 1),
+          chunks(std::max<size_t>(1, chunk_count)), staggered(stagger) {
+        for (size_t slot = 0; slot < entries.size(); ++slot) {
+            uint32_t earlier = 0;
+            uint32_t total = 0;
+            for (size_t other = 0; other < entries.size(); ++other) {
+                if (sequence[entries[other]] != sequence[entries[slot]]) continue;
+                ++total;
+                if (other < slot) ++earlier;
+            }
+            occurrence[slot] = earlier;
+            occurrences[slot] = total;
+        }
+    }
 
     size_t size() const noexcept { return entries.size(); }
+    // First enabled slot of a chunk (0 unless staggered).
+    size_t offset(size_t chunk) const {
+        if (!staggered || entries.empty()) return 0;
+        return static_cast<size_t>((static_cast<uint64_t>(chunk % chunks) * entries.size()) / chunks);
+    }
+    size_t slot(uint64_t position, size_t chunk) const {
+        return static_cast<size_t>((position + offset(chunk)) % entries.size());
+    }
     uint64_t cycle(uint64_t position) const { return position / entries.size(); }
-    size_t entry(uint64_t position) const { return entries[static_cast<size_t>(position % entries.size())]; }
+    size_t entry(uint64_t position, size_t chunk) const { return entries[slot(position, chunk)]; }
     bool startsCycle(uint64_t position) const { return position % entries.size() == 0; }
+    // Data pass of this invocation: unique per chunk, cycle and occurrence.
+    uint64_t pass(uint64_t position, size_t chunk) const {
+        const size_t s = slot(position, chunk);
+        return cycle(position) * occurrences[s] + occurrence[s];
+    }
 };
 
 // Returns the claimed chunk on every exit path; complete() publishes progress.
