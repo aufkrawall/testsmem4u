@@ -21,6 +21,7 @@
 #endif
 #include "MemoryTestKernels.h"
 #include "RegionScheduler.h"
+#include "SequenceTimings.h"
 #include "DisturbanceWindow.h"
 #include "TestEngineInternal.h"
 #include "PreparationStatus.h"
@@ -734,6 +735,7 @@ int main() try {
     testSlowWorkerCannotStarveAChunk();
     testStreamingFillCacheContract();
     testLfsrWordsAreIndependent();
+    testSequenceTimingSummary();
     testPassVariationChangesData();
     testScheduledPassesUseNewData();
     testUniformMarchSpecialization();

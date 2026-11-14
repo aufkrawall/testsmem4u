@@ -276,3 +276,39 @@ void testLfsrWordsAreIndependent() {
     expect(shifted_copies == 0 && agreement > 0.48 && agreement < 0.52,
            "LFSR words are not shifted copies of their predecessors (bit agreement near 50%)");
 }
+
+void testSequenceTimingSummary() {
+    using Clock = SequenceTimings::Clock;
+    const Clock::time_point start{};
+    auto at = [&](double seconds) {
+        return start + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds));
+    };
+    SequenceTimings timings(4, start);
+    timings.record(0, at(0), at(3), uint64_t{1} << 30, true);
+    timings.record(0, at(10), at(11), uint64_t{1} << 30, true);
+    timings.record(1, at(2), at(8), 0, true);
+    timings.record(1, at(9), at(11), 0, false);
+    std::map<uint32_t, TestConfig> configs;
+    configs[5].function = "SimpleTest";
+    configs[7].function = "RowHammer";
+    configs[8].function = "Modulo20";
+    configs[9].function = "BlockMove";
+    configs[9].enabled = false;
+    const auto lines = timings.summary({5, 7, 8, 9}, configs, 2, 3, size_t{64} << 20, 12.5);
+    expect(lines.size() == 5 && lines[0].find("wall=12.5s workers=2 chunks=3 chunk-MiB=64.0 worker-seconds=12.0") !=
+                                    std::string::npos,
+           "Time breakdown header records wall time, layout and total worker time");
+    expect(lines[1].find("#1  SimpleTest") != std::string::npos && lines[1].find("share= 33.3%") != std::string::npos &&
+               lines[1].find("runs=2 avg=2.00s first=0.0s verified=2.00GiB") != std::string::npos,
+           "Completed runs report share, average, first start and verified bytes");
+    expect(lines[2].find("share= 66.7%") != std::string::npos && lines[2].find("first=2.0s") != std::string::npos &&
+               lines[2].find("stopped=1/2.0s") != std::string::npos,
+           "Stopped invocations count toward worker time and are reported separately");
+    expect(lines[3].find("Modulo20") != std::string::npos && lines[3].find("not reached") != std::string::npos &&
+               lines[4].find("BlockMove") != std::string::npos && lines[4].find("disabled") != std::string::npos,
+           "Unreached and disabled entries are named, not omitted");
+    const auto first = timings.cycleMilestones(2, at(90));
+    expect(first.size() == 2 && first[0].find("Cycle 1 complete on every chunk after 90.0s") == 0 &&
+               first[1].find("Cycle 2") == 0 && timings.cycleMilestones(2, at(95)).empty(),
+           "Each whole-window cycle completion is logged exactly once");
+}

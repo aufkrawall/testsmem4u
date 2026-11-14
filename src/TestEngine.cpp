@@ -5,6 +5,7 @@
 #include "simd_ops.h"
 #include "Utils.h"
 #include "RegionScheduler.h"
+#include "SequenceTimings.h"
 #include "DisturbanceWindow.h"
 #include "PreparationStatus.h"
 #include "TestEngineInternal.h"
@@ -472,9 +473,10 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
              "worker takes the least advanced idle chunk, so coverage stays even however fast each CPU runs.",
              threads, chunk_regions.size());
     LOG_INFO("Retention: alternate untouched halves while testing the other half; no whole-run sleep.");
-    LOG_DEBUG("Progress: verified blocks publish to separate worker counters; completed cycles require every region.");
+    LOG_DEBUG("Progress: verified blocks publish to separate worker counters; completed cycles require every chunk.");
 
     auto start = std::chrono::steady_clock::now();
+    SequenceTimings timings(seq.size(), start);
 
     ConsoleDisplay::get().setTestingActive(true);
 
@@ -597,17 +599,25 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                                 if (tr.total_errors() && config.halt_on_error) ctx.requestStop();
                             }
                         }
+                        const auto test_end = std::chrono::steady_clock::now();
+                        const uint64_t verified = ctx.worker_progress[t].snapshot().bytes_tested - bytes_before;
                         // A cancelled test must not count as covered; the lease returns the chunk.
-                        if (ctx.shouldStop()) break;
+                        if (ctx.shouldStop()) {
+                            if (tc.enabled) timings.record(seq_idx, test_start, test_end, verified, false);
+                            break;
+                        }
+                        if (tc.enabled) timings.record(seq_idx, test_start, test_end, verified, true);
                         ProgressBinding::resetStep(&ctx);
                         lease.complete(claim.position + 1);
                         LOG_DEBUG("Worker %u chunk %zu cycle %llu test %zu: %s completed in %.3fs verified-bytes=%llu",
                                   t, claim.chunk, static_cast<unsigned long long>(cycle + 1), seq_idx + 1,
-                                  tc.function.c_str(),
-                                  std::chrono::duration<double>(std::chrono::steady_clock::now() - test_start).count(),
-                                  static_cast<unsigned long long>(ctx.worker_progress[t].snapshot().bytes_tested -
-                                                                  bytes_before));
-                        if (config.cycles && scheduler.minimum() / seq.size() >= config.cycles) {
+                                  tc.function.c_str(), std::chrono::duration<double>(test_end - test_start).count(),
+                                  static_cast<unsigned long long>(verified));
+                        const uint64_t completed_cycles = scheduler.minimum() / seq.size();
+                        for (const auto& milestone : timings.cycleMilestones(completed_cycles, test_end)) {
+                            LOG_INFO("%s", milestone.c_str());
+                        }
+                        if (config.cycles && completed_cycles >= config.cycles) {
                             ctx.requestStop();
                             break;
                         }
@@ -641,6 +651,10 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     result.unverified_errors = ctx.total_unverified_errors.load(std::memory_order_relaxed);
     result.bytes_tested = ctx.total_bytes.load(std::memory_order_relaxed);
     result.cycles_completed = scheduler.minimum() / seq.size();
+    for (const auto& line : timings.summary(seq, configs, threads, chunk_regions.size(), chunk_regions.front().size,
+                                            std::chrono::duration<double>(end - start).count())) {
+        LOG_INFO("%s", line.c_str());
+    }
     LOG_INFO("Coverage: %llu complete cycles across every memory chunk",
              static_cast<unsigned long long>(result.cycles_completed));
     result.duration_seconds = std::chrono::duration<double>(end - start).count();

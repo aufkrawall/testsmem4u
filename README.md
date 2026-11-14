@@ -272,7 +272,11 @@ already be in later tests. A completed cycle means every chunk completed the who
 sequence. Faster workers continue genuine tests until all chunks finish the
 requested cycle count. Stop and infrastructure failures never count incomplete
 cycles. Debug logs identify the chunk layout, each worker's CPU, and every test
-transition with its chunk and duration.
+transition with its chunk and duration. Every log (no `--debug` needed) records
+when each cycle completed on every chunk and ends with a `Time breakdown`: per
+sequence entry the share of worker time, completed runs, average duration, how
+many seconds after start it first ran, verified GiB, and invocations cut short
+(`stopped`) when the run ended.
 
 The percentage after the test index is how far that least advanced chunk is
 through its current test, including the test's internal repetitions.

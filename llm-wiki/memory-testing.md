@@ -513,6 +513,15 @@ and [AMD family-17h CPUID reference](https://www.amd.com/content/dam/amd/en/docu
 - WARN "... while RowHammer ran on another memory chunk" marks errors that may be
   cross-chunk disturbance rather than a failure specific to the named test.
 - Final `Coverage` is the number of complete cycles across every memory chunk.
+- INFO (file, no `--debug`; `include/SequenceTimings.h`, added 2026-11-13): one
+  `Cycle N complete on every chunk after Xs` line per whole-window cycle, and a
+  run-end `Time breakdown` header (wall, workers, chunks, chunk MiB, total worker
+  seconds) plus one line per sequence entry: share of worker time, completed runs,
+  average seconds, `first` (seconds after start of its first invocation), verified
+  GiB, and `stopped=n/s` for invocations cut short by the stop. Shares include
+  faster workers' extra work after the target, so measure composition with several
+  cycles. Workers record once per invocation under one mutex; formatting returns
+  strings so `testSequenceTimingSummary` checks it without log capture.
 - Byte totals count verified reads, including repeated checks and retention's useful
   active tests. They are neither unique memory coverage nor physical bus traffic.
 - The status line follows the least advanced chunk (`findSlowestRegion`: lowest
