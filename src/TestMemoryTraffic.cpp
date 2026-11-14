@@ -216,6 +216,10 @@ TestResult TestEngine::runRandomAccess(TestContext& ctx, const MemoryRegion& reg
     simd::flush_cache_region(ptr, region.size);
     testPhase(ctx, "Random final", region);
     verifyAll();
+    if (!ctx.shouldStop()) {
+        res.residual = {ResidualPattern::Kind::LINEAR, salt, kRandomAccessStep, 0, 0, region.base_offset_bytes,
+                        region.size};
+    }
     return res;
 }
 

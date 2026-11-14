@@ -30,6 +30,7 @@
 #include "TestAllocationFailure.h"
 #include "InputSpec.h"
 #include "RunDeadline.h"
+#include "IdleChunkCheck.h"
 #include <future>
 #include <stdexcept>
 #include <array>
@@ -681,6 +682,7 @@ void testRunResultMerge() {
 #include "test_sequence_schedule.h"
 #include "test_time_limit.h"
 #include "test_beat_mirror.h"
+#include "test_idle_check.h"
 
 } // namespace
 
@@ -733,6 +735,7 @@ int main() try {
     testMirrorKernels();
     testMirrorMovesData();
     testStridedSimpleFill();
+    testResidualDescriptionsMatchMemory();
 
     // Concurrency and infrastructure tests
     testTestContextBasics();
@@ -768,6 +771,7 @@ int main() try {
     testTrafficKernelSpecializations();
     testIndependentWorkerExecution();
     testTimeLimitStopsRun();
+    testIdleChunkCheckInSuite();
     testDisabledEntriesAreNotScheduled();
     testPreparationExceptionCleanup();
     testStopBeforeRunIsKept();

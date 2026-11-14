@@ -62,6 +62,7 @@ SRC_FILES = [
     PROJECT_ROOT / "src" / "TestEngine.cpp",
     PROJECT_ROOT / "src" / "TestPatterns.cpp",
     PROJECT_ROOT / "src" / "TestMirror.cpp",
+    PROJECT_ROOT / "src" / "IdleChunkCheck.cpp",
     PROJECT_ROOT / "src" / "TestRowHammer.cpp",
     PROJECT_ROOT / "src" / "TestMarch.cpp",
     PROJECT_ROOT / "src" / "TestModulo.cpp",

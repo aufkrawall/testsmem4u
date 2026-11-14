@@ -60,6 +60,9 @@ TestResult TestEngine::runMirrorMove(TestContext& ctx, const MemoryRegion& regio
         testPhase(ctx, "Mirror moved", region);
         verifyAll("MirrorMove (Moved)");
     }
+    if (!ctx.shouldStop()) {
+        res.residual = {ResidualPattern::Kind::LINEAR, base, step, 0, 0, region.base_offset_bytes, region.size};
+    }
     LOG_DEBUG("MirrorMove: offset=%zu words=%zu passes=%u/%u reversed=%s errors=%llu%s", region.base_offset_bytes, count,
               done, passes, done % 2 ? "yes" : "no", static_cast<unsigned long long>(res.total_errors()),
               ctx.shouldStop() ? " [stopped]" : "");
@@ -116,6 +119,10 @@ TestResult TestEngine::runMirrorMove128(TestContext& ctx, const MemoryRegion& re
         current = simd::beat_mirrored(current, g0 + lead, units);
         testPhase(ctx, "Mirror128 moved", region);
         verifyAll("MirrorMove128 (Moved)");
+    }
+    if (!ctx.shouldStop() && lead == 0 && moved_end == count) {
+        res.residual = {ResidualPattern::Kind::BEAT, current.even, current.odd, current.salt, current.step,
+                        region.base_offset_bytes, region.size};
     }
     LOG_DEBUG("MirrorMove128: offset=%zu words=%zu units=%zu fixed-words=%zu passes=%u/%u reversed=%s errors=%llu%s",
               region.base_offset_bytes, count, units, count - 2 * units, done, passes, done % 2 ? "yes" : "no",

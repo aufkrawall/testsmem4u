@@ -147,6 +147,20 @@ TestResult TestEngine::runSimpleTest(TestContext& ctx, const MemoryRegion& regio
 
             if (stop && ctx.shouldStop()) break;
         }
+        if (r + 1 == repeats && !ctx.shouldStop()) {
+            // The last repetition's data stays in place for the idle-chunk check.
+            using Kind = ResidualPattern::Kind;
+            ResidualPattern& left = res.residual;
+            left.offset = region.base_offset_bytes;
+            left.bytes = region.size;
+            if (config.pattern_mode == kPatternModeBeat) {
+                left = {Kind::BEAT, beat.even, beat.odd, beat.salt, beat.step, left.offset, left.bytes};
+            } else {
+                const Kind kind = config.pattern_mode == 0 ? Kind::UNIFORM : config.pattern_mode == 1 ? Kind::XOR
+                                                                                                    : Kind::LINEAR;
+                left = {kind, param0, config.pattern_param1, 0, 0, left.offset, left.bytes};
+            }
+        }
     }
 
     return res;

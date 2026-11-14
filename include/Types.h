@@ -7,6 +7,28 @@
 
 namespace testsmem4u {
 
+// Data a completed test leaves in its region, so the next test on that memory
+// chunk can re-verify it before overwriting it: the data then sat idle for as
+// long as other chunks were being tested. Values use global word numbers g:
+// UNIFORM p0; XOR p0 ^ g * p1; LINEAR p0 + g * p1; BEAT simd::beat_value with
+// even p0, odd p1, salt and step. [offset, offset + bytes) is the region (global
+// byte offsets) the description covers.
+struct ResidualPattern {
+    enum class Kind : uint8_t { NONE, UNIFORM, XOR, LINEAR, BEAT };
+    Kind kind = Kind::NONE;
+    uint64_t p0 = 0;
+    uint64_t p1 = 0;
+    uint64_t salt = 0;
+    uint64_t step = 0;
+    uint64_t offset = 0;
+    uint64_t bytes = 0;
+
+    bool valid() const { return kind != Kind::NONE && bytes != 0; }
+    bool sameData(const ResidualPattern& other) const {
+        return kind == other.kind && p0 == other.p0 && p1 == other.p1 && salt == other.salt && step == other.step;
+    }
+};
+
 // Test result structure for a single test run segment
 struct TestResult {
     uint64_t hard_errors = 0;
@@ -14,6 +36,9 @@ struct TestResult {
     uint64_t unverified_errors = 0;  // Counted mismatches without re-read classification (bounded sampling or destructive march).
 
     uint64_t bytes_tested = 0;
+    // Set by kernels that completed with a describable final state; merge()
+    // deliberately leaves it alone (nested and per-block results differ).
+    ResidualPattern residual;
 
     uint64_t total_errors() const { return hard_errors + soft_errors + unverified_errors; }
     uint64_t verified_errors() const { return hard_errors + soft_errors; }

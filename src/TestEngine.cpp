@@ -14,6 +14,7 @@
 #include "InfrastructureFailure.h"
 #include "InputSpec.h"
 #include "RunDeadline.h"
+#include "IdleChunkCheck.h"
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -163,6 +164,10 @@ TestResult TestEngine::runRegionWork(TestContext& ctx, const MemoryRegion& regio
 
     TestResult total = {};
     size_t blocks = (region.size + block_size - 1) / block_size;
+    // The chunk's leftover data is known only if every block left the same
+    // global-address data (SimpleTest), not block-relative data (mirror moves).
+    bool residual_consistent = true;
+    size_t blocks_done = 0;
     for (size_t i = 0; i < blocks; ++i) {
         if (ctx.shouldStop()) break;
         size_t offset = i * block_size;
@@ -176,10 +181,20 @@ TestResult TestEngine::runRegionWork(TestContext& ctx, const MemoryRegion& regio
 
         TestResult r = runTest(ctx, test_config.function, sub, test_config, halt_on_error);
         total.merge(r);
+        residual_consistent &= r.residual.valid() && r.residual.offset == sub.base_offset_bytes &&
+                               r.residual.bytes == sub.size && (i == 0 || r.residual.sameData(total.residual));
+        if (i == 0) total.residual = r.residual;
+        ++blocks_done;
         if (total.total_errors() > 0 && halt_on_error) {
             ctx.requestStop();
             break;
         }
+    }
+    if (residual_consistent && blocks_done == blocks) {
+        total.residual.offset = region.base_offset_bytes;
+        total.residual.bytes = region.size;
+    } else {
+        total.residual = {};
     }
     return total;
 }
@@ -510,6 +525,11 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
         LOG_INFO("%s", describeSequenceStart(enabled, seq.size(), source, disturbs).c_str());
     }
     LOG_INFO("Retention: alternate untouched halves while testing the other half; no whole-run sleep.");
+    LOG_INFO("Idle-chunk checks: a test's final data is re-verified when the next test claims its chunk "
+             "(the data sat untouched while other chunks were tested).");
+    // Per chunk; only the worker holding the chunk's lease touches its entry.
+    std::vector<IdleChunkState> idle_chunks(chunk_regions.size());
+    IdleCheckStats idle_stats;
     LOG_DEBUG("Progress: verified blocks publish to separate worker counters; completed cycles require every chunk.");
     if (config.time_limit_seconds) {
         LOG_INFO("Time limit: %s; testing stops when it expires%s", formatTimeLimit(config.time_limit_seconds).c_str(),
@@ -606,6 +626,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                               static_cast<unsigned>(target.core_index), static_cast<unsigned>(target.efficiency_class),
                               static_cast<unsigned>(target.scheduling_class), target.smt_secondary ? "yes" : "no",
                               target.parked ? "yes" : "no");
+                    uint64_t completed_entries = 0;
                     while (!ctx.shouldStop()) {
                         const RegionScheduler::Claim claim = scheduler.claim(t);
                         if (claim.chunk == RegionScheduler::kNone) {
@@ -624,6 +645,9 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                                 break;
                             }
                         }
+                        checkIdleChunk(ctx, idle_chunks[claim.chunk], chunk, t, completed_entries, idle_stats,
+                                       config.halt_on_error);
+                        if (ctx.shouldStop()) break;
                         const TestConfig& tc = configs.at(seq[seq_idx]);
                         const auto test_start = std::chrono::steady_clock::now();
                         const uint64_t bytes_before = ctx.worker_progress[t].snapshot().bytes_tested;
@@ -639,6 +663,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                                   static_cast<unsigned long long>(passVariation(data_pass, loops, 0)));
                         const bool disturbs = isCrossRegionDisturbanceTest(tc.function);
                         TestConfig pass = tc;
+                        TestResult last_loop;
                         for (uint64_t loop = 0; loop < loops && !ctx.shouldStop(); ++loop) {
                             ProgressBinding::beginLoop(&ctx, loop, loops);
                             DisturbanceWindow window(ctx, disturbs);
@@ -652,6 +677,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                                          tc.function.c_str(), chunk.base_offset_bytes, chunk.size);
                             }
                             if (tr.total_errors() && config.halt_on_error) ctx.requestStop();
+                            last_loop = tr;
                         }
                         const auto test_end = std::chrono::steady_clock::now();
                         const uint64_t verified = ctx.worker_progress[t].snapshot().bytes_tested - bytes_before;
@@ -662,6 +688,8 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         }
                         timings.record(seq_idx, test_start, test_end, verified, true);
                         ProgressBinding::resetStep(&ctx);
+                        rememberIdleChunk(idle_chunks[claim.chunk], last_loop, chunk, tc.function, t,
+                                          ++completed_entries, ctx.disturbance_starts.load(std::memory_order_acquire));
                         lease.complete(claim.position + 1);
                         LOG_DEBUG("Worker %u chunk %zu cycle %llu test %zu: %s completed in %.3fs verified-bytes=%llu",
                                   t, claim.chunk, static_cast<unsigned long long>(cycle + 1), seq_idx + 1,
@@ -711,6 +739,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
         LOG_INFO("%s", line.c_str());
     }
     for (const auto& line : timings.functionSummary(seq, configs)) LOG_INFO("%s", line.c_str());
+    LOG_INFO("%s", idle_stats.summary().c_str());
     LOG_INFO("Coverage: %llu complete cycles across every memory chunk",
              static_cast<unsigned long long>(result.cycles_completed));
     result.duration_seconds = std::chrono::duration<double>(end - start).count();
