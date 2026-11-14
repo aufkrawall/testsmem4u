@@ -21,7 +21,13 @@ void testCpuTopologyPairsSmtSiblings() {
     // use); filtering on it once discarded every CPU and forced the fallback.
     expect(std::string(info.cpu_topology_source) == "cpu-sets", "Windows CPU topology comes from CPU sets");
 #else
-    expect(std::string(info.cpu_topology_source) == "sysfs", "Linux CPU topology comes from sysfs");
+    // Minimal containers and chroots may lack sysfs topology; detection then
+    // legitimately reports affinity-only (every CPU its own core).
+    const bool sibling_lists = !targets.empty() &&
+        std::ifstream("/sys/devices/system/cpu/cpu" + std::to_string(targets.front().logical_index) +
+                      "/topology/thread_siblings_list").good();
+    expect(std::string(info.cpu_topology_source) == (sibling_lists ? "sysfs" : "affinity-only"),
+           "Linux CPU topology comes from sysfs sibling lists when they are readable");
 #endif
 }
 
