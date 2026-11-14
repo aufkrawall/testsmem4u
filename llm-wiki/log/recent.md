@@ -1,5 +1,25 @@
 # Recent Log
 
+## 2026-11-15 - Follow-up review fixes
+
+Review of the November 13-14 commits confirmed that a very large accepted
+`Line Stride` wrapped the ILP32 line index and repeatedly rewrote earlier lines.
+`fillStridedLines` now caps both the phase count and line increment at the block's
+whole-line count. The existing preset-load DEBUG line states this bound; no
+logging runs inside the fill loop.
+
+The extended `testStridedSimpleFill` checks exactly one write per word, values
+and boundary sentinels for empty/partial-line blocks and large strides. Before
+the fix it failed once on baseline (`SIZE_MAX`) and three times on x86
+(`UINT32_MAX-1`, `UINT32_MAX`, `SIZE_MAX`). The underlying preset issue affects
+32-bit builds; only the C++ helper accepts a 64-bit `SIZE_MAX` stride.
+
+Verification: `python build.py --tests` passes baseline/AVX2/x86 and the 24-test
+Python suite (23 passed, one skipped). Full clang-tidy passes all 30 translation
+units with warnings as errors. A bounded one-worker, one-cycle CLI run with a 1 MiB window
+and `Line Stride=4294967295` verifies exactly 1,048,576 bytes with zero errors and
+the stride-bound DEBUG line. Wiki link/orphan checks pass.
+
 ## 2026-11-14 - TestMem5-inspired additions and time-limited runs
 
 The user asked to compare an external TestMem5 anta777 Extreme analysis with

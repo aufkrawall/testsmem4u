@@ -299,9 +299,11 @@ void fillStridedLines(uint64_t* dst, size_t count, uint64_t word_start, size_t s
 #endif
         dst[k] = word;
     };
-    const size_t phases = std::min(stride, lines);
-    for (size_t phase = 0; phase < phases; ++phase) {
-        for (size_t line = phase; line < lines; line += stride) {
+    // A stride beyond the block gives one line per phase. Bound the increment
+    // too, so a large preset stride cannot wrap size_t on 32-bit targets.
+    const size_t line_stride = std::min(stride, lines);
+    for (size_t phase = 0; phase < line_stride; ++phase) {
+        for (size_t line = phase; line < lines; line += line_stride) {
             for (size_t w = 0; w < kWordsPerLine; ++w) store(line * kWordsPerLine + w);
         }
     }

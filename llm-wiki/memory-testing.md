@@ -1,6 +1,8 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-11-14 for the TestMem5-inspired additions (real mirror moves,
+Last verified: 2026-11-15 for bounded Line Stride traversal (exactly-once word
+writes, boundary sentinels and large-stride regressions); 2026-11-14 for the
+TestMem5-inspired additions (real mirror moves,
 per-beat complement pattern, Line Stride, idle-chunk checks, time limit, preset OS
 reserve; Windows baseline/AVX2/x86 + CLI, WSL Linux x86_64/x86, ASan/UBSan,
 clang-tidy on changed units, nine release targets, bounded 1-2 GiB runs incl. an
@@ -540,7 +542,15 @@ holds with scrambling off; the pattern is then still a distinct address-tagged o
 Line Stride (SimpleTest, preset key `Line Stride`, `TestConfig::line_stride`):
 `fillStridedLines` writes whole 64-byte lines in the order 0, s, 2s, ..., 1, s+1, ...,
 then a partial final line; every word is MOVNTI on x86-64. Verification stays
-sequential. Measured 2026-11-14 (2 GiB, 16 threads, 5700X): stride 256 costs ~23%
+sequential. Both the phase count and line increment use the stride capped at the
+block's whole-line count (fixed 2026-11-15). Previously only the phase count was
+capped: a large accepted stride such as `UINT32_MAX` wrapped the ILP32 line index
+and revisited earlier lines, causing quadratic writes and delaying stop checks.
+`tests/test_beat_mirror.h::testStridedSimpleFill` checks exactly one write per word,
+values and the boundary sentinel for empty/partial-line blocks and large strides,
+including `UINT32_MAX` and `SIZE_MAX`; it fails with the old increment. Preset-load
+DEBUG logs state the requested stride and the per-block cap, with no hot-loop
+logging. Measured 2026-11-14 (2 GiB, 16 threads, 5700X): stride 256 costs ~23%
 more per fill+verify pass than a sequential fill; the controller's write reordering
 likely absorbs part of the intended row-miss effect (unmeasured).
 

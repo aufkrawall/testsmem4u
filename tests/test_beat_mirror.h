@@ -220,6 +220,27 @@ void testStridedSimpleFill() {
     for (size_t k = 0; k < 68; ++k) values &= memory[k] == (100 + k) * 7;
     expect(order == expected_order && values, "Line Stride writes whole lines in strided order, partial line last");
 
+    // Every word must be written exactly once, even when a preset stride is
+    // larger than the region. On ILP32, adding UINT32_MAX wrapped the line
+    // index backwards and repeatedly wrote earlier lines (quadratic work).
+    for (size_t count : {size_t{0}, size_t{7}, size_t{8}, size_t{9}, size_t{68}}) {
+        for (size_t stride : {size_t{1}, size_t{3}, size_t{8}, size_t{9}, size_t{UINT32_MAX - 1},
+                              size_t{UINT32_MAX}, SIZE_MAX}) {
+            memory.fill(0xFEED);
+            std::vector<unsigned> visits(count, 0);
+            fillStridedLines(memory.data(), count, 100, stride, [&](uint64_t g) {
+                ++visits.at(static_cast<size_t>(g - 100));
+                return g * 7;
+            });
+            bool exact = memory[count] == 0xFEED;
+            for (size_t k = 0; k < count; ++k) {
+                exact &= visits[k] == 1 && memory[k] == (100 + k) * 7;
+            }
+            expect(exact, "Line Stride writes each word once without touching the sentinel (count=" +
+                              std::to_string(count) + " stride=" + std::to_string(stride) + ")");
+        }
+    }
+
     MemoryRegion region{};
     region.base = reinterpret_cast<uint8_t*>(memory.data());
     region.size = memory.size() * sizeof(uint64_t);
