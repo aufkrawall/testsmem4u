@@ -1,5 +1,35 @@
 # Recent Log
 
+## 2026-11-14 - Review of bb588cd..db63cb2: eight findings checked
+
+An external review listed eight findings; each was checked against code and fixed
+where real (commits 9a2fa02..39a3a3c, one per fix). New regression tests were run
+with each fix reverted in a scratch mutation build: nine new checks failed, one or
+more per mutated fix.
+
+- True, fixed: `runTests` cleared the stop flag, losing a Ctrl+C/close during the
+  countdown or wizard (now a latch; returns before allocation). Not true as
+  proposed: moving `setFinalResultsPending(false)` before `Logger::deinit` would let
+  Windows kill the process before the flush; a post-deinit `LOG_WARN` is dropped
+  safely. The exit pause after Ctrl+C is intended.
+- True mechanism, different fix: with only reserved CPU sets usable the fallback
+  re-added them without topology. The suggested "no fallback" would leave no
+  targets (default CPU 0 binds); they are now kept as `cpu-sets-reserved-only`.
+- True, fixed: RowHammer whole-MiB truncation (exact bytes now; the review's quoted
+  code with a 1,000,000 density clamp did not match the source); budget INFO line
+  per RowHammer entry with the real stride range; loop estimate counted dwell ms and
+  density (`default.cfg` warned from `--cycles 4`); staggered message with one chunk;
+  unused `CpuTarget::weight` removed; Linux topology test assumed sysfs.
+- Verification: `python build.py --tests` (baseline/AVX2/x86 + 22 CLI), zig Linux
+  x86_64/x86 runners in WSL (also `taskset -c 1,3,5,7` and a mount namespace hiding
+  `/sys/devices/system/cpu`), `--run-sanitizers` (ASan/UBSan runners pass; the ASan
+  main-binary link failed only because a concurrent CLI check held the exe open),
+  `--lint` (one new test warning fixed, re-run clean), per-commit `-fsyntax-only`
+  (x86_64 and i686), bounded 16 MiB CLI runs (`--cores 1` staggered no-op line, two
+  RowHammer budget lines) and a 12 s `default.cfg --cycles 4` start (estimate 3840).
+- Not reproduced on hardware: reserved-only CPU sets (no such host), a real Ctrl+C
+  during the countdown (unit-tested at `runTests`).
+
 ## 2026-11-14 - Small-window follow-up: RowHammer density, console close
 
 The user's 64 MiB run of the new preset took 5.6 min per cycle and the log had no
@@ -71,7 +101,7 @@ possible, reproduced before fixing (commits after 196482b).
   x86_64/x86 runners in WSL with and without `taskset`, all nine release targets,
   bounded 64 MiB CLI runs on Windows (affinity 0x2 and full) and WSL. ARM64 runtime
   and multi-group/>32-CPU Windows hosts untested.
-- Open: `CpuTarget::weight` has no consumer (cleanup candidate).
+- Open: `CpuTarget::weight` has no consumer (cleanup candidate; removed 2026-11-14 in 965fc09).
 
 ## 2026-11-14 - Coverage-per-hour fixes from the detection audit
 

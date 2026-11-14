@@ -1,6 +1,10 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-11-14 for the interleaved default preset, per-occurrence pass
+Last verified: 2026-11-14 for the review fixes (startup stop latch, reserved-only
+Windows CPU sets, exact-byte RowHammer points and per-entry budget lines, run-length
+estimate, staggered no-op message; Windows baseline/AVX2/x86 + CLI, WSL Linux
+x86_64/x86 incl. `taskset` and hidden CPU sysfs, ASan/UBSan runners, clang-tidy,
+bounded 16 MiB runs); 2026-11-14 for the interleaved default preset, per-occurrence pass
 data, opt-in staggered starts and per-function time totals (Windows baseline/AVX2/x86,
 WSL Linux x86_64/x86 suites, ASan/UBSan, clang-tidy, nine release targets, bounded
 128 MiB runs); also 2026-11-14 for dynamic chunk scheduling (enabled entries only), CPU
@@ -242,13 +246,13 @@ tests at very different rates. SMT siblings with half-size regions (weight 50)
 finished each test about twice as fast as full-size ones, and even with equal
 regions OS noise spread per-worker times from 42 s to 82 s. The slowest region
 bounded completed cycles and its cells were tested about half as often. With
-chunks, a slow CPU just completes fewer invocations. `CpuTarget::weight` no longer
-sizes memory and has no consumer since 2026-11-14 (cleanup candidate).
+chunks, a slow CPU just completes fewer invocations. `CpuTarget::weight` lost its
+last consumer with chunk scheduling and was removed 2026-11-14.
 
 Worker CPU targets (`src/PlatformCpu.cpp`, `include/CpuTopology.h`, verified
 2026-11-14): only CPUs the process can bind to are targets. Linux iterates
-`sched_getaffinity`; Windows skips CPU sets reserved for other processes, CPUs
-outside the process affinity mask of its primary group (Windows 11 accepted thread
+`sched_getaffinity`; Windows skips CPU sets reserved for other processes (unless
+nothing else is usable, see below), CPUs outside the process affinity mask of its primary group (Windows 11 accepted thread
 binds outside a `start /affinity` mask, so the old code silently overrode it), and
 logical indices beyond the `KAFFINITY` width (32 in 32-bit builds, where the shift
 was undefined). SMT roles are assigned from the targets afterwards
@@ -258,10 +262,25 @@ core by its first hardware sibling (core_id repeats per socket); the Windows
 fallback by the lowest bit of its core mask. Targets sort primary threads (and
 P-cores) first, which matters when `--cores` < usable CPUs. `heterogeneous` means
 different core types (efficiency class or cpu_capacity): Windows reports AMD
-preferred-core ranking as scheduling classes 0-6 on identical 5700X cores, and SMT
-weights are halved, so weight comparisons always said yes. Linux affinity-excluded
+preferred-core ranking as scheduling classes 0-6 on identical 5700X cores, and the
+old SMT-halved weights made weight comparisons always say yes. Linux affinity-excluded
 counts come from `/sys/devices/system/cpu/online` (musl's `_SC_NPROCESSORS_ONLN`
-counts the affinity mask).
+counts the affinity mask). Without readable `thread_siblings_list` files (minimal
+containers) Linux reports `affinity-only`; the topology test accepts that (verified
+in WSL with `/sys/devices/system/cpu` hidden).
+
+Reserved-only Windows CPU sets (`cpu_topology::selectCpuSetTargets`, fixed
+2026-11-14): when the affinity mask allows only CPUs reserved for another process,
+workers use those reserved CPUs with their CPU-set topology (source
+`cpu-sets-reserved-only`, `PlatformInfo::cpu_sets_reserved_only`, WARN at run
+start): there is no other CPU to run on. Previously `targets.empty()` triggered the
+logical-processor fallback, which re-added the same CPUs without SMT pairing or
+efficiency classes while `reserved-skipped` claimed they were skipped. An empty
+target list (and thus the fallback) now means CPU sets offered no usable CPU at all;
+if detection ever yields no target (`unavailable`), `selectWorkerTargets` pads with
+default `CpuTarget{}` entries (CPU 0 bind attempts; open, low risk: single worker
+after `cpu_cores` 0 resolves to 1). Not reproducible on the dev host (no reserved sets);
+`testCpuSetReservationsSelectTargets` is synthetic.
 
 Staggered start (opt-in, added 2026-11-14; `PresetInfo::staggered_start` from the
 `[Main Section]` key `Sequence Start=aligned|staggered`, `Config::sequence_start`
@@ -276,7 +295,10 @@ shortened fixed-time tests: every function first ran within 0.7 s (aligned: up t
 16.5 s), and RowHammer's worker-time share rose from 21.5% to 34% because hammer
 iterations slow down under concurrent streaming traffic (fixed point budget, so time
 grows). With RowHammer overlapping everything, the cross-chunk disturbance WARN
-fires on most errors elsewhere; the startup INFO line says so.
+fires on most errors elsewhere; the startup INFO line says so. With a single chunk
+(`--cores 1`; one worker gets one chunk) or a single enabled entry every offset is
+0; `describeSequenceStart` then logs that staggering has no effect (fixed
+2026-11-14, previously claimed different concurrent tests).
 
 Each chunk executes the configured sequence in order. Completed cycles are the
 minimum across chunks. Faster workers continue real tests, including extra cycles,
@@ -347,6 +369,18 @@ the signal. Close events never force-quit; a second Ctrl+C/Break still does. Ver
 by the user closing a real 64 MiB run's window after one cycle: close line, time
 breakdown, coverage and results present. Not automatable in the test runner
 (CTRL_CLOSE_EVENT cannot be generated programmatically).
+
+Stop requests latch (fixed 2026-11-14): `runTests` cleared `g_stop_requested` on
+entry, so a Ctrl+C or close during the startup countdown, wizard or prompts (handler
+registered first in `main`) was discarded after `g_shutdown_initiated` was already
+set: the suite ran fully and the next Ctrl+C force-quit without results. The flag
+is now never cleared (test-only `TestEngine::clearStopRequestForTesting`);
+`runTests` returns before allocating with WARN `Stop requested before testing
+started`. `testStopBeforeRunIsKept` fails with the old reset. Reviewed and kept:
+`Logger::deinit` runs before `setFinalResultsPending(false)` on purpose (the close
+wait must cover the log flush; a handler `LOG_WARN` after deinit is dropped by
+`pushMessage`'s `running_` check), and the interactive exit pause after Ctrl+C is
+intended (Ctrl+C means stop and save; a second Ctrl+C force-quits).
 
 Shutdown no longer dereferences a stack-context pointer asynchronously: a static
 atomic outlives every run. Worker exceptions and partial thread-start failures
@@ -546,16 +580,22 @@ shared across available strides rather than silently expanded to one per stride.
 
 Point budget (`include/TestEngineInternal.h::rowHammerPoints`, changed 2026-11-14):
 Parameter is a density in points per GiB of the invoked region (0 = 2048 = the
-long-standing 2 per MiB), floor one point per usable stride, cap 100000. Until then
+long-standing 2 per MiB), floor one point per usable stride, cap 100000. Exact
+bytes, rounded to nearest (`(bytes * density + 2^29) / 2^30`; products that would
+overflow 64 bits return the cap). The first version truncated to whole MiB, giving
+sub-MiB blocks only the floor and a 3.6 MiB chunk 29 instead of 35 points at 10000. Until then
 an explicit Parameter was an absolute count per region; the interleaved preset's 250
 cost ~90 s per chunk regardless of size (user's 64 MiB cycle 5.6 min, 2.9 min after
 the fix with RefreshStable then 90.8% of worker time) and scaled with worker count
 (more, smaller chunks). Old explicit counts now mean per GiB (changelog migration
 note). `testRowHammerPointsFollowDensity`; the engine regression expects one point
 per stride and polarity on 256 KiB (Parameter 1 gave 2 victims under the old rule).
-Logging: one INFO budget line per run (`g_rowhammer_budget_logged`, reset in
-`runTests`); per-stride `Sweeping stride` lines and a per-invocation summary
-(points, elapsed, errors, `[stopped]`) are DEBUG.
+Logging: one INFO budget line per RowHammer entry, keyed by test number, density
+and block size (`claimRowHammerBudgetLog`, at most 16 per run, reset in `runTests`;
+a run-wide flag hid every entry after the first), naming the stride range actually
+used (regions of 192 KiB or less drop the 64 KiB stride); per-stride `Sweeping
+stride` lines and a per-invocation summary (points, elapsed, errors, `[stopped]`)
+are DEBUG.
 
 Aggressor writes retain SFENCE, both line flushes and MFENCE each iteration;
 `flush_cache_lines` dispatches the two-address flush once. Victim/reuse checks and
@@ -645,8 +685,8 @@ and [AMD family-17h CPUID reference](https://www.amd.com/content/dam/amd/en/docu
 ### Runtime observations
 
 - Startup logs describe independent scheduling and active retention. Debug logs
-  (`--debug`) identify the CPU topology source (`cpu-sets`, `logical-processor-
-  fallback`, `sysfs`, `affinity-only`), usable/SMT-sibling/reserved/affinity-excluded
+  (`--debug`) identify the CPU topology source (`cpu-sets`, `cpu-sets-reserved-only`,
+  `logical-processor-fallback`, `sysfs`, `affinity-only`), usable/SMT-sibling/reserved/affinity-excluded
   CPU counts, core-type heterogeneity, chunk layout, how many sequence entries are
   scheduled, each worker's CPU/core/efficiency and scheduling class/SMT role/parked
   state, and per-chunk test starts and elapsed test durations, plus per-invocation summaries from March/LFSRPattern (seed, errors,
@@ -660,8 +700,14 @@ and [AMD family-17h CPUID reference](https://www.amd.com/content/dam/amd/en/docu
 - Final `Coverage` is the number of complete cycles across every memory chunk.
 - INFO startup lines (2026-11-14): `Sequence: N enabled entries per cycle, M
   distinct tests; repeated per cycle: <function>(TestID) xK, ...` (capped at 8) and
-  `Sequence start: aligned|staggered (source)`. Debug test-start lines add
-  `occurrence=k/K`; `variation=` is the first loop's.
+  `Sequence start: aligned|staggered (source)` (or `... has no effect with ...`).
+  Debug test-start lines add `occurrence=k/K`; `variation=` is the first loop's.
+- Run-length estimate (`estimatedTotalLoops`, fixed 2026-11-14): DEBUG `Run-length
+  estimate: N loop repetitions`, WARN above `kMaxRecommendedLoops` (100000). Only
+  repetition Parameters count (`estimatedRepetitions`: SimpleTest, moves, marches;
+  RandomAccess pass counts up to 100; Modulo20 default 3); RefreshStable's dwell ms
+  and RowHammer's density counted as repetitions made `default.cfg` warn from 4
+  cycles on (31275 per cycle; now 960).
 - INFO (file, no `--debug`; `include/SequenceTimings.h`, added 2026-11-13): one
   `Cycle N complete on every chunk after Xs` line per whole-window cycle, and a
   run-end `Time breakdown` header (wall, workers, chunks, chunk MiB, total worker

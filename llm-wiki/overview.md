@@ -70,7 +70,8 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   coverage. The kernel releases allocations even after SIGKILL/OOM. Catchable
   SIGINT/SIGTERM/SIGHUP still stop gracefully; repeated signals/SIGABRT/SIGBUS
   exit immediately. A Windows console close/logoff/shutdown during a run stops it
-  and waits until final results are logged before Windows ends the process. See [page allocation](memory-testing.md#page-allocation-defaults-and-limits).
+  and waits until final results are logged before Windows ends the process. A stop
+  requested before the run (countdown, wizard) latches and skips allocation. See [page allocation](memory-testing.md#page-allocation-defaults-and-limits).
 - Preset/config path validation rejects empty paths and control characters, but allows explicit absolute and parent-relative paths after filesystem canonicalization. Unsafe paths are hex-escaped in diagnostics.
 - Config loading parses into a temporary copy and only commits on full success; malformed config files must not leave partially-applied settings behind.
 - `loadConfigWithStatus` distinguishes loaded, missing, and invalid/unreadable files.
