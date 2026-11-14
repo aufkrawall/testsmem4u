@@ -172,3 +172,21 @@ void testStaggeredStartRunsDifferentTests() {
     expect(staggeredSequenceStart(preset_config) && !staggeredSequenceStart(override_config),
            "The preset's Sequence Start applies unless --sequence-start overrides it");
 }
+
+void testRowHammerPointsFollowDensity() {
+    constexpr size_t mib = size_t{1} << 20;
+    // Parameter 0 keeps the long-standing default of 2 points per MiB.
+    expect(rowHammerPoints(100 * mib, 0, 4) == 200 && rowHammerPoints(1593 * mib, 0, 4) == 3186,
+           "Default RowHammer density stays 2 points per MiB");
+    // Parameter is points per GiB, so the budget follows the region size: the old
+    // absolute count gave a 3.6 MiB chunk of a 64 MB window the same 250 points
+    // (about 90 s) as a 1.6 GiB chunk.
+    expect(rowHammerPoints(1593 * mib, 160, 4) == 249 && rowHammerPoints(3 * mib, 160, 4) == 4 &&
+               rowHammerPoints(1024 * mib, 1000, 4) == 1000,
+           "Explicit RowHammer Parameter is a density in points per GiB");
+    expect(rowHammerPoints(size_t{512} * 1024, 2048, 3) == 3 && rowHammerPoints(0, 0, 0) == 1,
+           "At least one point per usable stride (and never zero)");
+    expect(rowHammerPoints(SIZE_MAX / 2, 0xFFFFFFFFU, 4) == kRowHammerMaxPoints &&
+               rowHammerPoints(SIZE_MAX, 0xFFFFFFFFU, 4) == kRowHammerMaxPoints,
+           "Huge regions and densities are capped without overflow");
+}

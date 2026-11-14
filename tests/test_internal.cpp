@@ -746,6 +746,7 @@ int main() try {
     testFunctionTimingSummary();
     testStaggeredSlotsCoverEveryEntry();
     testStaggeredStartRunsDifferentTests();
+    testRowHammerPointsFollowDensity();
     testUniformMarchSpecialization();
     testLfsrParallelGeneration();
     testTrafficKernelSpecializations();

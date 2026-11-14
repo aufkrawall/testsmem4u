@@ -149,9 +149,11 @@ void testEngineRegressions() {
             };
             g_rowhammer_large_page_warning_emitted.store(false);
             hammer.page_coverage = {hammer.size, hammer.size, size_t{2} * 1024 * 1024, true, true, hammer.size};
+            // Parameter 1 point per GiB rounds to zero on 256 KiB; the floor is one
+            // point per usable stride (all four fit), per victim polarity.
             const auto result = TestEngine::runRowHammerTest(ctx, hammer, tc, false);
-            expect(result.total_errors() == 0 && points == 2,
-                   "RowHammer respects one-point budget per polarity and checks victims");
+            expect(result.total_errors() == 0 && points == size_t{2} * 4,
+                   "RowHammer runs one point per usable stride and polarity when the density rounds lower");
             expect(!g_rowhammer_large_page_warning_emitted.load(),
                    "RowHammer trusts allocation-wide coverage measured once instead of re-querying the OS");
             hammer.page_coverage = {};

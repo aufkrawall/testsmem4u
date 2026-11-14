@@ -10,6 +10,8 @@ namespace testsmem4u {
 
 // One RowHammer coverage warning per run; reset by TestEngine::runTests.
 extern std::atomic<bool> g_rowhammer_large_page_warning_emitted;
+// One RowHammer point-budget INFO line per run; reset by TestEngine::runTests.
+extern std::atomic<bool> g_rowhammer_budget_logged;
 
 // Account verified blocks once, at the leaf kernel. Nested results are merged
 // for the return value only. Error deltas survive cancellation and unwinding.
@@ -154,6 +156,26 @@ constexpr uint64_t randomAccessValue(uint64_t global_word, uint64_t salt) {
 inline uint64_t randomAccessIterations(uint32_t parameter, size_t words) {
     if (parameter > kRandomAccessPassLimit) return parameter;
     return static_cast<uint64_t>(words) * std::max(1U, parameter);
+}
+
+// RowHammer hammer points per invocation. Parameter is a density in points per
+// GiB of the tested region (0 = 2048, the long-standing 2 per MiB), so RowHammer's
+// share of a cycle is the same for every window size and worker count like the
+// other size-proportional tests. Until 2026-11-14 Parameter was an absolute count
+// per region: 250 points cost ~90 s per chunk even on a 64 MB window, and more
+// workers (more, smaller chunks) multiplied the total. At least one point per
+// usable stride, at most kRowHammerMaxPoints.
+constexpr uint64_t kRowHammerDefaultPointsPerGiB = 2048;
+constexpr size_t kRowHammerMaxPoints = 100000;
+
+inline size_t rowHammerPoints(size_t region_bytes, uint32_t points_per_gib, size_t usable_strides) {
+    const uint64_t density = points_per_gib ? points_per_gib : kRowHammerDefaultPointsPerGiB;
+    // Whole MiB, capped at 2^31 (2 PiB; the result is capped far lower anyway),
+    // so mib x density (< 2^32) cannot overflow 64 bits.
+    const uint64_t mib = std::min<uint64_t>(static_cast<uint64_t>(region_bytes) >> 20, uint64_t{1} << 31);
+    const uint64_t points = (mib * density + 512) / 1024;
+    const uint64_t floor = std::max<uint64_t>(1, usable_strides);
+    return static_cast<size_t>(std::min<uint64_t>(std::max(points, floor), kRowHammerMaxPoints));
 }
 
 inline void addUnverifiedOverflow(TestResult& res, size_t total_found, size_t sampled) {

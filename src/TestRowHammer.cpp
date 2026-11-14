@@ -27,6 +27,7 @@
 namespace testsmem4u {
 using namespace simd;
 std::atomic<bool> g_rowhammer_large_page_warning_emitted{false};
+std::atomic<bool> g_rowhammer_budget_logged{false};
 TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
     TestResult res = {};
     VerificationProgress progress(ctx, res, region);
@@ -35,12 +36,6 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
 
     std::random_device rd;
     std::mt19937_64 rng(rd());
-
-    size_t dense_points = (region.size / (size_t{1024} * 1024)) * 2;
-    size_t hammer_points = std::min((size_t)100000, dense_points);
-    if (hammer_points < 10) hammer_points = 10;
-
-    if (config.parameter > 0) hammer_points = config.parameter;
 
     const std::array<size_t, 4> row_stride_bytes = {
         size_t{8} * 1024,
@@ -62,6 +57,20 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         LOG_WARN("Region too small for RowHammer test");
         return res;
     }
+
+    const size_t hammer_points = rowHammerPoints(region.size, config.parameter, usable_strides.size());
+    {
+        bool expected = false;
+        if (g_rowhammer_budget_logged.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+            LOG_INFO("RowHammer: %llu points per GiB%s -> %zu points per invocation on %.1f MiB regions "
+                     "(%zu strides of 8-64 KiB, %zu iterations per point, both victim polarities)",
+                     static_cast<unsigned long long>(config.parameter ? config.parameter
+                                                                      : kRowHammerDefaultPointsPerGiB),
+                     config.parameter ? "" : " (default)", hammer_points,
+                     static_cast<double>(region.size) / (1024.0 * 1024.0), usable_strides.size(), hammer_iterations);
+        }
+    }
+    const auto hammer_start = std::chrono::steady_clock::now();
 
     // Allocation-wide coverage measured once by runTests; re-measuring here would
     // walk /proc/self/smaps per worker and invocation on Linux.
@@ -108,8 +117,10 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
             points_remaining -= std::min(points_remaining, points_for_stride);
             std::uniform_int_distribution<size_t> hammer_dist(0, count - 3 * row_stride_elements - 1);
 
-            LOG_INFO("RowHammer: Sweeping stride %zu elements (%zu points)",
-                     row_stride_elements, points_for_stride);
+            // Per-stride detail is debug-only: interleaved presets run RowHammer
+            // on every chunk several times per cycle (hundreds of lines at INFO).
+            LOG_DEBUG("RowHammer: Sweeping stride %zu elements (%zu points)",
+                      row_stride_elements, points_for_stride);
 
             for (size_t i = 0; i < points_for_stride && !ctx.shouldStop(); ++i) {
                 steps.begin(uint64_t(pass) * hammer_points + std::min<uint64_t>(points_started++, hammer_points));
@@ -186,6 +197,10 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
         }
     }
 
+    LOG_DEBUG("RowHammer: region offset=%zu bytes=%zu points=%zu elapsed=%.3fs errors=%llu%s",
+              region.base_offset_bytes, region.size, hammer_points,
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - hammer_start).count(),
+              static_cast<unsigned long long>(res.total_errors()), ctx.shouldStop() ? " [stopped]" : "");
     return res;
 }
 

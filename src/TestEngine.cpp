@@ -189,6 +189,7 @@ RunResult TestEngine::runTests(const Config& config
                                ) {
     RunResult result = {};
     g_rowhammer_large_page_warning_emitted.store(false, std::memory_order_release);
+    g_rowhammer_budget_logged.store(false, std::memory_order_release);
     g_stop_requested.store(false, std::memory_order_release);
 
     MemoryRegion region;
