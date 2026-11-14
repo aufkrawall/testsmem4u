@@ -106,7 +106,8 @@ void testStaggeredSlotsCoverEveryEntry() {
     expect(offsets, "Staggered chunks start at evenly spread enabled slots");
     expect(complete && staggered.startsCycle(4) && staggered.cycle(7) == 1,
            "Every staggered chunk runs each enabled slot once per chunk cycle");
-    expect(unique && passes.size() == 6 * 4, "Repeated IDs get distinct data passes whatever the starting slot");
+    // Six chunks x two cycles x two occurrences of ID 0.
+    expect(unique && passes.size() == size_t{6} * 4, "Repeated IDs get distinct data passes whatever the starting slot");
 }
 
 namespace sequence_schedule {
