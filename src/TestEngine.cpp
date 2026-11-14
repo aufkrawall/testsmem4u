@@ -472,6 +472,20 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             return result;
         }
     }
+    std::vector<size_t> enabled_entries;
+    size_t first_disabled = 0;
+    for (size_t i = 0; i < seq.size(); ++i) {
+        if (configs.at(seq[i]).enabled) {
+            enabled_entries.push_back(i);
+        } else if (!first_disabled) {
+            first_disabled = i + 1;
+        }
+    }
+    const EnabledSequence enabled(std::move(enabled_entries));
+    if (first_disabled) {
+        LOG_DEBUG("Sequence: %zu of %zu entries enabled; disabled entries are not scheduled (first disabled #%zu)",
+                  enabled.size(), seq.size(), first_disabled);
+    }
     std::vector<std::thread> workers;
     workers.reserve(threads);
     RegionScheduler scheduler(chunk_regions.size(), threads);
@@ -511,12 +525,13 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             scheduler.snapshot(regions);
             const SlowestRegion slowest = findSlowestRegion(regions, ctx.worker_progress);
             const uint64_t position = slowest.position;
+            const size_t seq_idx = enabled.entry(position);
             info.test_step = slowest.step;
-            info.cycle = static_cast<uint32_t>(position / seq.size() + 1);
+            info.cycle = static_cast<uint32_t>(enabled.cycle(position) + 1);
             info.total_cycles = config.cycles;
-            info.test_idx = static_cast<uint32_t>(position % seq.size() + 1);
+            info.test_idx = static_cast<uint32_t>(seq_idx + 1);
             info.total_tests = seq.size();
-            info.test_name = configs.at(seq[position % seq.size()]).function;
+            info.test_name = configs.at(seq[seq_idx]).function;
             const auto totals = ctx.progressSnapshot();
             info.bytes_tested = totals.bytes_tested;
             info.errors = totals.total_errors();
@@ -525,7 +540,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 
             ConsoleDisplay::get().updateStatus(info);
             if (diagnostics) {
-                const auto diagnostic = diagnostics->update(now, totals, ctx.worker_progress, regions, seq.size());
+                const auto diagnostic = diagnostics->update(now, totals, ctx.worker_progress, regions, enabled);
                 if (!diagnostic.empty()) LOG_DEBUG("%s", diagnostic.c_str());
             }
         }
@@ -570,9 +585,9 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         }
                         ChunkLease lease(scheduler, t, claim.chunk);
                         const MemoryRegion& chunk = chunk_regions[claim.chunk];
-                        const uint64_t cycle = claim.position / seq.size();
-                        const size_t seq_idx = static_cast<size_t>(claim.position % seq.size());
-                        if (seq_idx == 0) {
+                        const uint64_t cycle = enabled.cycle(claim.position);
+                        const size_t seq_idx = enabled.entry(claim.position);
+                        if (enabled.startsCycle(claim.position)) {
                             testPhase(ctx, "Memory residency", chunk);
                             if (!Platform::checkMemoryResident(chunk.base, chunk.size)) {
                                 ctx.setInfrastructureFailure("Worker memory residency check failed.");
@@ -582,46 +597,44 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         const TestConfig& tc = configs.at(seq[seq_idx]);
                         const auto test_start = std::chrono::steady_clock::now();
                         const uint64_t bytes_before = ctx.worker_progress[t].snapshot().bytes_tested;
-                        if (tc.enabled) {
-                            testPhase(ctx, "Worker test start", chunk);
-                            const uint64_t loops = std::max<uint64_t>(1,
-                                (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100);
-                            LOG_DEBUG("Worker %u chunk %zu cycle %llu test %zu: %s started loops=%llu variation=%llu",
-                                      t, claim.chunk, static_cast<unsigned long long>(cycle + 1), seq_idx + 1,
-                                      tc.function.c_str(), static_cast<unsigned long long>(loops),
-                                      static_cast<unsigned long long>(passVariation(cycle, loops, 0)));
-                            const bool disturbs = isCrossRegionDisturbanceTest(tc.function);
-                            TestConfig pass = tc;
-                            for (uint64_t loop = 0; loop < loops && !ctx.shouldStop(); ++loop) {
-                                ProgressBinding::beginLoop(&ctx, loop, loops);
-                                DisturbanceWindow window(ctx, disturbs);
-                                pass.variation = passVariation(cycle, loops, loop);
-                                TestResult tr = runRegionWork(ctx, chunk, pass, config.halt_on_error);
-                                if (tr.total_errors() && window.overlappedForeignDisturbance()) {
-                                    LOG_WARN("Worker %u: %llu error(s) in %s (region offset=%zu bytes=%zu) while "
-                                             "RowHammer ran on another memory chunk. Rows can span chunk "
-                                             "boundaries, so cross-chunk hammering may have caused them.",
-                                             t, static_cast<unsigned long long>(tr.total_errors()),
-                                             tc.function.c_str(), chunk.base_offset_bytes, chunk.size);
-                                }
-                                if (tr.total_errors() && config.halt_on_error) ctx.requestStop();
+                        testPhase(ctx, "Worker test start", chunk);
+                        const uint64_t loops = std::max<uint64_t>(1,
+                            (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100);
+                        LOG_DEBUG("Worker %u chunk %zu cycle %llu test %zu: %s started loops=%llu variation=%llu",
+                                  t, claim.chunk, static_cast<unsigned long long>(cycle + 1), seq_idx + 1,
+                                  tc.function.c_str(), static_cast<unsigned long long>(loops),
+                                  static_cast<unsigned long long>(passVariation(cycle, loops, 0)));
+                        const bool disturbs = isCrossRegionDisturbanceTest(tc.function);
+                        TestConfig pass = tc;
+                        for (uint64_t loop = 0; loop < loops && !ctx.shouldStop(); ++loop) {
+                            ProgressBinding::beginLoop(&ctx, loop, loops);
+                            DisturbanceWindow window(ctx, disturbs);
+                            pass.variation = passVariation(cycle, loops, loop);
+                            TestResult tr = runRegionWork(ctx, chunk, pass, config.halt_on_error);
+                            if (tr.total_errors() && window.overlappedForeignDisturbance()) {
+                                LOG_WARN("Worker %u: %llu error(s) in %s (region offset=%zu bytes=%zu) while "
+                                         "RowHammer ran on another memory chunk. Rows can span chunk "
+                                         "boundaries, so cross-chunk hammering may have caused them.",
+                                         t, static_cast<unsigned long long>(tr.total_errors()),
+                                         tc.function.c_str(), chunk.base_offset_bytes, chunk.size);
                             }
+                            if (tr.total_errors() && config.halt_on_error) ctx.requestStop();
                         }
                         const auto test_end = std::chrono::steady_clock::now();
                         const uint64_t verified = ctx.worker_progress[t].snapshot().bytes_tested - bytes_before;
                         // A cancelled test must not count as covered; the lease returns the chunk.
                         if (ctx.shouldStop()) {
-                            if (tc.enabled) timings.record(seq_idx, test_start, test_end, verified, false);
+                            timings.record(seq_idx, test_start, test_end, verified, false);
                             break;
                         }
-                        if (tc.enabled) timings.record(seq_idx, test_start, test_end, verified, true);
+                        timings.record(seq_idx, test_start, test_end, verified, true);
                         ProgressBinding::resetStep(&ctx);
                         lease.complete(claim.position + 1);
                         LOG_DEBUG("Worker %u chunk %zu cycle %llu test %zu: %s completed in %.3fs verified-bytes=%llu",
                                   t, claim.chunk, static_cast<unsigned long long>(cycle + 1), seq_idx + 1,
                                   tc.function.c_str(), std::chrono::duration<double>(test_end - test_start).count(),
                                   static_cast<unsigned long long>(verified));
-                        const uint64_t completed_cycles = scheduler.minimum() / seq.size();
+                        const uint64_t completed_cycles = scheduler.minimum() / enabled.size();
                         for (const auto& milestone : timings.cycleMilestones(completed_cycles, test_end)) {
                             LOG_INFO("%s", milestone.c_str());
                         }
@@ -658,7 +671,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     result.soft_errors = ctx.total_soft_errors.load(std::memory_order_relaxed);
     result.unverified_errors = ctx.total_unverified_errors.load(std::memory_order_relaxed);
     result.bytes_tested = ctx.total_bytes.load(std::memory_order_relaxed);
-    result.cycles_completed = scheduler.minimum() / seq.size();
+    result.cycles_completed = scheduler.minimum() / enabled.size();
     for (const auto& line : timings.summary(seq, configs, threads, chunk_regions.size(), chunk_regions.front().size,
                                             std::chrono::duration<double>(end - start).count())) {
         LOG_INFO("%s", line.c_str());

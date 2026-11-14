@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 namespace testsmem4u {
@@ -119,6 +120,24 @@ private:
     std::vector<size_t> serving_;
     std::vector<size_t> finished_; // per worker: chunk it released last
     uint64_t release_counter_ = 0;
+};
+
+// Chunk positions count enabled sequence entries only. Walking disabled entries
+// cost a claim and a release each, and every release replaced the worker's
+// just-finished chunk: after skipping a disabled entry elsewhere, a slow worker
+// could re-claim the lagging chunk it had just finished. Disabled entries also
+// logged zero-second completions and could name the status line's test.
+// Logs, status and timings keep the original sequence index (entry()).
+struct EnabledSequence {
+    std::vector<size_t> entries; // sequence index of each enabled entry, in order
+
+    EnabledSequence() = default;
+    explicit EnabledSequence(std::vector<size_t> enabled) : entries(std::move(enabled)) {}
+
+    size_t size() const noexcept { return entries.size(); }
+    uint64_t cycle(uint64_t position) const { return position / entries.size(); }
+    size_t entry(uint64_t position) const { return entries[static_cast<size_t>(position % entries.size())]; }
+    bool startsCycle(uint64_t position) const { return position % entries.size() == 0; }
 };
 
 // Returns the claimed chunk on every exit path; complete() publishes progress.

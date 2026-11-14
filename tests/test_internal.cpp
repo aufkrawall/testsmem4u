@@ -744,6 +744,7 @@ int main() try {
     testLfsrParallelGeneration();
     testTrafficKernelSpecializations();
     testIndependentWorkerExecution();
+    testDisabledEntriesAreNotScheduled();
     testPreparationExceptionCleanup();
     testFreshUnlockedRun();
     testMemoryPageContracts();

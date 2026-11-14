@@ -24,7 +24,7 @@ public:
 
     std::string update(Clock::time_point now, const TestResult& totals,
                        const std::vector<ProgressCounters>& workers,
-                       const RegionScheduler::Snapshot& regions, size_t sequence_size) {
+                       const RegionScheduler::Snapshot& regions, const EnabledSequence& sequence) {
         for (size_t i = 0; i < workers.size(); ++i) {
             const uint64_t bytes = workers[i].snapshot().bytes_tested;
             if (bytes != samples_[i].bytes) samples_[i].changed = now;
@@ -48,8 +48,8 @@ public:
             output << " | w" << i;
             if (chunk < regions.positions.size()) {
                 const uint64_t position = regions.positions[chunk];
-                output << " R" << chunk << " C" << position / sequence_size + 1
-                       << " T" << position % sequence_size + 1;
+                output << " R" << chunk << " C" << sequence.cycle(position) + 1
+                       << " T" << sequence.entry(position) + 1;
             } else {
                 output << " R-";
             }

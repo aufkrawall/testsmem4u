@@ -257,7 +257,9 @@ void testIndependentWorkerExecution() {
     const auto platform = Platform::detectPlatform();
     if (platform.cpu_cores < 2 || Platform::getNativePageSize() == 0) return;
     const size_t page = Platform::getNativePageSize();
-    auto guard = Platform::allocateMemoryRAII(size_t{64} * 1024, false, false, true);
+    // Four chunks need four pages: a fixed 64 KiB window gave one worker on
+    // 64 KiB-page kernels (deadlocking the hook below) and two chunks on 32 KiB.
+    auto guard = Platform::allocateMemoryRAII(std::max(size_t{64} * 1024, 4 * page), false, false, true);
     expect(guard.valid(), "Scheduler test allocation");
     if (!guard.valid()) return;
     MemoryRegion region{};
@@ -319,4 +321,71 @@ void testIndependentWorkerExecution() {
     const auto failure = TestEngine::executeSuite(config, region, {0, 1}, configs, &failed);
     expect(failure.infrastructure_failure && failure.cycles_completed == 0,
            "Worker exception stops peers and joins without termination or deadlock");
+}
+
+void testDisabledEntriesAreNotScheduled() {
+    const EnabledSequence sequence({1, 3});
+    expect(sequence.cycle(5) == 2 && sequence.entry(5) == 3 && sequence.entry(4) == 1 && sequence.startsCycle(4) &&
+               !sequence.startsCycle(5),
+           "Positions count enabled entries and map back to their sequence index");
+
+    // Disabled entries used to be claimed and released like tests. Each release
+    // replaced the worker's just-finished chunk, so a worker that skipped a
+    // disabled entry on another chunk could re-claim the chunk it had just
+    // tested. Deterministic: the first worker holds its chunk until its peer
+    // has started six tests; the peer's other two chunks then sit at the
+    // sequence's disabled third entry. No sleeps or timing assumptions.
+    const auto platform = Platform::detectPlatform();
+    if (platform.cpu_cores < 2 || Platform::getNativePageSize() == 0) return;
+    const size_t page = Platform::getNativePageSize();
+    auto guard = Platform::allocateMemoryRAII(std::max(size_t{64} * 1024, 4 * page), false, false, true);
+    expect(guard.valid(), "Disabled-entry scheduler allocation");
+    if (!guard.valid()) return;
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    Config config;
+    config.cores = 2;
+    config.cycles = 1;
+    config.preset.time_percent = 100;
+    TestConfig tc;
+    tc.function = "SimpleTest";
+    tc.time_percent = 1;
+    TestConfig off = tc;
+    off.enabled = false;
+    const std::map<uint32_t, TestConfig> configs{{0, tc}, {1, tc}, {2, off}};
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::map<std::thread::id, std::vector<uint8_t*>> starts;
+    std::thread::id first;
+    bool first_seen = false;
+    bool first_restarted = false;
+    unsigned peer_starts = 0;
+    TestContext ctx;
+    ctx.phase_hook = [&](const char* phase, const MemoryRegion& part) {
+        if (std::string(phase) != "Worker test start") return;
+        std::unique_lock<std::mutex> lock(mutex);
+        const auto self = std::this_thread::get_id();
+        auto& mine = starts[self];
+        mine.push_back(part.base);
+        if (!first_seen) {
+            first_seen = true;
+            first = self;
+            cv.wait(lock, [&]() { return peer_starts >= 6; });
+        } else if (self == first) {
+            if (mine.size() == 2) {
+                first_restarted = true;
+                cv.notify_all();
+            }
+        } else if (++peer_starts == 6) {
+            cv.notify_all();
+            cv.wait(lock, [&]() { return first_restarted; });
+        }
+    };
+    const auto result = TestEngine::executeSuite(config, region, {0, 1, 2}, configs, &ctx);
+    expect(!result.infrastructure_failure && result.total_errors() == 0 && result.cycles_completed == 1,
+           "A sequence with a disabled entry completes its cycle");
+    const auto& held = starts[first];
+    expect(held.size() >= 2 && held[1] != held[0],
+           "After a test, a worker takes another idle chunk even when disabled entries follow");
 }
