@@ -12,6 +12,8 @@
 #include "MemoryTestKernels.h"
 #include "ProgressDiagnostics.h"
 #include "InfrastructureFailure.h"
+#include "InputSpec.h"
+#include "RunDeadline.h"
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -509,9 +511,14 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     }
     LOG_INFO("Retention: alternate untouched halves while testing the other half; no whole-run sleep.");
     LOG_DEBUG("Progress: verified blocks publish to separate worker counters; completed cycles require every chunk.");
+    if (config.time_limit_seconds) {
+        LOG_INFO("Time limit: %s; testing stops when it expires%s", formatTimeLimit(config.time_limit_seconds).c_str(),
+                 config.cycles ? " or after the configured cycles, whichever is first" : " (no cycle limit)");
+    }
 
     auto start = std::chrono::steady_clock::now();
     SequenceTimings timings(seq.size(), start);
+    RunDeadline deadline;
 
     ConsoleDisplay::get().setTestingActive(true);
 
@@ -551,6 +558,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
             info.errors = totals.total_errors();
             info.elapsed_seconds = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::seconds>(now - start).count());
+            info.time_limit_seconds = config.time_limit_seconds;
 
             ConsoleDisplay::get().updateStatus(info);
             if (diagnostics) {
@@ -577,6 +585,13 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     });
 
     try {
+        if (config.time_limit_seconds) {
+            deadline.start(start + std::chrono::seconds(config.time_limit_seconds), [&ctx, &config]() {
+                LOG_INFO("Time limit of %s reached; stopping the test workers",
+                         formatTimeLimit(config.time_limit_seconds).c_str());
+                ctx.requestStop();
+            });
+        }
         for (uint32_t t = 0; t < threads; ++t) {
             workers.emplace_back([&, t]() noexcept {
                 ProgressBinding binding(&ctx, ctx.worker_progress[t]);
@@ -677,6 +692,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     for (auto& w : workers) {
         if (w.joinable()) w.join();
     }
+    deadline.finish();
 
     ctx.requestStop();
     if (monitor.joinable()) monitor.join();
@@ -700,6 +716,15 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     result.duration_seconds = std::chrono::duration<double>(end - start).count();
     result.infrastructure_failure = ctx.hasInfrastructureFailure();
     result.infrastructure_error = ctx.getInfrastructureFailureMessage();
+    // Fixed precedence keeps the reason deterministic when two limits coincide.
+    if (result.infrastructure_failure) result.stop_reason = "infrastructure failure";
+    else if (config.cycles && result.cycles_completed >= config.cycles) result.stop_reason = "cycles";
+    else if (deadline.expired()) result.stop_reason = "time limit";
+    else if (config.halt_on_error && result.total_errors()) result.stop_reason = "halt on error";
+    else result.stop_reason = "stop request"; // Ctrl+C, console close or a caller's stop
+    LOG_INFO("Run end: reason=%s elapsed=%.1fs time-limit=%s complete-cycles=%llu cycle-limit=%u",
+             result.stop_reason.c_str(), result.duration_seconds, formatTimeLimit(config.time_limit_seconds).c_str(),
+             static_cast<unsigned long long>(result.cycles_completed), config.cycles);
 
     return result;
 }

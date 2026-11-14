@@ -598,12 +598,14 @@ int main(int argc, char* argv[]) {
            << " GiB (" << res.bytes_tested << " bytes verified; repeated reads included)";
         ConsoleDisplay::get().printLine(ss.str());
         ConsoleDisplay::get().printLine("Completed cycles: " + std::to_string(res.cycles_completed));
+        if (!res.stop_reason.empty()) ConsoleDisplay::get().printLine("Stopped by: " + res.stop_reason);
     }
-    LOG_INFO("Results: verified-bytes=%llu complete-cycles=%llu errors=%llu duration=%.3fs infrastructure-failure=%s",
+    LOG_INFO("Results: verified-bytes=%llu complete-cycles=%llu errors=%llu duration=%.3fs stop=%s "
+             "infrastructure-failure=%s",
              static_cast<unsigned long long>(res.bytes_tested),
              static_cast<unsigned long long>(res.cycles_completed),
              static_cast<unsigned long long>(res.total_errors()), res.duration_seconds,
-             res.infrastructure_failure ? "yes" : "no");
+             res.stop_reason.empty() ? "none" : res.stop_reason.c_str(), res.infrastructure_failure ? "yes" : "no");
     {
         std::ostringstream ss;
         ss << "Total Errors: " << res.total_errors();

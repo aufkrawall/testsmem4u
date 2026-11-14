@@ -37,6 +37,7 @@
 #endif
 
 #include "RunConfiguration.h"
+#include "InputSpec.h"
 namespace testsmem4u {
 static std::string toLowerCopy(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
@@ -90,40 +91,54 @@ static bool readOptionValue(const std::string& arg, const char* option_name,
     return true;
 }
 
-static bool parseMemoryOverride(const std::string& raw, uint32_t& memory_mb,
-                                uint32_t& memory_percent, std::string& error) {
-    std::string value = toLowerCopy(Utils::trim(raw));
+// Same spellings as the wizard: 85%, 2048, 2048MB, 27GB, optionally followed by
+// a time limit (27GB4h). A time limit here counts as --duration.
+static bool parseMemoryOverride(const std::string& raw, CliOptions& options, std::string& error) {
+    const std::string value = Utils::trim(raw);
     if (value.empty()) {
         error = "Memory value cannot be empty.";
         return false;
     }
-
-    memory_mb = 0;
-    memory_percent = 0;
-
-    if (value.back() == '%') {
-        uint32_t percent = 0;
-        if (!parseUint32Strict(value.substr(0, value.size() - 1), percent) || percent == 0 || percent > 100) {
-            error = "Memory percentage must be between 1% and 100%.";
-            return false;
-        }
-        memory_percent = percent;
-        return true;
-    }
-
-    if (value.size() >= 2 && value.substr(value.size() - 2) == "mb") {
-        value = Utils::trim(value.substr(0, value.size() - 2));
-    } else if (!value.empty() && value.back() == 'm') {
-        value = Utils::trim(value.substr(0, value.size() - 1));
-    }
-
-    uint32_t mb = 0;
-    if (!parseUint32Strict(value, mb) || mb == 0) {
-        error = "Memory override must be a positive MB value or a percentage like 85%.";
+    MemoryTimeInput parsed;
+    std::string detail;
+    if (!parseMemoryAndTime(value, parsed, detail)) {
+        error = "Invalid --memory value '" + Utils::sanitizeForLog(value) + "': " + detail;
         return false;
     }
+    if (parsed.memory_percent > 100) {
+        error = "Memory percentage must be between 1% and 100%.";
+        return false;
+    }
+    options.memory_window_mb = parsed.memory_mb;
+    options.memory_window_percent = parsed.memory_percent;
+    if (parsed.time_limit_seconds) {
+        if (options.time_limit_overridden) {
+            error = "Time limit specified more than once (--memory and --duration).";
+            return false;
+        }
+        options.time_limit_seconds = parsed.time_limit_seconds;
+        options.time_limit_overridden = true;
+    }
+    return true;
+}
 
-    memory_mb = mb;
+// 4h, 30m, 1h30m, 90s, a bare number of minutes, or none/0 to clear a saved limit.
+static bool parseDurationOverride(const std::string& raw, CliOptions& options, std::string& error) {
+    const std::string value = toLowerCopy(Utils::trim(raw));
+    if (options.time_limit_overridden) {
+        error = "Time limit specified more than once (--memory and --duration).";
+        return false;
+    }
+    if (value == "none" || value == "off" || value == "0") {
+        options.time_limit_seconds = 0;
+    } else {
+        std::string detail;
+        if (!parseTimeLimit(value, options.time_limit_seconds, detail, true)) {
+            error = "Invalid --duration value '" + Utils::sanitizeForLog(value) + "': " + detail;
+            return false;
+        }
+    }
+    options.time_limit_overridden = true;
     return true;
 }
 
@@ -194,9 +209,14 @@ void printUsage() {
     std::cout << "      --config FILE        Load or save configuration using FILE\n";
     std::cout << "      --no-config          Ignore config files and do not save wizard output\n";
     std::cout << "      --preset FILE        Use FILE as the preset and skip the wizard\n";
-    std::cout << "      --memory VALUE       Override memory window, e.g. 85%, 2048, 2048MB\n";
+    std::cout << "      --memory VALUE       Override memory window, e.g. 85%, 2048, 2048MB, 27GB;\n";
+    std::cout << "                             a time limit may follow, e.g. 27GB4h or 50MB30m\n";
     std::cout << "      --cores VALUE        Override thread count, e.g. 8 or all\n";
     std::cout << "      --cycles VALUE       Override cycles, e.g. 3, 0, or infinite\n";
+    std::cout << "      --duration VALUE     Stop testing after this time, e.g. 4h, 30m, 1h30m, 90s\n";
+    std::cout << "                             (bare number = minutes; none clears a saved limit).\n";
+    std::cout << "                             Without --cycles, cycles are then unlimited; with both,\n";
+    std::cout << "                             testing stops at whichever limit comes first.\n";
     std::cout << "      --halt-on-error      Stop after the first detected error\n";
     std::cout << "      --no-halt-on-error   Continue running after errors\n";
     std::cout << "      --locked-memory      Request locked memory\n";
@@ -216,6 +236,7 @@ void printUsage() {
     std::cout << "Examples:\n";
     std::cout << "  " << kProgramName << " --yes --preset default.cfg\n";
     std::cout << "  " << kProgramName << " --memory 80% --cycles 5 --show-config\n";
+    std::cout << "  " << kProgramName << " --yes --memory 27GB --duration 4h\n";
     std::cout << "  " << kProgramName << " --config nightly.ini --yes\n";
 }
 
@@ -405,10 +426,20 @@ bool parseCliOptions(int argc, char* argv[], CliOptions& options, std::string& e
             return false;
         }
         if (matched) {
-            if (!parseMemoryOverride(value, options.memory_window_mb, options.memory_window_percent, error)) {
+            if (!parseMemoryOverride(value, options, error)) {
                 return false;
             }
             options.memory_overridden = true;
+            continue;
+        }
+
+        if (!readOptionValue(arg, "--duration", argc, argv, i, value, matched, error)) {
+            return false;
+        }
+        if (matched) {
+            if (!parseDurationOverride(value, options, error)) {
+                return false;
+            }
             continue;
         }
 

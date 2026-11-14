@@ -1,4 +1,5 @@
 #include "ConfigManager.h"
+#include "InputSpec.h"
 #include "Logger.h"
 #include "Utils.h"
 #include <cctype>
@@ -83,7 +84,8 @@ bool saveConfig(const std::string& filename, const Config& config) {
     file << "MemoryWindowMB=" << config.memory_window_mb << "\n";
     file << "Cores=" << config.cores << "\n";
     file << "Cycles=" << config.cycles << "\n";
-    file << "UseLockedMemory=" << (config.use_locked_memory ? "1" : "0") << "\n";
+    file << "TimeLimitSeconds=" << config.time_limit_seconds << "\n";
+    file << "UseLockedMemory="<< (config.use_locked_memory ? "1" : "0") << "\n";
     file << "UseLargePages=" << (config.use_large_pages ? "1" : "0") << "\n";
     file << "HaltOnError=" << (config.halt_on_error ? "1" : "0") << "\n";
     file << "PresetFile=" << config.preset_file << "\n";
@@ -181,6 +183,13 @@ ConfigLoadStatus loadConfigWithStatus(const std::string& filename, Config& confi
                 LOG_ERROR("Invalid config value for Cycles in %s", filename.c_str());
                 return ConfigLoadStatus::INVALID;
             }
+        } else if (key == "TimeLimitSeconds") {
+            uint32_t seconds = 0;
+            if (!Utils::parseUintStrict(value, seconds) || seconds > kMaxTimeLimitSeconds) {
+                LOG_ERROR("Invalid config value for TimeLimitSeconds in %s", filename.c_str());
+                return ConfigLoadStatus::INVALID;
+            }
+            parsed.time_limit_seconds = seconds;
         } else if (key == "UseLockedMemory") {
             if (!parseBoolValue(value, parsed.use_locked_memory)) {
                 LOG_ERROR("Invalid config value for UseLockedMemory in %s", filename.c_str());

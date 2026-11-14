@@ -165,6 +165,42 @@ class ConfigCliTests(unittest.TestCase):
         self.assertIn("Threads:         1", result.stdout)
         self.assertIn("Cycles:          2", result.stdout)
 
+    def test_time_limit_options(self):
+        self.config.write_text("Cycles=3\n")
+        result = self.dry_run("--duration", "4h")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Time limit:      4h\n", result.stdout)
+        self.assertIn("Cycles:          unlimited (until the time limit)", result.stdout)
+        result = self.dry_run("--no-config", "--memory", "16MB2m")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Memory window:   16 MB", result.stdout)
+        self.assertIn("Time limit:      2m\n", result.stdout)
+        result = self.dry_run("--no-config", "--duration", "90", "--cycles", "2")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Time limit:      1h30m (or 2 cycles, whichever is first)", result.stdout)
+        self.config.write_text("Cycles=0\nTimeLimitSeconds=600\n")
+        result = self.dry_run("--duration", "none")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Time limit:      none", result.stdout)
+        for args, message in ((("--duration", "30x"), "Unknown time unit"),
+                              (("--memory", "1GB1h", "--duration", "1h"), "more than once"),
+                              (("--memory", "2048 30"), "needs a unit")):
+            result = self.dry_run("--no-config", *args)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn(message, result.stdout + result.stderr)
+
+    def test_time_limit_stops_real_run(self):
+        result = subprocess.run([
+            str(self.binary), "--yes", "--no-config", "--no-elevation", "--no-locked-memory",
+            "--no-large-pages", "--preset", str(self.preset), "--memory", "16", "--cores", "1",
+            "--duration", "2s",
+        ], cwd=self.root, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Stopped by: time limit", result.stdout)
+        log = (self.root / "testsmem4u.log").read_text()
+        self.assertIn("Time limit of 2s reached", log)
+        self.assertIn("Run end: reason=time limit", log)
+
     def test_completed_run_reports_exact_verified_bytes_and_cycles(self):
         self.preset.write_text("Test Sequence=0\n[Test0]\nFunction=SimpleTest\nParameter=3\n")
         result = subprocess.run([

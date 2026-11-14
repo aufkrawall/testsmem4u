@@ -37,6 +37,7 @@
 #endif
 
 #include "RunConfiguration.h"
+#include "InputSpec.h"
 namespace testsmem4u {
 Config makeDefaultConfig(const PlatformInfo& plat) {
     Config config;
@@ -158,6 +159,12 @@ bool resolveConfiguration(const CliOptions& cli, bool automation_mode,
     if (cli.cores_overridden) {
         resolution.config.cores = cli.cores;
     }
+    if (cli.time_limit_overridden) {
+        resolution.config.time_limit_seconds = cli.time_limit_seconds;
+        // A time limit alone means "test for this long", as in the wizard: a
+        // saved or default cycle count must not end the run early.
+        if (cli.time_limit_seconds && !cli.cycles_overridden) resolution.config.cycles = 0;
+    }
     if (cli.cycles_overridden) {
         resolution.config.cycles = cli.cycles;
     }
@@ -248,10 +255,16 @@ void printConfigSummary(const ConfigResolution& resolution, const CliOptions& cl
         std::ostringstream ss;
         ss << "  Cycles:          ";
         if (config.cycles == 0) {
-            ss << "infinite";
+            ss << (config.time_limit_seconds ? "unlimited (until the time limit)" : "infinite");
         } else {
             ss << config.cycles;
         }
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Time limit:      " << formatTimeLimit(config.time_limit_seconds);
+        if (config.time_limit_seconds && config.cycles) ss << " (or " << config.cycles << " cycles, whichever is first)";
         ConsoleDisplay::get().printLine(ss.str());
     }
     {

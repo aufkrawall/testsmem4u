@@ -33,6 +33,7 @@ struct CliOptions {
     bool locked_memory_overridden = false;
     bool large_pages_overridden = false;
     bool sequence_start_overridden = false;
+    bool time_limit_overridden = false;
 
     std::string config_path = kDefaultConfigPath;
     std::string preset_path;
@@ -40,6 +41,7 @@ struct CliOptions {
     uint32_t memory_window_percent = 0;
     uint32_t cores = 0;
     uint32_t cycles = 0;
+    uint64_t time_limit_seconds = 0; // with time_limit_overridden; 0 clears a saved limit
     bool halt_on_error = false;
     bool use_locked_memory = true;
     bool use_large_pages = true;
@@ -48,7 +50,7 @@ struct CliOptions {
     bool hasRuntimeOverrides() const {
         return memory_overridden || cores_overridden || cycles_overridden ||
                halt_overridden || locked_memory_overridden || large_pages_overridden ||
-               sequence_start_overridden;
+               sequence_start_overridden || time_limit_overridden;
     }
 
     bool requestsDirectRun() const {

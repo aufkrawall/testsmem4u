@@ -28,6 +28,8 @@
 #include "PreparationStatus.h"
 #include "ProgressDiagnostics.h"
 #include "TestAllocationFailure.h"
+#include "InputSpec.h"
+#include "RunDeadline.h"
 #include <future>
 #include <stdexcept>
 #include <array>
@@ -677,6 +679,7 @@ void testRunResultMerge() {
 #include "test_cache_geometry.h"
 #include "test_coverage_rate.h"
 #include "test_sequence_schedule.h"
+#include "test_time_limit.h"
 
 } // namespace
 
@@ -710,6 +713,8 @@ int main() try {
     testConfigLoadStatuses();
     testWizardDefaultPolicies();
     testWizardExplicitSettings();
+    testMemoryAndTimeInput();
+    testWizardTimeLimit();
     testHugePageSetup();
 
     // Existing tests from original file
@@ -755,6 +760,7 @@ int main() try {
     testLfsrParallelGeneration();
     testTrafficKernelSpecializations();
     testIndependentWorkerExecution();
+    testTimeLimitStopsRun();
     testDisabledEntriesAreNotScheduled();
     testPreparationExceptionCleanup();
     testStopBeforeRunIsKept();

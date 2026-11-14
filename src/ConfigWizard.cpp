@@ -37,6 +37,7 @@
 #endif
 
 #include "RunConfiguration.h"
+#include "InputSpec.h"
 namespace testsmem4u {
 bool parseUintOrDefault(const std::string& str, uint32_t& result, uint32_t default_val) {
     if (str.empty()) {
@@ -83,34 +84,23 @@ Config runConfigWizard(std::istream& input_stream, std::ostream& output_stream) 
 
     std::string input;
 
-    output_stream << "Enter memory to test (e.g. '85%', '2048' for MB) [Default: 85%]: ";
+    output_stream << "Enter memory to test, optionally with a time limit\n"
+                  << "  (e.g. '85%', '2048MB', '27GB', '50MB30m' = 30 minutes, '27GB4h' = 4 hours) [Default: 85%]: ";
     std::getline(input_stream, input);
     input = Utils::trim(input);
 
-    if (input.empty()) {
-        config.memory_window_percent = 85;
-        config.memory_window_mb = 0;
-    } else if (input.back() == '%') {
-        std::string num_part = input.substr(0, input.size() - 1);
-        uint32_t pct;
-        if (parseUint32Strict(num_part, pct)) {
-            if (pct > 100) pct = 100;
-            config.memory_window_percent = pct;
-            config.memory_window_mb = 0;
+    config.memory_window_percent = 85;
+    config.memory_window_mb = 0;
+    config.time_limit_seconds = 0;
+    if (!input.empty()) {
+        MemoryTimeInput parsed;
+        std::string error;
+        if (parseMemoryAndTime(input, parsed, error)) {
+            config.memory_window_percent = std::min<uint32_t>(parsed.memory_percent, 100);
+            config.memory_window_mb = parsed.memory_mb;
+            config.time_limit_seconds = parsed.time_limit_seconds;
         } else {
-            ConsoleDisplay::get().printLine("[!] Invalid percentage value. Using default 85%.");
-            config.memory_window_percent = 85;
-            config.memory_window_mb = 0;
-        }
-    } else {
-        uint32_t mb;
-        if (parseUint32Strict(input, mb) && mb > 0) {
-            config.memory_window_mb = mb;
-            config.memory_window_percent = 0;
-        } else {
-            ConsoleDisplay::get().printLine("[!] Invalid MB value. Using default 85%.");
-            config.memory_window_mb = 0;
-            config.memory_window_percent = 85;
+            output_stream << "[!] " << error << " Using default 85% without a time limit.\n";
         }
     }
 
@@ -130,13 +120,20 @@ Config runConfigWizard(std::istream& input_stream, std::ostream& output_stream) 
         output_stream << "[!] Invalid thread count. Using all threads.\n";
     }
 
-    output_stream << "Enter number of cycles (0 for infinite) [Default: 3]: ";
-    std::getline(input_stream, input);
-    input = Utils::trim(input);
+    if (config.time_limit_seconds) {
+        // The time limit replaces the cycle count: test until it expires.
+        config.cycles = 0;
+        output_stream << "Time limit " << formatTimeLimit(config.time_limit_seconds)
+                      << ": testing runs until it expires (no cycle limit).\n";
+    } else {
+        output_stream << "Enter number of cycles (0 for infinite) [Default: 3]: ";
+        std::getline(input_stream, input);
+        input = Utils::trim(input);
 
-    if (!parseUintOrDefault(input, config.cycles, 3)) {
-        config.cycles = 3;
-        output_stream << "[!] Invalid cycle count. Using default 3.\n";
+        if (!parseUintOrDefault(input, config.cycles, 3)) {
+            config.cycles = 3;
+            output_stream << "[!] Invalid cycle count. Using default 3.\n";
+        }
     }
 
     output_stream << "Use locked memory? (y/n) [Default: y]: ";
@@ -209,8 +206,10 @@ Config runConfigWizard(std::istream& input_stream, std::ostream& output_stream) 
         config.preset = loadPreset(config.preset_file);
     }
 
-    LOG_DEBUG("Wizard: memory-percent=%u requested-MB=%u cores=%u (0=all) cycles=%u locked=%s large-pages=%s halt=%s",
-              config.memory_window_percent, config.memory_window_mb, config.cores, config.cycles,
+    LOG_DEBUG("Wizard: memory-percent=%u requested-MB=%u time-limit=%s cores=%u (0=all) cycles=%u locked=%s "
+              "large-pages=%s halt=%s",
+              config.memory_window_percent, config.memory_window_mb,
+              formatTimeLimit(config.time_limit_seconds).c_str(), config.cores, config.cycles,
               config.use_locked_memory ? "yes" : "no", config.use_large_pages ? "yes" : "no",
               config.halt_on_error ? "yes" : "no");
 

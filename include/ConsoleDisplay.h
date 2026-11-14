@@ -23,6 +23,7 @@ struct StatusInfo {
     uint64_t bytes_tested = 0;
     uint64_t errors = 0;
     uint64_t elapsed_seconds = 0;
+    uint64_t time_limit_seconds = 0; // 0 = none; shown as elapsed/limit
     // Completed share of the slowest worker's current test, parts per million.
     uint32_t test_step = 0;
 };

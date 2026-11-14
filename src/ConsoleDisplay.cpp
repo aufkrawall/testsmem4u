@@ -134,7 +134,8 @@ std::string ConsoleDisplay::formatStatus(const StatusInfo& info, size_t max_widt
     
     // Preserve tested bytes, errors and time before adding coverage/test names.
     ss << "Err: " << info.errors << " | " << formatTime(info.elapsed_seconds);
-    ss << " | " << std::fixed << std::setprecision(2) << gb << " GiB";
+    if (info.time_limit_seconds) ss << "/" << formatTime(info.time_limit_seconds);
+    ss << " | "<< std::fixed << std::setprecision(2) << gb << " GiB";
     std::string result = ss.str();
     std::ostringstream coverage;
     coverage << " | Min C" << info.cycle << "/";

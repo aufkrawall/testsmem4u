@@ -52,6 +52,10 @@ struct Config {
     uint32_t memory_window_mb = 0;
     uint32_t memory_window_percent = 85;
     uint32_t cycles = 0;
+    // Wall-clock test time limit in seconds (0 = none). Counted from the start
+    // of testing (after allocation); the run stops when it expires, or after
+    // `cycles` complete cycles if that comes first (cycles == 0: time only).
+    uint64_t time_limit_seconds = 0;
     uint32_t cores = 0;
     bool halt_on_error = false;
     bool use_locked_memory = true;
@@ -75,6 +79,9 @@ struct RunResult {
     uint64_t bytes_tested = 0;
     uint64_t cycles_completed = 0;
     double duration_seconds = 0.0;
+    // Why testing ended, first match wins: "infrastructure failure", "cycles",
+    // "time limit", "halt on error", "stop request" (Ctrl+C, console close).
+    std::string stop_reason;
     bool infrastructure_failure = false;
     std::string infrastructure_error;
     
