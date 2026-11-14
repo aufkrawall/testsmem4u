@@ -190,7 +190,16 @@ RunResult TestEngine::runTests(const Config& config
     RunResult result = {};
     g_rowhammer_large_page_warning_emitted.store(false, std::memory_order_release);
     g_rowhammer_budget_logged.store(false, std::memory_order_release);
-    g_stop_requested.store(false, std::memory_order_release);
+    // The stop request is a process-lifetime latch and is never cleared here.
+    // Clearing it at run start discarded a Ctrl+C or console close that arrived
+    // during the startup countdown, wizard or prompts: the handler had already
+    // marked shutdown as initiated, so the whole suite then ran, the next Ctrl+C
+    // force-quit without results, and a close event lost the results.
+    if (g_stop_requested.load(std::memory_order_acquire)) {
+        LOG_WARN("Stop requested before testing started (Ctrl+C or console close during startup); "
+                 "no memory allocated or tested");
+        return result;
+    }
 
     MemoryRegion region;
     uint64_t needed_bytes = (uint64_t)config.memory_window_mb * size_t{1024} * 1024;
@@ -709,5 +718,11 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 void TestEngine::requestStop() {
     g_stop_requested.store(true, std::memory_order_release);
 }
+
+#ifdef TESTSMEM4U_TESTING
+void TestEngine::clearStopRequestForTesting() {
+    g_stop_requested.store(false, std::memory_order_release);
+}
+#endif
 
 } // namespace testsmem4u

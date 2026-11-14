@@ -753,6 +753,7 @@ int main() try {
     testIndependentWorkerExecution();
     testDisabledEntriesAreNotScheduled();
     testPreparationExceptionCleanup();
+    testStopBeforeRunIsKept();
     testFreshUnlockedRun();
     testMemoryPageContracts();
 #ifndef _WIN32

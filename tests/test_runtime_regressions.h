@@ -55,6 +55,29 @@ void testPreparationExceptionCleanup() {
     expect(caught, "Preparation display exception is propagated after joining");
 }
 
+void testStopBeforeRunIsKept() {
+    // Ctrl+C or a console close during the startup countdown or wizard reaches
+    // the shutdown handler before runTests. runTests used to clear the request,
+    // so the whole suite ran and a second Ctrl+C force-quit without results.
+    Config config;
+    config.memory_window_mb = 1;
+    config.cores = 1;
+    config.cycles = 1;
+    config.preset.test_sequence = "0";
+    TestConfig test;
+    test.function = "SimpleTest";
+    config.preset.test_configs.emplace(0, test);
+    bool allocated = false;
+    TestEngine::requestStop();
+    const auto result = TestEngine::runTests(config, [&](size_t, bool, bool) -> MemoryGuard {
+        allocated = true;
+        return MemoryGuard();
+    });
+    TestEngine::clearStopRequestForTesting();
+    expect(!allocated && result.bytes_tested == 0 && result.cycles_completed == 0 && !result.infrastructure_failure,
+           "A stop requested before the run starts is kept: nothing is allocated or tested");
+}
+
 void testFreshUnlockedRun() {
     Config config;
     config.memory_window_mb = 1;

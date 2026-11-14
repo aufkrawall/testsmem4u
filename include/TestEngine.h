@@ -128,7 +128,12 @@ public:
                              , std::function<MemoryGuard(size_t, bool, bool)> allocator = {}
 #endif
                              );
+    // Latches for the rest of the process: a request made before runTests
+    // (startup countdown, wizard) makes it return without allocating.
     static void requestStop();
+#ifdef TESTSMEM4U_TESTING
+    static void clearStopRequestForTesting();
+#endif
 
     static TestResult runSimpleTest(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
     static TestResult runMirrorMove(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop);
