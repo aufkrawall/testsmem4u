@@ -376,9 +376,16 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
         chunk_regions[i].size = layout[i].size;
         chunk_regions[i].base_offset_bytes += layout[i].offset;
     }
-    LOG_DEBUG("CPU topology: source=%s logical-cpus=%u reserved-skipped=%u heterogeneous=%s workers=%u",
-              platform_info.cpu_topology_source, platform_info.cpu_cores, platform_info.cpu_sets_reserved,
-              platform_info.heterogeneous_cores ? "yes" : "no", threads);
+    {
+        const size_t smt_siblings = static_cast<size_t>(std::count_if(
+            platform_info.cpu_targets.begin(), platform_info.cpu_targets.end(),
+            [](const CpuTarget& target) { return target.smt_secondary; }));
+        LOG_DEBUG("CPU topology: source=%s usable-cpus=%u smt-siblings=%zu reserved-skipped=%u "
+                  "affinity-excluded=%u heterogeneous=%s workers=%u",
+                  platform_info.cpu_topology_source, platform_info.cpu_cores, smt_siblings,
+                  platform_info.cpu_sets_reserved, platform_info.cpu_affinity_excluded,
+                  platform_info.heterogeneous_cores ? "yes" : "no", threads);
+    }
     LOG_DEBUG("Chunks: count=%zu first-bytes=%zu last-bytes=%zu (equal page-aligned slices served dynamically)",
               layout.size(), layout.front().size, layout.back().size);
 
@@ -550,10 +557,11 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         LOG_WARN("Worker %u could not bind to target group=%u cpu=%u", t,
                                  static_cast<unsigned>(target.group), static_cast<unsigned>(target.logical_index));
                     }
-                    LOG_DEBUG("Worker %u bound cpu=%u:%u core=%u eff=%u smt-sibling=%s", t,
+                    LOG_DEBUG("Worker %u bound cpu=%u:%u core=%u eff=%u sched=%u smt-sibling=%s parked=%s", t,
                               static_cast<unsigned>(target.group), static_cast<unsigned>(target.logical_index),
                               static_cast<unsigned>(target.core_index), static_cast<unsigned>(target.efficiency_class),
-                              target.smt_secondary ? "yes" : "no");
+                              static_cast<unsigned>(target.scheduling_class), target.smt_secondary ? "yes" : "no",
+                              target.parked ? "yes" : "no");
                     while (!ctx.shouldStop()) {
                         const RegionScheduler::Claim claim = scheduler.claim(t);
                         if (claim.chunk == RegionScheduler::kNone) {

@@ -1,4 +1,5 @@
 #include "Platform.h"
+#include "CpuTopology.h"
 #include "Logger.h"
 #include <iostream>
 #include <thread>
@@ -80,13 +81,66 @@ static SetThreadIdealProcessorEx_t getSetThreadIdealProcessorExFn() {
     return fn;
 }
 
-static uint32_t bitCount64(uint64_t value) {
-    uint32_t count = 0;
-    while (value != 0) {
-        value &= (value - 1);
-        ++count;
+// Process affinity (start /affinity, job objects) restricts the primary group;
+// CPU sets list every CPU in the system regardless. With threads in several
+// groups GetProcessAffinityMask reports nothing, so no filter applies then.
+struct ProcessAffinity {
+    bool known = false;
+    WORD group = 0;
+    KAFFINITY mask = 0;
+};
+
+static ProcessAffinity queryProcessAffinity() {
+    ProcessAffinity result;
+    HANDLE self = GetCurrentProcess();
+    USHORT groups[1] = {};
+    USHORT group_count = 1;
+    if (!GetProcessGroupAffinity(self, &group_count, groups) || group_count != 1) return result;
+    DWORD_PTR process_mask = 0;
+    DWORD_PTR system_mask = 0;
+    if (!GetProcessAffinityMask(self, &process_mask, &system_mask) || process_mask == 0) return result;
+    result.known = true;
+    result.group = groups[0];
+    result.mask = static_cast<KAFFINITY>(process_mask);
+    return result;
+}
+
+static std::vector<WindowsGroupMask> queryWindowsCoreMasks() {
+    std::vector<WindowsGroupMask> cores;
+    DWORD rel_bytes = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &rel_bytes);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || rel_bytes == 0) return cores;
+    std::vector<uint8_t> rel_buffer(rel_bytes);
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore,
+                                         reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(rel_buffer.data()),
+                                         &rel_bytes)) {
+        return cores;
     }
-    return count;
+    uint8_t* current = rel_buffer.data();
+    uint8_t* end = current + rel_bytes;
+    while (current < end) {
+        auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(current);
+        if (info->Relationship == RelationProcessorCore && info->Processor.GroupCount > 0) {
+            cores.push_back({info->Processor.GroupMask[0].Group, info->Processor.GroupMask[0].Mask});
+        }
+        current += info->Size;
+    }
+    return cores;
+}
+
+// Fallback core numbering: the lowest logical index of the hardware core, so
+// SMT siblings share core_index exactly as CPU-set CoreIndex values do.
+static uint16_t fallbackCoreIndex(const std::vector<WindowsGroupMask>& cores, WORD group, uint32_t logical) {
+    KAFFINITY bit = 0;
+    if (!cpu_topology::affinityBit(logical, bit)) return static_cast<uint16_t>(logical);
+    for (const auto& core : cores) {
+        if (core.group != group || (core.mask & bit) == 0) continue;
+        for (uint32_t idx = 0; idx < sizeof(KAFFINITY) * 8; ++idx) {
+            KAFFINITY low = 0;
+            if (cpu_topology::affinityBit(idx, low) && (core.mask & low) != 0) return static_cast<uint16_t>(idx);
+        }
+    }
+    return static_cast<uint16_t>(logical);
 }
 
 static std::vector<CpuTarget> detectWindowsCpuTargets(PlatformInfo& platform) {
@@ -94,6 +148,7 @@ static std::vector<CpuTarget> detectWindowsCpuTargets(PlatformInfo& platform) {
 
     WORD active_groups = GetActiveProcessorGroupCount();
     if (active_groups == 0) {
+        platform.cpu_topology_source = "unavailable";
         return targets;
     }
 
@@ -112,48 +167,17 @@ static std::vector<CpuTarget> detectWindowsCpuTargets(PlatformInfo& platform) {
         }
     }
 
-    std::vector<WindowsGroupMask> smt_masks;
-    DWORD rel_bytes = 0;
-    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &rel_bytes);
-    if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && rel_bytes > 0) {
-        std::vector<uint8_t> rel_buffer(rel_bytes);
-        if (GetLogicalProcessorInformationEx(RelationProcessorCore,
-                                             reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(rel_buffer.data()),
-                                             &rel_bytes)) {
-            uint8_t* current = rel_buffer.data();
-            uint8_t* end = current + rel_bytes;
-            while (current < end) {
-                auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(current);
-                if (info->Relationship == RelationProcessorCore && info->Processor.GroupCount > 0) {
-                    WindowsGroupMask gm;
-                    gm.group = info->Processor.GroupMask[0].Group;
-                    gm.mask = info->Processor.GroupMask[0].Mask;
-                    smt_masks.push_back(gm);
-                }
-                current += info->Size;
-            }
-        }
-    }
-
-    auto markSmt = [&](CpuTarget& target) {
-        for (const auto& gm : smt_masks) {
-            if (gm.group != target.group) continue;
-            const KAFFINITY bit = (KAFFINITY)1ULL << target.logical_index;
-            if ((gm.mask & bit) == 0) continue;
-            const uint32_t threads_on_core = bitCount64(static_cast<uint64_t>(gm.mask));
-            target.smt = threads_on_core > 1;
-            if (target.smt) {
-                uint32_t earlier = 0;
-                for (uint32_t idx = 0; idx < target.logical_index; ++idx) {
-                    const KAFFINITY other_bit = (KAFFINITY)1ULL << idx;
-                    if ((gm.mask & other_bit) != 0) {
-                        ++earlier;
-                    }
-                }
-                target.smt_secondary = earlier > 0;
-            }
-            return;
-        }
+    const ProcessAffinity affinity = queryProcessAffinity();
+    uint32_t affinity_excluded = 0;
+    // A CPU this process can bind to: inside the affinity-mask width (32 bits
+    // in 32-bit builds, where a wider shift was undefined) and, in the
+    // restricted primary group, inside the process affinity mask.
+    auto usable = [&](WORD group, uint32_t logical) {
+        KAFFINITY bit = 0;
+        const bool ok = cpu_topology::affinityBit(logical, bit) &&
+                        (!affinity.known || group != affinity.group || (affinity.mask & bit) != 0);
+        if (!ok) ++affinity_excluded;
+        return ok;
     };
 
     uint32_t cpu_sets_reserved = 0;
@@ -171,42 +195,45 @@ static std::vector<CpuTarget> detectWindowsCpuTargets(PlatformInfo& platform) {
                 // unparks under load, so it stays a target and only sorts last.
                 if (cpu.Allocated && !cpu.AllocatedToTargetProcess) {
                     ++cpu_sets_reserved;
-                    current += info->Size;
-                    continue;
+                } else if (usable(cpu.Group, cpu.LogicalProcessorIndex)) {
+                    CpuTarget target;
+                    target.group = cpu.Group;
+                    target.logical_index = cpu.LogicalProcessorIndex;
+                    target.core_index = cpu.CoreIndex;
+                    target.numa_node = cpu.NumaNodeIndex;
+                    target.efficiency_class = cpu.EfficiencyClass;
+                    target.scheduling_class = cpu.SchedulingClass;
+                    target.parked = cpu.Parked != 0;
+                    // Core-type performance only; scheduling classes rank cores
+                    // of one type and SMT halving applies to weight alone.
+                    target.raw_performance = 100U + static_cast<uint32_t>(cpu.EfficiencyClass) * 20U;
+                    targets.push_back(target);
                 }
-
-                CpuTarget target;
-                target.group = cpu.Group;
-                target.logical_index = cpu.LogicalProcessorIndex;
-                target.core_index = cpu.CoreIndex;
-                target.numa_node = cpu.NumaNodeIndex;
-                target.efficiency_class = cpu.EfficiencyClass;
-                target.scheduling_class = cpu.SchedulingClass;
-                target.parked = cpu.Parked != 0;
-                target.raw_performance = 1000U + static_cast<uint32_t>(cpu.EfficiencyClass) * 100U +
-                                         static_cast<uint32_t>(cpu.SchedulingClass);
-                markSmt(target);
-                targets.push_back(target);
             }
             current += info->Size;
         }
     }
 
-    platform.cpu_sets_reserved = cpu_sets_reserved;
     platform.cpu_topology_source = targets.empty() ? "logical-processor-fallback" : "cpu-sets";
     if (targets.empty()) {
+        // Keep the reserved count: it explains why CPU sets yielded nothing.
+        affinity_excluded = 0;
+        const std::vector<WindowsGroupMask> cores = queryWindowsCoreMasks();
         for (WORD group = 0; group < active_groups; ++group) {
             const DWORD count = GetActiveProcessorCount(group);
             for (DWORD logical = 0; logical < count; ++logical) {
+                if (!usable(group, logical)) continue;
                 CpuTarget target;
                 target.group = group;
                 target.logical_index = static_cast<uint16_t>(logical);
-                target.core_index = static_cast<uint16_t>(logical);
-                markSmt(target);
+                target.core_index = fallbackCoreIndex(cores, group, logical);
                 targets.push_back(target);
             }
         }
     }
+    platform.cpu_sets_reserved = cpu_sets_reserved;
+    platform.cpu_affinity_excluded = affinity_excluded;
+    cpu_topology::assignSmtRoles(targets);
 
     std::sort(targets.begin(), targets.end(), [](const CpuTarget& lhs, const CpuTarget& rhs) {
         if (lhs.parked != rhs.parked) return !lhs.parked && rhs.parked;
@@ -231,7 +258,6 @@ static std::vector<CpuTarget> detectWindowsCpuTargets(PlatformInfo& platform) {
             weight = std::max<uint32_t>(40, weight / 2U);
         }
         target.weight = weight;
-        target.raw_performance = weight;
     }
 
     return targets;
@@ -265,11 +291,6 @@ static bool parseUintFile(const std::string& path, uint32_t& value) {
 
 static bool readCpuCapacity(uint32_t cpu, uint32_t& value) {
     const std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/cpu_capacity";
-    return parseUintFile(path, value);
-}
-
-static bool readCpuCoreId(uint32_t cpu, uint32_t& value) {
-    const std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/core_id";
     return parseUintFile(path, value);
 }
 
@@ -343,15 +364,20 @@ static uint32_t cpuSetCount(const cpu_set_t& set) {
 }
 
 static std::vector<CpuTarget> detectLinuxCpuTargets(PlatformInfo& platform) {
-    platform.cpu_topology_source = "sysfs";
     std::vector<CpuTarget> targets;
 
     cpu_set_t allowed;
     CPU_ZERO(&allowed);
     if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
+        platform.cpu_topology_source = "unavailable";
         return targets;
     }
+    const long online = sysconf(_SC_NPROCESSORS_ONLN);
+    const uint32_t allowed_count = cpuSetCount(allowed);
+    platform.cpu_affinity_excluded = online > static_cast<long>(allowed_count)
+                                         ? static_cast<uint32_t>(online - static_cast<long>(allowed_count)) : 0;
 
+    uint32_t sibling_lists = 0;
     for (uint32_t cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
         if (!CPU_ISSET(static_cast<int>(cpu), &allowed)) continue;
 
@@ -367,26 +393,28 @@ static std::vector<CpuTarget> detectLinuxCpuTargets(PlatformInfo& platform) {
             target.raw_performance = capacity;
         }
 
-        uint32_t core_id = 0;
-        if (readCpuCoreId(cpu, core_id)) {
-            target.core_index = static_cast<uint16_t>(core_id);
-        }
-
         uint32_t numa_node = 0;
         if (readCpuNumaNode(cpu, numa_node)) {
             target.numa_node = static_cast<uint16_t>(numa_node);
         }
 
+        // The core is named by its lowest hardware thread: unique across
+        // packages (core_id repeats per socket) and identical for all siblings.
+        // SMT roles are assigned afterwards from the allowed CPUs only.
         cpu_set_t siblings;
         if (buildSiblingSet(cpu, siblings)) {
             const uint32_t first = firstSiblingIndex(siblings);
-            target.smt = first != std::numeric_limits<uint32_t>::max() &&
-                         cpuSetCount(siblings) > 1;
-            target.smt_secondary = target.smt && cpu != first;
+            if (first != std::numeric_limits<uint32_t>::max()) {
+                target.core_index = static_cast<uint16_t>(first);
+                ++sibling_lists;
+            }
         }
 
         targets.push_back(target);
     }
+    // Without sibling lists every CPU is its own core: no SMT pairing.
+    platform.cpu_topology_source = sibling_lists ? "sysfs" : "affinity-only";
+    cpu_topology::assignSmtRoles(targets);
 
     std::sort(targets.begin(), targets.end(), [](const CpuTarget& lhs, const CpuTarget& rhs) {
         if (lhs.smt_secondary != rhs.smt_secondary) return !lhs.smt_secondary && rhs.smt_secondary;
@@ -465,13 +493,7 @@ static void initializeCpuTopologyCache() {
     info.cpu_targets = targets;
     info.cpu_cores = static_cast<uint32_t>(targets.size());
 
-    uint32_t min_weight = std::numeric_limits<uint32_t>::max();
-    uint32_t max_weight = 0;
-    for (const auto& target : targets) {
-        min_weight = std::min(min_weight, target.weight);
-        max_weight = std::max(max_weight, target.weight);
-    }
-    info.heterogeneous_cores = !targets.empty() && min_weight != max_weight;
+    info.heterogeneous_cores = cpu_topology::heterogeneousCores(targets);
 
     g_cached_cpu_targets = std::move(targets);
     g_cached_platform_info = std::move(info);
@@ -499,8 +521,8 @@ bool Platform::bindCurrentThread(const CpuTarget& target) {
     HANDLE hThread = GetCurrentThread();
     GROUP_AFFINITY affinity{};
     affinity.Group = target.group;
-    affinity.Mask = (KAFFINITY)1ULL << target.logical_index;
-    if (!SetThreadGroupAffinity(hThread, &affinity, nullptr)) {
+    if (!cpu_topology::affinityBit(target.logical_index, affinity.Mask) ||
+        !SetThreadGroupAffinity(hThread, &affinity, nullptr)) {
         return false;
     }
 

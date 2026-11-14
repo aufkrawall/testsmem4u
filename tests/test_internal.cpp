@@ -9,6 +9,7 @@
 #include "ConfigManager.h"
 #include "testsmem4u.h"
 #include "Platform.h"
+#include "CpuTopology.h"
 #include "PlatformMemoryInternal.h"
 #include "RunConfiguration.h"
 #include "HugePageSetup.h"
@@ -731,6 +732,7 @@ int main() try {
     testRandomAccessContracts();
     testCacheFlushGeometry();
     testCpuTopologyPairsSmtSiblings();
+    testSmtRolesFollowUsableCpus();
     testRegionSchedulerContracts();
     testSlowWorkerCannotStarveAChunk();
     testStreamingFillCacheContract();

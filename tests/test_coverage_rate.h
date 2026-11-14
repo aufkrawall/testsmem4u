@@ -25,6 +25,58 @@ void testCpuTopologyPairsSmtSiblings() {
 #endif
 }
 
+void testSmtRolesFollowUsableCpus() {
+    // Roles depend on which CPUs this process may use, not on the hardware core:
+    // with CPU 4 outside the affinity mask, CPU 5 is its core's only thread.
+    auto cpu = [](uint16_t group, uint16_t logical, uint16_t core) {
+        CpuTarget target;
+        target.group = group;
+        target.logical_index = logical;
+        target.core_index = core;
+        return target;
+    };
+    std::vector<CpuTarget> targets{cpu(0, 1, 0), cpu(0, 0, 0), cpu(0, 2, 2), cpu(0, 3, 2), cpu(0, 5, 4),
+                                   cpu(1, 0, 0)};
+    cpu_topology::assignSmtRoles(targets);
+    auto role = [&](uint16_t group, uint16_t logical) {
+        for (const auto& target : targets) {
+            if (target.group == group && target.logical_index == logical) {
+                return std::string(target.smt ? "smt-" : "solo-") + (target.smt_secondary ? "secondary" : "primary");
+            }
+        }
+        return std::string("missing");
+    };
+    expect(role(0, 0) == "smt-primary" && role(0, 1) == "smt-secondary" && role(0, 2) == "smt-primary" &&
+           role(0, 3) == "smt-secondary", "The lowest usable thread of a core is its primary");
+    expect(role(0, 5) == "solo-primary", "A thread whose lower sibling is excluded is a primary, not an SMT sibling");
+    expect(role(1, 0) == "solo-primary", "Equal core numbers in different groups are different cores");
+
+    // One core type with SMT-halved weights and preferred-core scheduling
+    // classes (as Windows reports for Ryzen) is still homogeneous.
+    std::vector<CpuTarget> homogeneous{cpu(0, 0, 0), cpu(0, 1, 0), cpu(0, 2, 2), cpu(0, 3, 2)};
+    for (size_t i = 0; i < homogeneous.size(); ++i) {
+        homogeneous[i].scheduling_class = static_cast<uint8_t>(6 - i / 2);
+        homogeneous[i].weight = 100 + homogeneous[i].scheduling_class * 2U;
+    }
+    cpu_topology::assignSmtRoles(homogeneous);
+    for (auto& target : homogeneous) target.weight /= target.smt_secondary ? 2U : 1U;
+    std::vector<CpuTarget> hybrid{cpu(0, 0, 0), cpu(0, 2, 2)};
+    hybrid[0].efficiency_class = 1;
+    hybrid[0].raw_performance = 120;
+    std::vector<CpuTarget> capacities{cpu(0, 0, 0), cpu(0, 1, 1)};
+    capacities[0].raw_performance = 1024;
+    capacities[1].raw_performance = 512;
+    expect(!cpu_topology::heterogeneousCores(homogeneous) && cpu_topology::heterogeneousCores(hybrid) &&
+               cpu_topology::heterogeneousCores(capacities) && !cpu_topology::heterogeneousCores({}),
+           "Only different core types (efficiency class, capacity) make a CPU heterogeneous");
+
+    uint32_t narrow = 0;
+    uint64_t wide = 0;
+    expect(cpu_topology::affinityBit(31, narrow) && narrow == 0x80000000U && !cpu_topology::affinityBit(32, narrow) &&
+               cpu_topology::affinityBit(63, wide) && wide == (uint64_t{1} << 63) && !cpu_topology::affinityBit(64, wide),
+           "Affinity bits beyond the mask width (32-bit builds) are rejected instead of shifted");
+}
+
 void testRegionSchedulerContracts() {
     using Snapshot = RegionScheduler::Snapshot;
     RegionScheduler scheduler(3, 2);
