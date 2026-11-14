@@ -335,6 +335,19 @@ reports errors and any peer RowHammer was active at its start or started during 
 the worker logs a WARN naming the test and region. Disturbers register
 active-then-start and observers snapshot start-then-active, so no overlap is missed.
 
+Windows console close/logoff/shutdown (fixed 2026-11-14; `src/Platform.cpp::
+consoleCtrlHandler`, `Platform::setFinalResultsPending`, `src/main.cpp` around
+`runTests`): Windows terminates the process when the handler returns, so a closed
+window lost the time breakdown and results (seen in the user's 64 MiB log). While
+results are pending the handler requests the stop, logs `Console close event`, and
+waits (no own timeout; Windows enforces its deadline) on a manual-reset event that
+main sets after `Logger::deinit` flushed the file. Set/clear order (reset before
+raising the flag, signal before dropping it) keeps a concurrent handler from missing
+the signal. Close events never force-quit; a second Ctrl+C/Break still does. Verified
+by the user closing a real 64 MiB run's window after one cycle: close line, time
+breakdown, coverage and results present. Not automatable in the test runner
+(CTRL_CLOSE_EVENT cannot be generated programmatically).
+
 Shutdown no longer dereferences a stack-context pointer asynchronously: a static
 atomic outlives every run. Worker exceptions and partial thread-start failures
 request stop and join all successfully started workers. ASan/UBSan do not establish
@@ -528,8 +541,21 @@ Modulo20 summaries identify their optimized paths without hot-loop logging.
 
 RowHammer checks the selected victim cache line promptly and checks an upcoming
 aggressor before overwriting it, so reusing a former victim cannot silently erase
-an earlier flip. Final sweeps still cover all other words. An explicit point budget
-is shared across available strides rather than silently expanded to one per stride.
+an earlier flip. Final sweeps still cover all other words. The point budget is
+shared across available strides rather than silently expanded to one per stride.
+
+Point budget (`include/TestEngineInternal.h::rowHammerPoints`, changed 2026-11-14):
+Parameter is a density in points per GiB of the invoked region (0 = 2048 = the
+long-standing 2 per MiB), floor one point per usable stride, cap 100000. Until then
+an explicit Parameter was an absolute count per region; the interleaved preset's 250
+cost ~90 s per chunk regardless of size (user's 64 MiB cycle 5.6 min, 2.9 min after
+the fix with RefreshStable then 90.8% of worker time) and scaled with worker count
+(more, smaller chunks). Old explicit counts now mean per GiB (changelog migration
+note). `testRowHammerPointsFollowDensity`; the engine regression expects one point
+per stride and polarity on 256 KiB (Parameter 1 gave 2 victims under the old rule).
+Logging: one INFO budget line per run (`g_rowhammer_budget_logged`, reset in
+`runTests`); per-stride `Sweeping stride` lines and a per-invocation summary
+(points, elapsed, errors, `[stopped]`) are DEBUG.
 
 Aggressor writes retain SFENCE, both line flushes and MFENCE each iteration;
 `flush_cache_lines` dispatches the two-address flush once. Victim/reuse checks and
@@ -551,7 +577,8 @@ small-window shares do not represent full-RAM runs.
 
 New layout: 37 entries; MirrorMove128 x6 (Parameter 40), RandomAccess x3 (2 passes),
 RefreshStable x3 (Time 1 = 4 x 10 s dwells; same 120 s total), MirrorMove (50),
-BlockMove (Time 50), MovingInversion (40), RowHammer (Parameter 250 points per chunk),
+BlockMove (Time 50), MovingInversion (40), RowHammer (Parameter 160 points per GiB,
+~250 per 28 GiB chunk),
 MovingInversionLFSR (25), Modulo20 (1), XOR SimpleTest and new Test18 (XOR, 4 MiB
 blocks, 32 repetitions per block: TestMem5's small-block construct), LFSRPattern x2
 each; Walking pair (Time 1 = one 64-bit sweep each, was 5) and MovingInversionWalking
@@ -569,8 +596,13 @@ TestMem5 anta777 Extreme (inspected locally): 31-entry sequence of only SimpleTe
 variants (7 of 13 on 4 MB blocks), MirrorMove x5 and MirrorMove128 x8; RefreshStable
 defined but not in the sequence; static per-thread blocks ("1680 MB x 14").
 Duration scales with RAM size / memory bandwidth (chunk = window / (workers + 2),
-per-worker bandwidth ~ total / workers), not with core count. Fixed-time entries
-(RefreshStable dwells, RowHammer with explicit points) dominate small windows.
+per-worker bandwidth ~ total / workers), not with core count. RefreshStable's
+fixed dwells (120 s per chunk per cycle) are the one deliberately time-based entry:
+~2% at 28 GiB, ~12% at 8 GiB, ~91% at 64 MiB (measured 2026-11-14: 172 s cycle).
+Kept: retention exposure needs wall time and the active half is tested throughout;
+scaling the dwell with chunk size was considered and not done (would change the
+Parameter meaning and weaken small-window retention). Quick small-window runs can
+lower Test11's Parameter.
 
 Open/stale-risk: no unstable-hardware time-to-first-error data for any layout or for
 aligned vs staggered (suggested protocol: deliberately marginal timing/voltage, several

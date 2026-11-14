@@ -1,5 +1,17 @@
 # Recent Log
 
+## 2026-11-14 - Small-window follow-up: RowHammer density, console close
+
+The user's 64 MiB run of the new preset took 5.6 min per cycle and the log had no
+time breakdown (window closed). Causes: RowHammer's explicit 250 points per chunk
+(~90 s per slice at any size; also scaled with worker count) and a console-close
+handler that returned immediately, so Windows killed the process before the summary.
+Fixes (bc9b259, f6d4026): Parameter = points per GiB (default unchanged at 2 per
+MiB; preset 160), per-stride lines to DEBUG; the close handler now waits for final
+results. User re-run: 2.9 min cycle, RefreshStable 90.8% (deliberately time-based,
+kept), close event logged and summary present. Suites (Windows 3 runners + CLI),
+clang-tidy (two test widening warnings fixed), WSL Linux x86_64 runner pass.
+
 ## 2026-11-14 - Detection speed: interleaved default preset, staggered start
 
 User goal: find unstable RAM quickly (28 GB in 2-4 h on the 5700X reference, without
