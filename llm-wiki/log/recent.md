@@ -1,5 +1,39 @@
 # Recent Log
 
+## 2026-11-14 - Review of the coverage-per-hour commits (97b4e84..196482b)
+
+An external review listed seven findings; all were confirmed against code and, where
+possible, reproduced before fixing (commits after 196482b).
+
+- RefreshStable's active half never varied: its background SimpleTest got the pass
+  mask pre-XORed into the base and again from `variation`, cancelling it. The
+  whole-buffer variation test missed it; now each half is compared (failed before).
+- SMT roles came from hardware masks, so under `taskset -c 1,3,5,7` (WSL) every
+  usable CPU was an unpaired "sibling" (topology test failed before). Also found:
+  Windows 11 let workers bind outside a `start /affinity` mask (old binary ran 16
+  workers under mask 0x2 without a bind warning). Windows reports Ryzen preferred
+  cores as scheduling classes 0-6, so `heterogeneous` was "yes" even after
+  excluding SMT weights; it now compares core types. musl's `_SC_NPROCESSORS_ONLN`
+  follows the affinity mask, so Linux affinity-excluded counts read sysfs `online`.
+  32-bit `KAFFINITY` shifts are bounded (UB beyond index 31, not reproducible here:
+  16-thread host).
+- Disabled sequence entries were claimed and released, letting a slow worker
+  re-claim its lagging chunk (hook-driven test failed before) and logging 0 s
+  completions (42 of them in a 64 MiB 2-cycle run of a `1,0,1` sequence; none now).
+- `testIndependentWorkerExecution` window now >= 4 native pages (64 KiB-page
+  kernels: one worker, hook deadlock; analysed, not run: no such host).
+- Time breakdown dropped stopped invocations' bytes (test failed before).
+- NT-fill probe ran CLFLUSHOPT unconditionally; CPUID fallback to CLFLUSH, both
+  paths measured equal on Zen 3.
+- Changelog topology bullet no longer cites removed region weights. RefreshStable's
+  per-chunk dwell share at small worker counts (+100% at `--cores 2`) is real but
+  not lost coverage; left for preset rebalancing.
+- Verification: `python build.py --tests` (baseline/AVX2/x86 + CLI), zig Linux
+  x86_64/x86 runners in WSL with and without `taskset`, all nine release targets,
+  bounded 64 MiB CLI runs on Windows (affinity 0x2 and full) and WSL. ARM64 runtime
+  and multi-group/>32-CPU Windows hosts untested.
+- Open: `CpuTarget::weight` has no consumer (cleanup candidate).
+
 ## 2026-11-14 - Coverage-per-hour fixes from the detection audit
 
 Verified the 2026-11-13 audit against code and measurements, then implemented the

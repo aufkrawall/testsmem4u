@@ -1,7 +1,8 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-11-14 for dynamic chunk scheduling, Windows CPU-set topology, pass
-data variation, full-width RandomAccess values, post-fill flush elision, LFSR output
+Last verified: 2026-11-14 for dynamic chunk scheduling (enabled entries only), CPU
+targets under restricted affinity (Windows `start /affinity`, WSL `taskset`), pass
+data variation (including RefreshStable's active half), full-width RandomAccess values, post-fill flush elision, LFSR output
 mixing (SSE2/AVX2 lanes) and cycle timing logs (Windows and WSL suites, bounded
 64 MiB-1 GiB runs); 2026-10-14 for RandomAccess false-positive contracts, 32-bit full-width
 inversion, x86 flush geometry, release cross-builds and Linux lock-before-prefault
@@ -16,10 +17,13 @@ long-run stalls; low for tested native progress/accounting paths.
   dynamically by CPU-bound workers, monitoring, termination, exception containment.
 - `src/PlatformMemory.cpp::allocateMemoryRAII` and `include/PreparationStatus.h`:
   prefaulting and exception-safe preparation lifetime.
-- `include/RegionScheduler.h`: per-chunk completed sequence position, chunk claims
-  (least advanced idle chunk first excluding the worker's just-finished chunk, ties
-  to the longest idle), `ChunkLease` and the
-  status line's least advanced chunk; the minimum defines completed cycles.
+- `include/RegionScheduler.h`: per-chunk completed position in enabled sequence
+  entries (`EnabledSequence` maps it to cycle and original sequence index), chunk
+  claims (least advanced idle chunk first excluding the worker's just-finished chunk,
+  ties to the longest idle), `ChunkLease` and the status line's least advanced chunk;
+  the minimum defines completed cycles.
+- `src/PlatformCpu.cpp` and `include/CpuTopology.h`: usable CPU targets, SMT roles,
+  core-type heterogeneity, affinity-mask bits; worker binding.
 - `include/TestProgress.h`, `TestContext` and `VerificationProgress` in
   `include/TestEngineInternal.h`: live per-worker totals, scoped binding, and
   leaf-only verified-byte/error publication; joined totals are exact.
@@ -220,20 +224,47 @@ them drift (spread ~17 tests over 3000 items); two spares add a choice and hold 
 worst chunk at 98% of average with a spread of about 6. Real run after the fix
 (1 GiB, 16 threads, 40 SimpleTest cycles): 18 chunks within 40..43, 7.8-8.2 s
 instead of 14.7-15.5 s. Cost: RefreshStable's fixed dwell runs once per chunk, so
-its per-cycle wall time is (workers + 2) / workers of the static layout.
+its per-cycle worker time is (workers + 2) / workers of the static layout: +12.5% at
+16 workers, but +100% at `--cores 2` (4 chunks, two 120 s waves per cycle with
+`default.cfg`). The dwell is not idle (the active half runs SimpleTest), so this is
+a share question for preset rebalancing, not lost coverage; shortening the dwell
+would weaken retention. Open, deliberately unchanged 2026-11-14.
 
 Why: static weighted regions were measured (2026-11-13, 5700X, 16 workers) to finish
 tests at very different rates. SMT siblings with half-size regions (weight 50)
 finished each test about twice as fast as full-size ones, and even with equal
 regions OS noise spread per-worker times from 42 s to 82 s. The slowest region
 bounded completed cycles and its cells were tested about half as often. With
-chunks, a slow CPU just completes fewer invocations. CPU weights no longer size
-memory (they only feed the `heterogeneous` diagnostic).
+chunks, a slow CPU just completes fewer invocations. `CpuTarget::weight` no longer
+sizes memory and has no consumer since 2026-11-14 (cleanup candidate).
+
+Worker CPU targets (`src/PlatformCpu.cpp`, `include/CpuTopology.h`, verified
+2026-11-14): only CPUs the process can bind to are targets. Linux iterates
+`sched_getaffinity`; Windows skips CPU sets reserved for other processes, CPUs
+outside the process affinity mask of its primary group (Windows 11 accepted thread
+binds outside a `start /affinity` mask, so the old code silently overrode it), and
+logical indices beyond the `KAFFINITY` width (32 in 32-bit builds, where the shift
+was undefined). SMT roles are assigned from the targets afterwards
+(`assignSmtRoles`): the lowest usable thread of a (group, core_index) core is its
+primary, so a thread whose sibling is excluded is not deprioritised. Linux names a
+core by its first hardware sibling (core_id repeats per socket); the Windows
+fallback by the lowest bit of its core mask. Targets sort primary threads (and
+P-cores) first, which matters when `--cores` < usable CPUs. `heterogeneous` means
+different core types (efficiency class or cpu_capacity): Windows reports AMD
+preferred-core ranking as scheduling classes 0-6 on identical 5700X cores, and SMT
+weights are halved, so weight comparisons always said yes. Linux affinity-excluded
+counts come from `/sys/devices/system/cpu/online` (musl's `_SC_NPROCESSORS_ONLN`
+counts the affinity mask).
 
 Each chunk executes the configured sequence in order. Completed cycles are the
 minimum across chunks. Faster workers continue real tests, including extra cycles,
-until every chunk completes the requested count. Disabled sequence entries advance
-progress without running; an empty/all-disabled or undefined sequence fails closed.
+until every chunk completes the requested count. Disabled sequence entries are not
+scheduled: positions count enabled entries only, and logs, status, diagnostics and
+timings use the original sequence index. Walking them as zero-time claims (until
+2026-11-14) replaced the worker's just-finished chunk on every release, so a slow
+worker could re-claim its lagging chunk; they also logged 0 s completions
+(`testDisabledEntriesAreNotScheduled` reproduces the re-claim with hooks). An
+empty/all-disabled or undefined sequence fails closed.
 The displayed test is the least advanced chunk's next test, not a claim that all
 chunks run that test. Mid-test cancellation does not publish a completed boundary
 (`ChunkLease` returns the chunk unpublished on every exit path).
@@ -249,8 +280,11 @@ both pair words (keeps complements); BlockMove adds mask(v, 0) to its existing
 per-repetition step; MovingInversion uses value/complement pairs with a new value
 per pair (r / 2); LFSRPattern/MovingInversionLFSR use `regionSeed` (configured seed,
 variation, repetition and a chunk/sub-block offset salt; zero state replaced);
-Modulo20 and RefreshStable vary their base value (both polarities kept), and the
-retention background test inherits the variation. Unchanged on purpose: uniform
+Modulo20 and RefreshStable vary their base value (both polarities kept). The
+retention background test gets the already-varied base with `variation = 0`: also
+passing the pass variation made `runSimpleTest` XOR the same mask again and cancel
+it, so the active half never changed (fixed 2026-11-14; the variation test now
+compares each half of the region separately). Unchanged on purpose: uniform
 SimpleTest values, walking bits, MovingInversionWalking, RowHammer (already seeded
 from `std::random_device`). RandomAccess uses `randomAccessValue` (below).
 Why: before this, every cycle and loop rewrote identical bits (BlockMove's 200 loops,
@@ -362,7 +396,9 @@ CPUs such as Pentium M could update a cached line in place, but lack SSE4.1).
 Measured with `tools/probes/nt_fill_cache_probe.cpp` on Zen 3: reads after an AVX2
 or MOVNTI fill of clean or dirty cached lines take DRAM time, equal to after
 CLFLUSHOPT (11.3-13.7 us per 256 KiB) against 1.9 us when cached. AMD's own manual
-text was not retrieved; run the probe on new CPU families. Kept flushes: after any
+text was not retrieved; run the probe on new CPU families. The probe uses CLFLUSH
+where CPUID lacks CLFLUSHOPT (Haswell/Broadwell, pre-Zen; it used to SIGILL there)
+and `--clflush` forces it; both measured equal on Zen 3. Kept flushes: after any
 load pass (verify sweeps, `invert_array`, whose loads also train prefetchers that
 could refill lines), march read/replace, memmove/memcpy, Modulo20 disturbance,
 RefreshStable before verifying the held half (its 64-byte split is not page-aligned,
@@ -506,10 +542,13 @@ and [AMD family-17h CPUID reference](https://www.amd.com/content/dam/amd/en/docu
 ### Runtime observations
 
 - Startup logs describe independent scheduling and active retention. Debug logs
-  (`--debug`) identify the CPU topology source, chunk layout, each worker's CPU/core/
-  efficiency class/SMT role, and per-chunk test starts and elapsed test durations, plus per-invocation summaries from March/LFSRPattern (seed, errors,
+  (`--debug`) identify the CPU topology source (`cpu-sets`, `logical-processor-
+  fallback`, `sysfs`, `affinity-only`), usable/SMT-sibling/reserved/affinity-excluded
+  CPU counts, core-type heterogeneity, chunk layout, how many sequence entries are
+  scheduled, each worker's CPU/core/efficiency and scheduling class/SMT role/parked
+  state, and per-chunk test starts and elapsed test durations, plus per-invocation summaries from March/LFSRPattern (seed, errors,
   unverified, time), Modulo20 (per polarity), RefreshStable (per dwell: actual dwell,
-  active chunks, full sweeps, cursor), RandomAccess (access count), and BlockMove
+  active-half base, active chunks, full sweeps, cursor), RandomAccess (access count), and BlockMove
   (per direction). `[stopped]` marks cancelled invocations.
 - Preparation debug logs record requested bytes/lock/large-page choices, the
   resulting allocation, and Linux prefault byte/page counts and elapsed time.
@@ -521,7 +560,8 @@ and [AMD family-17h CPUID reference](https://www.amd.com/content/dam/amd/en/docu
   run-end `Time breakdown` header (wall, workers, chunks, chunk MiB, total worker
   seconds) plus one line per sequence entry: share of worker time, completed runs,
   average seconds, `first` (seconds after start of its first invocation), verified
-  GiB, and `stopped=n/s` for invocations cut short by the stop. Shares include
+  GiB (including bytes of stopped invocations, which count in the run total; they
+  were dropped until 2026-11-14), and `stopped=n/s` for invocations cut short. Shares include
   faster workers' extra work after the target, so measure composition with several
   cycles. Workers record once per invocation under one mutex; formatting returns
   strings so `testSequenceTimingSummary` checks it without log capture.

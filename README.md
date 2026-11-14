@@ -269,8 +269,8 @@ chunk other than the one it just finished. Slower CPUs (SMT siblings, efficiency
 therefore run fewer tests instead of leaving part of the window tested less often.
 The displayed test/cycle represents the least advanced chunk; other chunks can
 already be in later tests. A completed cycle means every chunk completed the whole
-sequence. Faster workers continue genuine tests until all chunks finish the
-requested cycle count. Stop and infrastructure failures never count incomplete
+sequence (disabled entries are skipped). Faster workers continue genuine tests
+until all chunks finish the requested cycle count. Stop and infrastructure failures never count incomplete
 cycles. Debug logs identify the chunk layout, each worker's CPU, and every test
 transition with its chunk and duration. Every log (no `--debug` needed) records
 when each cycle completed on every chunk and ends with a `Time breakdown`: per
@@ -297,9 +297,13 @@ their byte counts last advanced.
 A fill or disturbance phase can perform useful work before the next verification;
 an unchanged verified-byte count alone does not establish that a worker is stuck.
 
-Defaults use all available CPU targets and 85% of total physical RAM. For concurrent
-desktop use, select fewer workers with `--cores` and a smaller window with
-`--memory` to leave more resources for other applications.
+Defaults use all available CPU targets and 85% of total physical RAM. CPU targets
+are the logical CPUs the process may run on, so a CPU affinity restriction
+(`start /affinity` on Windows, `taskset` or cpusets on Linux) limits the workers.
+With fewer workers than targets, workers take separate physical cores (P-cores
+first) before SMT siblings. For concurrent desktop use, select fewer workers with
+`--cores` and a smaller window with `--memory` to leave more resources for other
+applications.
 
 ### Linux: swap and swappiness
 
