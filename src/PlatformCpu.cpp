@@ -313,9 +313,9 @@ static bool readCpuNumaNode(uint32_t cpu, uint32_t& value) {
     return found;
 }
 
-static bool buildSiblingSet(uint32_t cpu, cpu_set_t& sibling_set) {
-    CPU_ZERO(&sibling_set);
-    const std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings_list";
+// Parses a sysfs CPU list such as "0-3,8,10-11".
+static bool readCpuListFile(const std::string& path, cpu_set_t& set) {
+    CPU_ZERO(&set);
     std::ifstream in(path);
     if (!in.is_open()) return false;
 
@@ -330,18 +330,23 @@ static bool buildSiblingSet(uint32_t cpu, cpu_set_t& sibling_set) {
         size_t dash = token.find('-');
         if (dash == std::string::npos) {
             uint32_t idx = static_cast<uint32_t>(std::strtoul(token.c_str(), nullptr, 10));
-            if (idx < CPU_SETSIZE) CPU_SET(static_cast<int>(idx), &sibling_set);
+            if (idx < CPU_SETSIZE) CPU_SET(static_cast<int>(idx), &set);
         } else {
             uint32_t start = static_cast<uint32_t>(std::strtoul(token.substr(0, dash).c_str(), nullptr, 10));
             uint32_t end = static_cast<uint32_t>(std::strtoul(token.substr(dash + 1).c_str(), nullptr, 10));
             for (uint32_t idx = start; idx <= end && idx < CPU_SETSIZE; ++idx) {
-                CPU_SET(static_cast<int>(idx), &sibling_set);
+                CPU_SET(static_cast<int>(idx), &set);
             }
         }
         if (next == std::string::npos) break;
         pos = next + 1;
     }
     return true;
+}
+
+static bool buildSiblingSet(uint32_t cpu, cpu_set_t& sibling_set) {
+    return readCpuListFile("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings_list",
+                           sibling_set);
 }
 
 static uint32_t firstSiblingIndex(const cpu_set_t& set) {
@@ -353,16 +358,6 @@ static uint32_t firstSiblingIndex(const cpu_set_t& set) {
     return std::numeric_limits<uint32_t>::max();
 }
 
-static uint32_t cpuSetCount(const cpu_set_t& set) {
-    uint32_t count = 0;
-    for (uint32_t idx = 0; idx < CPU_SETSIZE; ++idx) {
-        if (CPU_ISSET(static_cast<int>(idx), &set)) {
-            ++count;
-        }
-    }
-    return count;
-}
-
 static std::vector<CpuTarget> detectLinuxCpuTargets(PlatformInfo& platform) {
     std::vector<CpuTarget> targets;
 
@@ -372,10 +367,16 @@ static std::vector<CpuTarget> detectLinuxCpuTargets(PlatformInfo& platform) {
         platform.cpu_topology_source = "unavailable";
         return targets;
     }
-    const long online = sysconf(_SC_NPROCESSORS_ONLN);
-    const uint32_t allowed_count = cpuSetCount(allowed);
-    platform.cpu_affinity_excluded = online > static_cast<long>(allowed_count)
-                                         ? static_cast<uint32_t>(online - static_cast<long>(allowed_count)) : 0;
+    // Online CPUs outside the affinity mask/cpuset. Not sysconf: musl derives
+    // _SC_NPROCESSORS_ONLN from sched_getaffinity, so it never shows a gap.
+    cpu_set_t online;
+    if (readCpuListFile("/sys/devices/system/cpu/online", online)) {
+        uint32_t excluded = 0;
+        for (uint32_t cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+            excluded += CPU_ISSET(static_cast<int>(cpu), &online) && !CPU_ISSET(static_cast<int>(cpu), &allowed);
+        }
+        platform.cpu_affinity_excluded = excluded;
+    }
 
     uint32_t sibling_lists = 0;
     for (uint32_t cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
