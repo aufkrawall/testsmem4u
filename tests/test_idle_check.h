@@ -95,7 +95,13 @@ void testIdleChunkCheckInSuite() {
         configs[id].time_percent = 1;
         configs[id].parameter = 1;
     }
+    const uint32_t usable_cpus = Platform::detectPlatform().cpu_cores;
     for (uint32_t cores : {2U, 1U}) {
+        if (cores > 1 && usable_cpus < cores) {
+            std::cout << "[SKIP] Idle-chunk multi-worker case requires two usable CPUs (found "
+                      << usable_cpus << ")\n";
+            continue;
+        }
         config.cores = cores;
         TestContext ctx;
         std::atomic<unsigned> checks{0};

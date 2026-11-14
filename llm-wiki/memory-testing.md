@@ -1,7 +1,8 @@
 # Memory testing: workload and coverage
 
 Last verified: 2026-11-15 for bounded Line Stride traversal (exactly-once word
-writes, boundary sentinels and large-stride regressions); 2026-11-14 for the
+writes, boundary sentinels and large-stride regressions) and one-CPU regression
+portability; 2026-11-14 for the
 TestMem5-inspired additions (real mirror moves,
 per-beat complement pattern, Line Stride, idle-chunk checks, time limit, preset OS
 reserve; Windows baseline/AVX2/x86 + CLI, WSL Linux x86_64/x86, ASan/UBSan,
@@ -566,6 +567,14 @@ holder touches it and the scheduler mutex orders claim/release. Errors note
 cross-chunk RowHammer (started since, or running). Run-end INFO line: checks, GiB,
 idle min/avg/max, errors, skips; `--debug` logs each check. Cost: one read pass plus
 a flush walk per entry (~1% of verified bytes in a 1 GiB default.cfg run).
+
+Regression portability (`tests/test_idle_check.h::testIdleChunkCheckInSuite`,
+`tests/test_time_limit.h::testWizardTimeLimit`; fixed 2026-11-15): requested workers
+are capped by the usable CPU targets, so requesting two does not guarantee a peer
+under one-CPU affinity. The idle test always checks the single-worker skip contract
+and runs its multi-worker corruption injection only with two usable CPUs; a single
+`[SKIP]` line states the available count otherwise. The wizard time-input fixture
+requests one thread so CPU clamping cannot fail an unrelated parsing assertion.
 
 RandomAccess issues up to 16 independent locations in disjoint address bands,
 checks the original, inverted, and restored values, and flushes/fences writes as

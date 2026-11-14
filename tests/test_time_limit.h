@@ -44,9 +44,10 @@ void testWizardTimeLimit() {
     WizardFixture fixture;
     std::string prompts;
     // Memory plus time: the cycle prompt is skipped (one fewer answer line).
-    Config config = fixture.run("50MB30m\n2\ny\nn\nn\n", prompts);
+    // A single requested thread keeps this parsing check valid under CPU affinity limits.
+    Config config = fixture.run("50MB30m\n1\ny\nn\nn\n", prompts);
     expect(config.memory_window_mb == 50 && config.memory_window_percent == 0 && config.time_limit_seconds == 1800 &&
-               config.cycles == 0 && config.cores == 2 && config.use_locked_memory && !config.use_large_pages &&
+               config.cycles == 0 && config.cores == 1 && config.use_locked_memory && !config.use_large_pages &&
                !config.halt_on_error,
            "Wizard '50MB30m' sets 50 MB, a 30 minute limit and no cycle limit");
     expect(prompts.find("Time limit 30m") != std::string::npos &&

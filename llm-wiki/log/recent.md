@@ -20,6 +20,23 @@ units with warnings as errors. A bounded one-worker, one-cycle CLI run with a 1 
 and `Line Stride=4294967295` verifies exactly 1,048,576 bytes with zero errors and
 the stride-bound DEBUG line. Wiki link/orphan checks pass.
 
+The same review reproduced two false regression failures under one-CPU process
+affinity: the time-limit wizard fixture demanded two threads, and the idle-chunk
+test demanded a peer even though the engine correctly capped workers to one.
+The wizard fixture now requests one thread. The idle test always exercises its
+single-worker case and reports `[SKIP]` with the usable CPU count when its
+multi-worker injection cannot run. Production CPU selection is unchanged; these
+are test portability fixes, so the added diagnostic is in the test runner only.
+
+Verification: before the test fix, the one-CPU baseline reproduced exactly those
+two failures. Afterwards `python build.py --tests` passes normally (baseline,
+AVX2, x86, 23 Python checks passed and one skipped), so multi-worker corruption
+injection still runs. All three native runners also pass with an inherited
+one-CPU process affinity mask, each reporting exactly one unavailable idle-check
+peer case. Clang-tidy passes the changed test translation unit with warnings as
+errors; production units passed the earlier full run. Wiki link/orphan checks
+and the semantic review of the updated contracts pass.
+
 ## 2026-11-14 - TestMem5-inspired additions and time-limited runs
 
 The user asked to compare an external TestMem5 anta777 Extreme analysis with
