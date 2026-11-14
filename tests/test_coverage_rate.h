@@ -51,15 +51,13 @@ void testSmtRolesFollowUsableCpus() {
     expect(role(0, 5) == "solo-primary", "A thread whose lower sibling is excluded is a primary, not an SMT sibling");
     expect(role(1, 0) == "solo-primary", "Equal core numbers in different groups are different cores");
 
-    // One core type with SMT-halved weights and preferred-core scheduling
-    // classes (as Windows reports for Ryzen) is still homogeneous.
+    // One core type with SMT siblings and preferred-core scheduling classes (as
+    // Windows reports for Ryzen) is still homogeneous.
     std::vector<CpuTarget> homogeneous{cpu(0, 0, 0), cpu(0, 1, 0), cpu(0, 2, 2), cpu(0, 3, 2)};
     for (size_t i = 0; i < homogeneous.size(); ++i) {
         homogeneous[i].scheduling_class = static_cast<uint8_t>(6 - i / 2);
-        homogeneous[i].weight = 100 + homogeneous[i].scheduling_class * 2U;
     }
     cpu_topology::assignSmtRoles(homogeneous);
-    for (auto& target : homogeneous) target.weight /= target.smt_secondary ? 2U : 1U;
     std::vector<CpuTarget> hybrid{cpu(0, 0, 0), cpu(0, 2, 2)};
     hybrid[0].efficiency_class = 1;
     hybrid[0].raw_performance = 120;

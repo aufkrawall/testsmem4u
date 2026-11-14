@@ -27,10 +27,10 @@ inline void assignSmtRoles(std::vector<CpuTarget>& targets) {
 }
 
 // Heterogeneity means different core types: Windows efficiency classes or
-// Linux cpu_capacity (raw_performance, never SMT-halved). Weights are not
-// compared: SMT siblings get halved weights and Windows scheduling classes rank
-// otherwise identical cores (AMD preferred cores report 0-6 on a Ryzen 7
-// 5700X), so either made every such CPU look heterogeneous.
+// Linux cpu_capacity (raw_performance). SMT roles and Windows scheduling
+// classes are not compared: scheduling classes rank otherwise identical cores
+// (AMD preferred cores report 0-6 on a Ryzen 7 5700X), and comparing the old
+// SMT-halved weights made every SMT CPU look heterogeneous.
 inline bool heterogeneousCores(const std::vector<CpuTarget>& targets) {
     return std::any_of(targets.begin(), targets.end(), [&](const CpuTarget& target) {
         return target.efficiency_class != targets.front().efficiency_class ||

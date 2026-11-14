@@ -249,21 +249,6 @@ static std::vector<CpuTarget> detectWindowsCpuTargets(PlatformInfo& platform) {
         return lhs.logical_index < rhs.logical_index;
     });
 
-    const uint8_t best_efficiency = targets.empty() ? 0 : targets.front().efficiency_class;
-    for (auto& target : targets) {
-        uint32_t weight = 100;
-        if (best_efficiency > 0 || target.efficiency_class > 0) {
-            weight += static_cast<uint32_t>(target.efficiency_class) * 20U;
-        }
-        if (target.scheduling_class > 0) {
-            weight += static_cast<uint32_t>(target.scheduling_class) * 2U;
-        }
-        if (target.smt_secondary) {
-            weight = std::max<uint32_t>(40, weight / 2U);
-        }
-        target.weight = weight;
-    }
-
     return targets;
 }
 
@@ -427,17 +412,6 @@ static std::vector<CpuTarget> detectLinuxCpuTargets(PlatformInfo& platform) {
         if (lhs.numa_node != rhs.numa_node) return lhs.numa_node < rhs.numa_node;
         return lhs.logical_index < rhs.logical_index;
     });
-
-    uint32_t best = targets.empty() ? 100 : targets.front().raw_performance;
-    if (best == 0) best = 100;
-    for (auto& target : targets) {
-        uint32_t weight = static_cast<uint32_t>((static_cast<uint64_t>(target.raw_performance) * 100ULL) / best);
-        if (weight < 40) weight = 40;
-        if (target.smt_secondary) {
-            weight = std::max<uint32_t>(40, weight / 2U);
-        }
-        target.weight = weight;
-    }
 
     return targets;
 }

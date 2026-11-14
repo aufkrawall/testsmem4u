@@ -19,8 +19,10 @@ struct CpuTarget {
     bool smt = false;
     bool smt_secondary = false;
     bool parked = false;
+    // Core-type performance (Windows efficiency class, Linux cpu_capacity);
+    // orders targets and detects heterogeneous CPUs. Memory is split into equal
+    // chunks pulled dynamically, so there is no per-CPU weight.
     uint32_t raw_performance = 100;
-    uint32_t weight = 100;
 };
 
 struct PlatformInfo {
