@@ -1,5 +1,6 @@
 #pragma once
 #include "Types.h"
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -90,6 +91,61 @@ public:
                     std::snprintf(line + used, sizeof(line) - static_cast<size_t>(used), " stopped=%llu/%.1fs",
                                   static_cast<unsigned long long>(item.stopped), item.stopped_seconds);
                 }
+            }
+            lines.emplace_back(line);
+        }
+        return lines;
+    }
+
+    // Totals per test function across all its sequence entries, in order of
+    // first appearance. Interleaved presets list a function several times per
+    // cycle; this answers how much of the run each kind of stress got and how
+    // soon it first ran without summing per-entry lines by hand.
+    std::vector<std::string> functionSummary(const std::vector<uint32_t>& sequence,
+                                             const std::map<uint32_t, TestConfig>& configs) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        struct Total {
+            std::string name;
+            size_t entries = 0;
+            Entry sum;
+        };
+        std::vector<Total> totals;
+        double all = 0;
+        for (size_t i = 0; i < entries_.size() && i < sequence.size(); ++i) {
+            const auto config = configs.find(sequence[i]);
+            if (config == configs.end() || !config->second.enabled) continue;
+            const Entry& item = entries_[i];
+            all += item.seconds + item.stopped_seconds;
+            auto total = std::find_if(totals.begin(), totals.end(),
+                                      [&](const Total& t) { return t.name == config->second.function; });
+            if (total == totals.end()) {
+                totals.push_back({config->second.function, 0, Entry{}});
+                total = totals.end() - 1;
+            }
+            ++total->entries;
+            total->sum.runs += item.runs;
+            total->sum.stopped += item.stopped;
+            total->sum.seconds += item.seconds;
+            total->sum.stopped_seconds += item.stopped_seconds;
+            total->sum.bytes += item.bytes;
+            if (item.first_start >= 0 && (total->sum.first_start < 0 || item.first_start < total->sum.first_start)) {
+                total->sum.first_start = item.first_start;
+            }
+        }
+        std::vector<std::string> lines;
+        lines.emplace_back("Time by function (entries = sequence slots per cycle; first = seconds after start):");
+        char line[256];
+        for (const Total& total : totals) {
+            const Entry& item = total.sum;
+            if (item.runs == 0 && item.stopped == 0) {
+                std::snprintf(line, sizeof(line), "  %-22s entries=%zu not reached", total.name.c_str(), total.entries);
+            } else {
+                const double share = all > 0 ? 100.0 * (item.seconds + item.stopped_seconds) / all : 0;
+                std::snprintf(line, sizeof(line),
+                              "  %-22s share=%5.1f%% entries=%zu runs=%llu stopped=%llu first=%.1fs verified=%.2fGiB",
+                              total.name.c_str(), share, total.entries, static_cast<unsigned long long>(item.runs),
+                              static_cast<unsigned long long>(item.stopped), item.first_start,
+                              static_cast<double>(item.bytes) / (1024.0 * 1024.0 * 1024.0));
             }
             lines.emplace_back(line);
         }

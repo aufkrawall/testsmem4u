@@ -743,6 +743,7 @@ int main() try {
     testScheduledPassesUseNewData();
     testSequenceOccurrencesNumberPasses();
     testRepeatedEntriesUseNewData();
+    testFunctionTimingSummary();
     testUniformMarchSpecialization();
     testLfsrParallelGeneration();
     testTrafficKernelSpecializations();

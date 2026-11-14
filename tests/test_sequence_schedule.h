@@ -52,3 +52,30 @@ void testRepeatedEntriesUseNewData() {
     expect(result.cycles_completed == 2 && result.total_errors() == 0 && fills == 4 && first_words.size() == 4,
            "Two occurrences of one test in each of two cycles write four different streams");
 }
+
+void testFunctionTimingSummary() {
+    using Clock = SequenceTimings::Clock;
+    const Clock::time_point start{};
+    auto at = [&](double seconds) {
+        return start + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds));
+    };
+    // Sequence 2,4,2,6,8: test 2 (MirrorMove128) twice, 8 disabled, 6 never ran.
+    SequenceTimings timings(5, start);
+    timings.record(0, at(5), at(8), uint64_t{1} << 30, true);
+    timings.record(1, at(0), at(4), uint64_t{1} << 29, true);
+    timings.record(2, at(1), at(2), uint64_t{1} << 30, false);
+    std::map<uint32_t, TestConfig> configs;
+    configs[2].function = "MirrorMove128";
+    configs[4].function = "RandomAccess";
+    configs[6].function = "Modulo20";
+    configs[8].function = "RowHammer";
+    configs[8].enabled = false;
+    const auto lines = timings.functionSummary({2, 4, 2, 6, 8}, configs);
+    expect(lines.size() == 4 && lines[0].find("Time by function") == 0, "One line per enabled function plus header");
+    expect(lines[1].find("MirrorMove128") != std::string::npos && lines[1].find("share= 50.0%") != std::string::npos &&
+               lines[1].find("entries=2 runs=1 stopped=1 first=1.0s verified=2.00GiB") != std::string::npos,
+           "Repeated entries of a function add up, with the earliest start of any of them");
+    expect(lines[2].find("RandomAccess") != std::string::npos && lines[2].find("share= 50.0%") != std::string::npos &&
+               lines[3].find("Modulo20") != std::string::npos && lines[3].find("not reached") != std::string::npos,
+           "Functions appear in sequence order; unreached ones are named and disabled ones omitted");
+}

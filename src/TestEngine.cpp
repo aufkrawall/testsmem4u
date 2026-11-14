@@ -680,6 +680,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                                             std::chrono::duration<double>(end - start).count())) {
         LOG_INFO("%s", line.c_str());
     }
+    for (const auto& line : timings.functionSummary(seq, configs)) LOG_INFO("%s", line.c_str());
     LOG_INFO("Coverage: %llu complete cycles across every memory chunk",
              static_cast<unsigned long long>(result.cycles_completed));
     result.duration_seconds = std::chrono::duration<double>(end - start).count();
