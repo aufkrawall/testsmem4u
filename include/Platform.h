@@ -33,6 +33,9 @@ struct PlatformInfo {
     // Static literal naming how targets were discovered (diagnostics only).
     const char* cpu_topology_source = "unknown";
     uint32_t cpu_sets_reserved = 0; // Windows CPU sets reserved for other processes
+    // Every usable Windows CPU is reserved for another process, so workers run
+    // on those reserved CPUs (the affinity mask allows no others).
+    bool cpu_sets_reserved_only = false;
     // Online CPUs this process cannot bind to: outside its affinity mask or
     // cpuset, or (32-bit Windows builds) beyond the 32-bit affinity width.
     uint32_t cpu_affinity_excluded = 0;

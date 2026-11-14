@@ -395,6 +395,11 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                   platform_info.cpu_topology_source, platform_info.cpu_cores, smt_siblings,
                   platform_info.cpu_sets_reserved, platform_info.cpu_affinity_excluded,
                   platform_info.heterogeneous_cores ? "yes" : "no", threads);
+        if (platform_info.cpu_sets_reserved_only) {
+            LOG_WARN("CPU topology: all %u CPUs this process may use are reserved for other processes (Windows CPU "
+                     "sets); workers run on them anyway because the affinity mask allows no other CPU",
+                     platform_info.cpu_cores);
+        }
     }
     LOG_DEBUG("Chunks: count=%zu first-bytes=%zu last-bytes=%zu (equal page-aligned slices served dynamically)",
               layout.size(), layout.front().size, layout.back().size);

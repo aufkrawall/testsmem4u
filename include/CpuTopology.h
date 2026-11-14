@@ -38,6 +38,48 @@ inline bool heterogeneousCores(const std::vector<CpuTarget>& targets) {
     });
 }
 
+// One Windows CPU-set record reduced to what worker selection needs.
+struct CpuSetRecord {
+    CpuTarget target;      // topology fields from the record
+    bool reserved = false; // Allocated for exclusive use by another process
+};
+
+struct CpuSetSelection {
+    std::vector<CpuTarget> targets;
+    uint32_t reserved = 0;          // records reserved for other processes
+    uint32_t affinity_excluded = 0; // unreserved records this process cannot bind to
+    // Every usable CPU is reserved for another process (the affinity mask allows
+    // no other CPU), so the targets are those reserved CPUs.
+    bool reserved_only = false;
+};
+
+// Workers use unreserved CPUs the process may bind to. Only when the affinity
+// mask leaves nothing else do they fall back to usable reserved CPUs, keeping
+// the CPU-set topology: the previous logical-processor fallback re-added those
+// CPUs anyway, dropped core pairing and efficiency classes, and still reported
+// them as skipped. Empty targets mean CPU sets offered no usable CPU at all.
+template <typename Usable>
+inline CpuSetSelection selectCpuSetTargets(const std::vector<CpuSetRecord>& records, Usable&& usable) {
+    CpuSetSelection selection;
+    std::vector<CpuTarget> reserved_usable;
+    for (const auto& record : records) {
+        const bool can_bind = usable(record.target.group, record.target.logical_index);
+        if (record.reserved) {
+            ++selection.reserved;
+            if (can_bind) reserved_usable.push_back(record.target);
+        } else if (!can_bind) {
+            ++selection.affinity_excluded;
+        } else {
+            selection.targets.push_back(record.target);
+        }
+    }
+    if (selection.targets.empty() && !reserved_usable.empty()) {
+        selection.targets = std::move(reserved_usable);
+        selection.reserved_only = true;
+    }
+    return selection;
+}
+
 // One affinity-mask bit per logical index; indices at or beyond the mask width
 // (32 in 32-bit builds) cannot be bound and must never be shifted into a mask.
 template <typename Mask>

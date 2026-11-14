@@ -77,6 +77,49 @@ void testSmtRolesFollowUsableCpus() {
            "Affinity bits beyond the mask width (32-bit builds) are rejected instead of shifted");
 }
 
+void testCpuSetReservationsSelectTargets() {
+    // Windows CPU sets: reserved records are skipped while unreserved usable
+    // CPUs exist. When the affinity mask allows only reserved CPUs, workers use
+    // those with their CPU-set topology instead of a logical-processor fallback
+    // that re-added them without core pairing and still counted them skipped.
+    auto record = [](uint16_t logical, uint16_t core, bool reserved) {
+        cpu_topology::CpuSetRecord result;
+        result.target.logical_index = logical;
+        result.target.core_index = core;
+        result.target.efficiency_class = 1;
+        result.reserved = reserved;
+        return result;
+    };
+    const std::vector<cpu_topology::CpuSetRecord> records{record(0, 0, false), record(1, 0, false),
+                                                          record(2, 2, true), record(3, 2, true)};
+    auto only = [](uint32_t mask) {
+        return [mask](uint16_t group, uint32_t logical) {
+            return group == 0 && logical < 32 && ((mask >> logical) & 1U) != 0;
+        };
+    };
+    auto logicals = [](const cpu_topology::CpuSetSelection& selection) {
+        std::vector<uint32_t> result;
+        result.reserve(selection.targets.size());
+        for (const auto& target : selection.targets) result.push_back(target.logical_index);
+        return result;
+    };
+
+    const auto mixed = cpu_topology::selectCpuSetTargets(records, only(0xF));
+    expect(logicals(mixed) == std::vector<uint32_t>{0, 1} && mixed.reserved == 2 && !mixed.reserved_only &&
+               mixed.affinity_excluded == 0,
+           "Reserved CPU sets are skipped while unreserved usable CPUs exist");
+    const auto reserved = cpu_topology::selectCpuSetTargets(records, only(0xC));
+    expect(logicals(reserved) == std::vector<uint32_t>{2, 3} && reserved.reserved_only && reserved.reserved == 2 &&
+               reserved.affinity_excluded == 2 && reserved.targets[0].core_index == 2 &&
+               reserved.targets[0].efficiency_class == 1,
+           "An affinity mask of only reserved CPUs keeps them, with their CPU-set topology");
+    const auto none = cpu_topology::selectCpuSetTargets(records, only(0x30));
+    expect(none.targets.empty() && !none.reserved_only && none.affinity_excluded == 2,
+           "CPU sets with no usable CPU leave the choice to the logical-processor fallback");
+    expect(cpu_topology::selectCpuSetTargets({}, only(0xF)).targets.empty(),
+           "Missing CPU-set information yields no targets");
+}
+
 void testRegionSchedulerContracts() {
     using Snapshot = RegionScheduler::Snapshot;
     RegionScheduler scheduler(3, 2);

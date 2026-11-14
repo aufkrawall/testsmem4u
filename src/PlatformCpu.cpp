@@ -168,19 +168,16 @@ static std::vector<CpuTarget> detectWindowsCpuTargets(PlatformInfo& platform) {
     }
 
     const ProcessAffinity affinity = queryProcessAffinity();
-    uint32_t affinity_excluded = 0;
     // A CPU this process can bind to: inside the affinity-mask width (32 bits
     // in 32-bit builds, where a wider shift was undefined) and, in the
     // restricted primary group, inside the process affinity mask.
     auto usable = [&](WORD group, uint32_t logical) {
         KAFFINITY bit = 0;
-        const bool ok = cpu_topology::affinityBit(logical, bit) &&
-                        (!affinity.known || group != affinity.group || (affinity.mask & bit) != 0);
-        if (!ok) ++affinity_excluded;
-        return ok;
+        return cpu_topology::affinityBit(logical, bit) &&
+               (!affinity.known || group != affinity.group || (affinity.mask & bit) != 0);
     };
 
-    uint32_t cpu_sets_reserved = 0;
+    std::vector<cpu_topology::CpuSetRecord> records;
     if (!cpu_set_buffer.empty()) {
         uint8_t* current = cpu_set_buffer.data();
         uint8_t* end = current + cpu_set_bytes;
@@ -188,41 +185,48 @@ static std::vector<CpuTarget> detectWindowsCpuTargets(PlatformInfo& platform) {
             auto* info = reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(current);
             if (info->Type == CpuSetInformation) {
                 const auto& cpu = info->CpuSet;
+                cpu_topology::CpuSetRecord record;
                 // Allocated means reserved for exclusive use; ordinary CPUs report 0.
                 // (Skipping !Allocated discarded every ordinary CPU, so the topology
                 // fallback always ran: no core indices or efficiency classes.)
+                record.reserved = cpu.Allocated && !cpu.AllocatedToTargetProcess;
+                CpuTarget& target = record.target;
+                target.group = cpu.Group;
+                target.logical_index = cpu.LogicalProcessorIndex;
+                target.core_index = cpu.CoreIndex;
+                target.numa_node = cpu.NumaNodeIndex;
+                target.efficiency_class = cpu.EfficiencyClass;
+                target.scheduling_class = cpu.SchedulingClass;
                 // Parking is transient idle-state power management: a parked CPU
                 // unparks under load, so it stays a target and only sorts last.
-                if (cpu.Allocated && !cpu.AllocatedToTargetProcess) {
-                    ++cpu_sets_reserved;
-                } else if (usable(cpu.Group, cpu.LogicalProcessorIndex)) {
-                    CpuTarget target;
-                    target.group = cpu.Group;
-                    target.logical_index = cpu.LogicalProcessorIndex;
-                    target.core_index = cpu.CoreIndex;
-                    target.numa_node = cpu.NumaNodeIndex;
-                    target.efficiency_class = cpu.EfficiencyClass;
-                    target.scheduling_class = cpu.SchedulingClass;
-                    target.parked = cpu.Parked != 0;
-                    // Core-type performance only; scheduling classes rank cores
-                    // of one type and SMT halving applies to weight alone.
-                    target.raw_performance = 100U + static_cast<uint32_t>(cpu.EfficiencyClass) * 20U;
-                    targets.push_back(target);
-                }
+                target.parked = cpu.Parked != 0;
+                // Core-type performance only; scheduling classes rank cores of one type.
+                target.raw_performance = 100U + static_cast<uint32_t>(cpu.EfficiencyClass) * 20U;
+                records.push_back(record);
             }
             current += info->Size;
         }
     }
 
-    platform.cpu_topology_source = targets.empty() ? "logical-processor-fallback" : "cpu-sets";
+    cpu_topology::CpuSetSelection selection = cpu_topology::selectCpuSetTargets(records, usable);
+    targets = std::move(selection.targets);
+    uint32_t affinity_excluded = selection.affinity_excluded;
+    platform.cpu_sets_reserved_only = selection.reserved_only;
+    platform.cpu_topology_source = selection.reserved_only ? "cpu-sets-reserved-only"
+                                   : targets.empty()       ? "logical-processor-fallback"
+                                                           : "cpu-sets";
     if (targets.empty()) {
-        // Keep the reserved count: it explains why CPU sets yielded nothing.
+        // CPU sets unavailable or none usable. Keep the reserved count: it
+        // explains part of why CPU sets yielded nothing.
         affinity_excluded = 0;
         const std::vector<WindowsGroupMask> cores = queryWindowsCoreMasks();
         for (WORD group = 0; group < active_groups; ++group) {
             const DWORD count = GetActiveProcessorCount(group);
             for (DWORD logical = 0; logical < count; ++logical) {
-                if (!usable(group, logical)) continue;
+                if (!usable(group, logical)) {
+                    ++affinity_excluded;
+                    continue;
+                }
                 CpuTarget target;
                 target.group = group;
                 target.logical_index = static_cast<uint16_t>(logical);
@@ -231,7 +235,7 @@ static std::vector<CpuTarget> detectWindowsCpuTargets(PlatformInfo& platform) {
             }
         }
     }
-    platform.cpu_sets_reserved = cpu_sets_reserved;
+    platform.cpu_sets_reserved = selection.reserved;
     platform.cpu_affinity_excluded = affinity_excluded;
     cpu_topology::assignSmtRoles(targets);
 

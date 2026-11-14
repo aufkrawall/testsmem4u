@@ -734,6 +734,7 @@ int main() try {
     testCacheFlushGeometry();
     testCpuTopologyPairsSmtSiblings();
     testSmtRolesFollowUsableCpus();
+    testCpuSetReservationsSelectTargets();
     testRegionSchedulerContracts();
     testSlowWorkerCannotStarveAChunk();
     testStreamingFillCacheContract();
