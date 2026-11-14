@@ -500,18 +500,12 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     LOG_INFO("Scheduling: %u workers pull %zu equal memory chunks; each chunk runs the sequence in order and a free "
              "worker takes the least advanced idle chunk, so coverage stays even however fast each CPU runs.",
              threads, chunk_regions.size());
-    if (staggered) {
+    {
         const bool disturbs = std::any_of(enabled.entries.begin(), enabled.entries.end(), [&](size_t index) {
             return isCrossRegionDisturbanceTest(configs.at(seq[index]).function);
         });
-        LOG_INFO("Sequence start: staggered (%s); chunks start at evenly spread entries (last chunk at entry %zu of "
-                 "%zu), so workers run different tests at the same time.%s",
-                 config.sequence_start == SequenceStart::PRESET ? "preset" : "--sequence-start",
-                 enabled.entry(0, chunk_regions.size() - 1) + 1, seq.size(),
-                 disturbs ? " RowHammer then overlaps other tests, so their errors are often tagged as possible "
-                            "cross-chunk disturbance." : "");
-    } else {
-        LOG_INFO("Sequence start: aligned; every chunk starts at the first entry.");
+        const char* source = config.sequence_start == SequenceStart::PRESET ? "preset" : "--sequence-start";
+        LOG_INFO("%s", describeSequenceStart(enabled, seq.size(), source, disturbs).c_str());
     }
     LOG_INFO("Retention: alternate untouched halves while testing the other half; no whole-run sleep.");
     LOG_DEBUG("Progress: verified blocks publish to separate worker counters; completed cycles require every chunk.");

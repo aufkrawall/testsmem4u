@@ -173,6 +173,26 @@ void testStaggeredStartRunsDifferentTests() {
            "The preset's Sequence Start applies unless --sequence-start overrides it");
 }
 
+void testStaggeredStartMessageNeedsChunks() {
+    // --cores 1 gives one chunk, so staggering changes nothing; the startup line
+    // used to claim workers run different tests at the same time anyway.
+    const std::vector<uint32_t> ids{0, 1, 2};
+    auto contains = [](const std::string& text, const char* part) { return text.find(part) != std::string::npos; };
+    const std::string single = describeSequenceStart(EnabledSequence({0, 1, 2}, ids, 1, true), 3, "preset", false);
+    const std::string one_entry = describeSequenceStart(EnabledSequence({1}, ids, 4, true), 3, "preset", false);
+    const std::string spread =
+        describeSequenceStart(EnabledSequence({0, 1, 2}, ids, 4, true), 3, "--sequence-start", true);
+    const std::string aligned = describeSequenceStart(EnabledSequence({0, 1, 2}, ids, 4, false), 3, "preset", true);
+    expect(contains(single, "no effect with a single memory chunk") && !contains(single, "different tests"),
+           "Staggering one chunk is reported as having no effect");
+    expect(contains(one_entry, "no effect with one enabled entry"),
+           "Staggering a single enabled entry is reported as having no effect");
+    expect(contains(spread, "(--sequence-start)") && contains(spread, "last chunk at entry 3 of 3") &&
+               contains(spread, "different tests") && contains(spread, "cross-chunk disturbance"),
+           "Effective staggering names its source, the last chunk's entry and RowHammer overlap");
+    expect(contains(aligned, "aligned") && !contains(aligned, "RowHammer"), "Aligned start has its own line");
+}
+
 void testRowHammerPointsFollowDensity() {
     constexpr size_t mib = size_t{1} << 20;
     // Parameter 0 keeps the long-standing default of 2 points per MiB.

@@ -217,6 +217,27 @@ inline std::string describeSequence(const EnabledSequence& sequence, const std::
            (repeated.empty() ? std::string("none") : repeated);
 }
 
+// One startup line for the sequence start. Staggering needs two or more chunks
+// and enabled entries; otherwise every chunk still starts at the first entry
+// (one worker gets one chunk), so the line says so instead of claiming that
+// workers run different tests. source names where staggering was requested.
+inline std::string describeSequenceStart(const EnabledSequence& sequence, size_t sequence_size,
+                                         const char* source, bool disturbs) {
+    if (!sequence.staggered) return "Sequence start: aligned; every chunk starts at the first entry.";
+    const std::string requested = std::string("Sequence start: staggered (") + source + ")";
+    if (sequence.chunks < 2 || sequence.size() < 2) {
+        return requested + " has no effect with " +
+               (sequence.chunks < 2 ? "a single memory chunk (one worker)" : "one enabled entry") +
+               "; every chunk starts at the first entry.";
+    }
+    return requested + "; chunks start at evenly spread entries (last chunk at entry " +
+           std::to_string(sequence.entry(0, sequence.chunks - 1) + 1) + " of " + std::to_string(sequence_size) +
+           "), so workers run different tests at the same time." +
+           (disturbs ? " RowHammer then overlaps other tests, so their errors are often tagged as possible "
+                       "cross-chunk disturbance."
+                     : "");
+}
+
 // Returns the claimed chunk on every exit path; complete() publishes progress.
 class ChunkLease {
 public:

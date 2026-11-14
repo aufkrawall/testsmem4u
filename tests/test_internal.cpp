@@ -747,6 +747,7 @@ int main() try {
     testFunctionTimingSummary();
     testStaggeredSlotsCoverEveryEntry();
     testStaggeredStartRunsDifferentTests();
+    testStaggeredStartMessageNeedsChunks();
     testRowHammerPointsFollowDensity();
     testRowHammerBudgetLogPerEntry();
     testLoopEstimateCountsOnlyRepetitions();
