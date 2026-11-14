@@ -1,6 +1,9 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-10-14 for RandomAccess false-positive contracts, 32-bit full-width
+Last verified: 2026-11-14 for dynamic chunk scheduling, Windows CPU-set topology, pass
+data variation, full-width RandomAccess values, post-fill flush elision, LFSR output
+mixing (SSE2/AVX2 lanes) and cycle timing logs (Windows and WSL suites, bounded
+64 MiB-1 GiB runs); 2026-10-14 for RandomAccess false-positive contracts, 32-bit full-width
 inversion, x86 flush geometry, release cross-builds and Linux lock-before-prefault
 ordering; 2026-10-13 for
 page-allocation defaults, native kernel contracts, performance and progress/result
@@ -691,8 +694,9 @@ before. A longer 16,777,216-access experiment rejected reciprocal indexing and
 separate load/compare arrays after they failed to improve throughput.
 
 These short measurements are software-throughput evidence, with ordinary timing
-noise; small percentages do not establish a hardware optimum. Equal benchmark
-slices differ from the default weighted SMT assignments. No package-power,
+noise; small percentages do not establish a hardware optimum. (At the time, equal
+benchmark slices differed from the then-default weighted SMT regions; runs now use
+equal chunks.) No package-power,
 DRAM-bus, DIMM-temperature or unstable-memory detection measurements were taken.
 Fixtures/logs/snapshots remain ignored under `build/review/performance/`; every
 run is bounded. Manual full-capacity testing remains the next hardware check.

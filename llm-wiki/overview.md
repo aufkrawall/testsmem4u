@@ -136,7 +136,7 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `python build.py --run-sanitizers`: Runs ASan + UBSan builds and tests (baseline and AVX2 runners each).
 
 ## Test Coverage
-- Internal tests covering: Utils parsing, strict Test Sequence parsing, Preset loading/validation, explicit absolute preset paths, Config save/load round-trip and invalid-load rollback, SIMD pattern generation/verification (including recorded-observed-value pinning and verify_pattern_pair), LFSR vectors, independent workers, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess, Modulo20, active retention, and RowHammer.
+- Internal tests covering: Utils parsing, strict Test Sequence parsing, Preset loading/validation, explicit absolute preset paths, Config save/load round-trip and invalid-load rollback, SIMD pattern generation/verification (including recorded-observed-value pinning and verify_pattern_pair), LFSR vectors, dynamic chunk scheduling (claim policy, slow-worker model, chunk tiling), pass data variation, LFSR word independence, independent workers, TestContext, MemoryGuard, Error classification, and E2E tests for SimpleTest, WalkingOnes, MirrorMove128, BlockMove, MovingInversion, MovingInversionLFSR, LFSRPattern, RandomAccess, Modulo20, active retention, and RowHammer.
 - Fault hooks test positive error detection, destructive observation retention, partial blocks,
   cancellation and failed workers; virtual time tests retention without sleeping.
 - `tests/test_runtime_regressions.h`: fresh unlocked allocations, preparation
