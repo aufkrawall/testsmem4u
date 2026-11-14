@@ -82,6 +82,11 @@ public:
     static std::vector<CpuTarget> getPreferredCpuTargets(uint32_t max_threads = 0);
     static bool bindCurrentThread(const CpuTarget& target);
     static void registerShutdownHandler(void (*callback)());
+    // Brackets the test run and final result logging. While pending, a Windows
+    // console close, logoff or shutdown event requests the stop and then waits
+    // in the handler until results are written (setFinalResultsPending(false)),
+    // because Windows terminates the process as soon as the handler returns.
+    static void setFinalResultsPending(bool pending);
     // Confirms the process runs at NORMAL priority (never elevates it).
     static void confirmNormalProcessPriority();
 

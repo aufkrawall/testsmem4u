@@ -68,8 +68,16 @@ static std::atomic<bool> g_shutdown_initiated{false};
 #ifdef _WIN32
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
+// Manual-reset event: signalled whenever no final results are pending.
+static HANDLE g_results_written_event = nullptr;
+static std::atomic<bool> g_results_pending{false};
+
 static BOOL WINAPI consoleCtrlHandler(DWORD dwCtrlType) {
-    if (g_shutdown_initiated.load(std::memory_order_acquire)) {
+    const bool terminating = dwCtrlType == CTRL_CLOSE_EVENT || dwCtrlType == CTRL_LOGOFF_EVENT ||
+                             dwCtrlType == CTRL_SHUTDOWN_EVENT;
+    // A second Ctrl+C/Break force-quits. Close/logoff/shutdown never force-quit
+    // here: Windows ends the process anyway when this handler returns.
+    if (!terminating && g_shutdown_initiated.load(std::memory_order_acquire)) {
         TerminateProcess(GetCurrentProcess(), 0);
         return TRUE;
     }
@@ -79,8 +87,23 @@ static BOOL WINAPI consoleCtrlHandler(DWORD dwCtrlType) {
     if (auto cb = g_shutdown_callback.load(std::memory_order_relaxed)) {
         cb();
     }
-    if (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_BREAK_EVENT ||
-        dwCtrlType == CTRL_CLOSE_EVENT || dwCtrlType == CTRL_LOGOFF_EVENT || dwCtrlType == CTRL_SHUTDOWN_EVENT) {
+    if (terminating) {
+        // Returning lets Windows terminate the process at once, which lost the
+        // run-end time breakdown and results whenever the console window was
+        // closed. Wait for the main thread to finish writing them instead; the
+        // stop request above ends the workers within one verification block.
+        // No timeout of our own: Windows enforces its close/shutdown deadline.
+        if (g_results_pending.load(std::memory_order_acquire) && g_results_written_event) {
+            // This handler runs on its own system-created thread, not in a
+            // signal context, so the queue-based logger is safe to use here.
+            LOG_WARN("Console %s event: stopping the run and writing final results before Windows ends the process",
+                     dwCtrlType == CTRL_CLOSE_EVENT ? "close" : dwCtrlType == CTRL_LOGOFF_EVENT ? "logoff"
+                                                                                               : "shutdown");
+            WaitForSingleObject(g_results_written_event, INFINITE);
+        }
+        return TRUE;
+    }
+    if (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_BREAK_EVENT) {
         return TRUE;
     }
     return FALSE;
@@ -320,6 +343,13 @@ void Platform::registerShutdownHandler(void (*callback)()) {
     g_shutdown_callback.store(callback, std::memory_order_relaxed);
 
 #ifdef _WIN32
+    if (!g_results_written_event) {
+        g_results_written_event = CreateEventW(nullptr, TRUE, TRUE, nullptr);
+        if (!g_results_written_event) {
+            LOG_WARN("Shutdown: could not create the results event (error %lu); closing the console window "
+                     "during a run will lose the final results in the log", GetLastError());
+        }
+    }
     SetConsoleCtrlHandler(nullptr, FALSE);
     SetConsoleCtrlHandler(consoleCtrlHandler, TRUE);
 #else
@@ -328,6 +358,24 @@ void Platform::registerShutdownHandler(void (*callback)()) {
     std::signal(SIGHUP, SignalHandlerWrapper);  // Closed terminal: stop gracefully
     std::signal(SIGBUS, SignalHandlerWrapper);  // Hugepage access fault
     std::signal(SIGABRT, SignalHandlerWrapper); // Exit on abort
+#endif
+}
+
+void Platform::setFinalResultsPending(bool pending) {
+#ifdef _WIN32
+    // Order matters for a handler running concurrently: when clearing, signal
+    // before dropping the flag, so a handler that still saw "pending" returns
+    // from its wait; when setting, reset before raising it.
+    if (pending) {
+        if (g_results_written_event) ResetEvent(g_results_written_event);
+        g_results_pending.store(true, std::memory_order_release);
+    } else {
+        if (g_results_written_event) SetEvent(g_results_written_event);
+        g_results_pending.store(false, std::memory_order_release);
+    }
+#else
+    // POSIX handlers return and the main thread completes its normal shutdown.
+    (void)pending;
 #endif
 }
 

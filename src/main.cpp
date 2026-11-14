@@ -568,6 +568,9 @@ int main(int argc, char* argv[]) {
     }
 
     RunResult res = {};
+    // A console close during the run must still let the time breakdown and
+    // results reach the log (see Platform::setFinalResultsPending).
+    Platform::setFinalResultsPending(true);
     try {
         res = TestEngine::runTests(config);
     } catch (const std::exception& e) {
@@ -631,6 +634,7 @@ int main(int argc, char* argv[]) {
     }
 
     Logger::get().deinit();
+    Platform::setFinalResultsPending(false);
 
 #ifdef _WIN32
     if (should_pause_on_exit) {
