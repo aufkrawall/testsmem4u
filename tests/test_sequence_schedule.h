@@ -223,3 +223,43 @@ void testRowHammerBudgetLogPerEntry() {
     expect(claimRowHammerBudgetLog(first), "A new run logs the budget again");
     resetRowHammerBudgetLog();
 }
+
+void testLoopEstimateCountsOnlyRepetitions() {
+    // RefreshStable's Parameter is a dwell in ms and RowHammer's a density, so
+    // the shipped interleaved preset (three 10000 ms RefreshStable entries per
+    // cycle) used to warn about an excessive run from 4 cycles on.
+    PresetInfo preset = loadPreset("default.cfg");
+    expect(preset.valid, "The shipped default.cfg loads (tests run from the project root)");
+    Config config;
+    config.preset = preset;
+    config.cycles = 10;
+    const std::vector<uint32_t> seq = parseTestSequence(preset.test_sequence);
+    expect(estimatedTotalLoops(config, seq, preset.test_configs) < kMaxRecommendedLoops,
+           "Ten cycles of the default preset stay below the excessive-run warning");
+
+    auto entry = [](const char* function, uint32_t parameter) {
+        TestConfig test;
+        test.function = function;
+        test.parameter = parameter;
+        return test;
+    };
+    expect(estimatedRepetitions(entry("RefreshStable", 10000)) == 1 &&
+               estimatedRepetitions(entry("RowHammer", 160)) == 1 &&
+               estimatedRepetitions(entry("RandomAccess", 1000000)) == 1 &&
+               estimatedRepetitions(entry("WalkingOnes", 50)) == 1 &&
+               estimatedRepetitions(entry("LFSRPattern", 50)) == 1,
+           "Dwell, density, access-count and ignored Parameters are not repetitions");
+    expect(estimatedRepetitions(entry("SimpleTest", 32)) == 32 && estimatedRepetitions(entry("SimpleTest", 0)) == 1 &&
+               estimatedRepetitions(entry("MirrorMove128", 40)) == 40 &&
+               estimatedRepetitions(entry("RandomAccess", 2)) == 2 &&
+               estimatedRepetitions(entry("Modulo20", 0)) == 3,
+           "Repetition Parameters (and Modulo20's default of 3) still count");
+
+    std::map<uint32_t, TestConfig> heavy{{0, entry("SimpleTest", 60000)}};
+    heavy[0].time_percent = 100;
+    Config long_run;
+    long_run.cycles = 2;
+    expect(estimatedTotalLoops(long_run, {0}, heavy) == 120000 &&
+               estimatedTotalLoops(long_run, {0}, heavy) > kMaxRecommendedLoops,
+           "Genuinely long repetition counts still exceed the warning threshold");
+}

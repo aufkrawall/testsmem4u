@@ -440,20 +440,10 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
 
     // Warn if estimated runtime from preset configuration is excessive
     {
-        uint64_t total_loop_estimate = 0;
-        for (uint32_t test_id : seq) {
-            auto it = configs.find(test_id);
-            if (it == configs.end()) continue;
-            const TestConfig& tc = it->second;
-            if (!tc.enabled) continue;
-            uint64_t loops = (static_cast<uint64_t>(config.preset.time_percent) * tc.time_percent) / 100;
-            if (loops == 0) loops = 1;
-            uint64_t internal_reps = tc.parameter > 0 ? tc.parameter : 1;
-            total_loop_estimate += loops * internal_reps;
-        }
-        uint64_t total_cycles = config.cycles == 0 ? 1 : config.cycles;
-        total_loop_estimate *= total_cycles;
-        constexpr uint64_t kMaxRecommendedLoops = 100000;
+        const uint64_t total_loop_estimate = estimatedTotalLoops(config, seq, configs);
+        LOG_DEBUG("Run-length estimate: %llu loop repetitions over all cycles (warning above %llu)",
+                  static_cast<unsigned long long>(total_loop_estimate),
+                  static_cast<unsigned long long>(kMaxRecommendedLoops));
         if (total_loop_estimate > kMaxRecommendedLoops) {
             LOG_WARN("Estimated total loops (%llu) exceeds recommended maximum (%llu). "
                      "The preset configuration may produce an extremely long run. "

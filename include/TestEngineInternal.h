@@ -189,6 +189,41 @@ inline size_t rowHammerPoints(size_t region_bytes, uint32_t points_per_gib, size
     return static_cast<size_t>(std::min<uint64_t>(std::max(points, floor), kRowHammerMaxPoints));
 }
 
+// Internal repetitions per invocation for the pre-run loop estimate. Parameter
+// is a repetition count only for some functions: RefreshStable's is a dwell in
+// milliseconds, RowHammer's a density in points per GiB, RandomAccess's above
+// kRandomAccessPassLimit an access count, and Walking/LFSRPattern ignore it.
+// Counting those as repetitions made the interleaved default preset (three
+// RefreshStable entries with Parameter=10000) warn about an excessive run at
+// 4 cycles although each cycle is about an hour at 28 GB.
+inline uint64_t estimatedRepetitions(const TestConfig& config) {
+    const std::string& f = config.function;
+    if (f == "Modulo20") return config.parameter ? config.parameter : 3;
+    if (f == "RandomAccess") return config.parameter <= kRandomAccessPassLimit ? std::max(1U, config.parameter) : 1;
+    if (f == "SimpleTest" || f == "MirrorMove" || f == "MirrorMove128" || f == "BlockMove" ||
+        f == "MovingInversion" || f == "MovingInversionLFSR" || f == "MovingInversionWalking") {
+        return std::max(1U, config.parameter);
+    }
+    return 1;
+}
+
+// Pre-run estimate of loop invocations times internal repetitions over all
+// cycles of the enabled sequence entries (a rough runtime-scale warning above
+// kMaxRecommendedLoops).
+constexpr uint64_t kMaxRecommendedLoops = 100000;
+inline uint64_t estimatedTotalLoops(const Config& config, const std::vector<uint32_t>& seq,
+                                    const std::map<uint32_t, TestConfig>& configs) {
+    uint64_t total = 0;
+    for (uint32_t test_id : seq) {
+        const auto it = configs.find(test_id);
+        if (it == configs.end() || !it->second.enabled) continue;
+        const uint64_t loops =
+            std::max<uint64_t>(1, (static_cast<uint64_t>(config.preset.time_percent) * it->second.time_percent) / 100);
+        total += loops * estimatedRepetitions(it->second);
+    }
+    return total * (config.cycles == 0 ? 1 : config.cycles);
+}
+
 inline void addUnverifiedOverflow(TestResult& res, size_t total_found, size_t sampled) {
     if (total_found > sampled) {
         res.unverified_errors += static_cast<uint64_t>(total_found - sampled);
