@@ -14,6 +14,8 @@
 #include <condition_variable>
 #include <array>
 #include <cstring>
+#include <mutex>
+#include <tuple>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -27,7 +29,29 @@
 namespace testsmem4u {
 using namespace simd;
 std::atomic<bool> g_rowhammer_large_page_warning_emitted{false};
-std::atomic<bool> g_rowhammer_budget_logged{false};
+namespace {
+using RowHammerBudgetKey = std::tuple<uint8_t, uint32_t, uint32_t>;
+std::mutex g_rowhammer_budget_mutex;
+std::vector<RowHammerBudgetKey> g_rowhammer_budget_keys;
+} // namespace
+
+bool claimRowHammerBudgetLog(const TestConfig& config) {
+    const RowHammerBudgetKey key{config.test_number, config.parameter, config.block_size_mb};
+    std::lock_guard<std::mutex> lock(g_rowhammer_budget_mutex);
+    if (g_rowhammer_budget_keys.size() >= kRowHammerBudgetLogLimit ||
+        std::find(g_rowhammer_budget_keys.begin(), g_rowhammer_budget_keys.end(), key) !=
+            g_rowhammer_budget_keys.end()) {
+        return false;
+    }
+    g_rowhammer_budget_keys.push_back(key);
+    return true;
+}
+
+void resetRowHammerBudgetLog() {
+    std::lock_guard<std::mutex> lock(g_rowhammer_budget_mutex);
+    g_rowhammer_budget_keys.clear();
+}
+
 TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& region, const TestConfig& config, bool stop) {
     TestResult res = {};
     VerificationProgress progress(ctx, res, region);
@@ -59,16 +83,16 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
     }
 
     const size_t hammer_points = rowHammerPoints(region.size, config.parameter, usable_strides.size());
-    {
-        bool expected = false;
-        if (g_rowhammer_budget_logged.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            LOG_INFO("RowHammer: %llu points per GiB%s -> %zu points per invocation on %.1f MiB regions "
-                     "(%zu strides of 8-64 KiB, %zu iterations per point, both victim polarities)",
-                     static_cast<unsigned long long>(config.parameter ? config.parameter
-                                                                      : kRowHammerDefaultPointsPerGiB),
-                     config.parameter ? "" : " (default)", hammer_points,
-                     static_cast<double>(region.size) / (1024.0 * 1024.0), usable_strides.size(), hammer_iterations);
-        }
+    if (claimRowHammerBudgetLog(config)) {
+        // usable_strides ascends; small (sub-)blocks drop the widest strides.
+        LOG_INFO("RowHammer (Test %u): %llu points per GiB%s -> %zu points per invocation on %.1f MiB regions "
+                 "(%zu strides of %zu-%zu KiB, %zu iterations per point, both victim polarities)",
+                 static_cast<unsigned>(config.test_number),
+                 static_cast<unsigned long long>(config.parameter ? config.parameter : kRowHammerDefaultPointsPerGiB),
+                 config.parameter ? "" : " (default)", hammer_points,
+                 static_cast<double>(region.size) / (1024.0 * 1024.0), usable_strides.size(),
+                 usable_strides.front() * sizeof(uint64_t) / 1024, usable_strides.back() * sizeof(uint64_t) / 1024,
+                 hammer_iterations);
     }
     const auto hammer_start = std::chrono::steady_clock::now();
 

@@ -189,4 +189,37 @@ void testRowHammerPointsFollowDensity() {
     expect(rowHammerPoints(SIZE_MAX / 2, 0xFFFFFFFFU, 4) == kRowHammerMaxPoints &&
                rowHammerPoints(SIZE_MAX, 0xFFFFFFFFU, 4) == kRowHammerMaxPoints,
            "Huge regions and densities are capped without overflow");
+    // Exact byte scaling: whole-MiB truncation gave a 512 KiB sub-block tail the
+    // per-stride floor (4) instead of 24 points and a 3.6 MiB chunk 29 instead of 35.
+    expect(rowHammerPoints(size_t{512} * 1024, 50000, 4) == 24 &&
+               rowHammerPoints(3 * mib + size_t{600} * 1024, 10000, 4) == 35,
+           "RowHammer points scale with exact bytes, not whole MiB");
+}
+
+void testRowHammerBudgetLogPerEntry() {
+    // Each RowHammer entry (test number, density, block size) logs its budget
+    // once per run; a single run-wide flag hid every entry after the first.
+    resetRowHammerBudgetLog();
+    TestConfig first;
+    first.function = "RowHammer";
+    first.test_number = 12;
+    first.parameter = 160;
+    TestConfig second = first;
+    second.test_number = 19;
+    second.parameter = 4096;
+    second.block_size_mb = 64;
+    expect(claimRowHammerBudgetLog(first) && !claimRowHammerBudgetLog(first) && claimRowHammerBudgetLog(second) &&
+               !claimRowHammerBudgetLog(second),
+           "Every distinct RowHammer entry logs its point budget exactly once");
+    for (uint32_t i = 0; i < 2 * kRowHammerBudgetLogLimit; ++i) {
+        TestConfig other = first;
+        other.parameter = 1000 + i;
+        claimRowHammerBudgetLog(other);
+    }
+    TestConfig late = first;
+    late.parameter = 99999;
+    expect(!claimRowHammerBudgetLog(late), "RowHammer budget lines are capped per run");
+    resetRowHammerBudgetLog();
+    expect(claimRowHammerBudgetLog(first), "A new run logs the budget again");
+    resetRowHammerBudgetLog();
 }

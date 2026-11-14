@@ -5,13 +5,20 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <limits>
 
 namespace testsmem4u {
 
 // One RowHammer coverage warning per run; reset by TestEngine::runTests.
 extern std::atomic<bool> g_rowhammer_large_page_warning_emitted;
-// One RowHammer point-budget INFO line per run; reset by TestEngine::runTests.
-extern std::atomic<bool> g_rowhammer_budget_logged;
+// RowHammer point-budget INFO lines: true the first time a RowHammer test entry
+// (test number, density, block size) runs in this run, so a preset with several
+// RowHammer entries logs each budget once. At most kRowHammerBudgetLogLimit
+// entries per run; cleared by TestEngine::runTests via resetRowHammerBudgetLog.
+constexpr size_t kRowHammerBudgetLogLimit = 16;
+bool claimRowHammerBudgetLog(const TestConfig& config);
+void resetRowHammerBudgetLog();
 
 // Account verified blocks once, at the leaf kernel. Nested results are merged
 // for the return value only. Error deltas survive cancellation and unwinding.
@@ -170,10 +177,14 @@ constexpr size_t kRowHammerMaxPoints = 100000;
 
 inline size_t rowHammerPoints(size_t region_bytes, uint32_t points_per_gib, size_t usable_strides) {
     const uint64_t density = points_per_gib ? points_per_gib : kRowHammerDefaultPointsPerGiB;
-    // Whole MiB, capped at 2^31 (2 PiB; the result is capped far lower anyway),
-    // so mib x density (< 2^32) cannot overflow 64 bits.
-    const uint64_t mib = std::min<uint64_t>(static_cast<uint64_t>(region_bytes) >> 20, uint64_t{1} << 31);
-    const uint64_t points = (mib * density + 512) / 1024;
+    // Exact bytes, rounded to the nearest point. Truncating to whole MiB first
+    // gave sub-MiB regions (sub-block tails) no points beyond the per-stride
+    // floor and cut a 3.6 MiB chunk's budget by 17%. A product that would
+    // overflow 64 bits is far above the cap.
+    constexpr uint64_t kGiB = uint64_t{1} << 30;
+    const uint64_t bytes = static_cast<uint64_t>(region_bytes);
+    const uint64_t max_exact_bytes = (std::numeric_limits<uint64_t>::max() - kGiB / 2) / density;
+    const uint64_t points = bytes > max_exact_bytes ? kRowHammerMaxPoints : (bytes * density + kGiB / 2) / kGiB;
     const uint64_t floor = std::max<uint64_t>(1, usable_strides);
     return static_cast<size_t>(std::min<uint64_t>(std::max(points, floor), kRowHammerMaxPoints));
 }

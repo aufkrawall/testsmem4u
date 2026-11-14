@@ -189,7 +189,7 @@ RunResult TestEngine::runTests(const Config& config
                                ) {
     RunResult result = {};
     g_rowhammer_large_page_warning_emitted.store(false, std::memory_order_release);
-    g_rowhammer_budget_logged.store(false, std::memory_order_release);
+    resetRowHammerBudgetLog();
     // The stop request is a process-lifetime latch and is never cleared here.
     // Clearing it at run start discarded a Ctrl+C or console close that arrived
     // during the startup countdown, wizard or prompts: the handler had already
