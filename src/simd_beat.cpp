@@ -8,7 +8,7 @@
 namespace testsmem4u::simd {
 namespace {
 
-bool alignedTo(const void* ptr, size_t bytes) {
+[[maybe_unused]] bool alignedTo(const void* ptr, size_t bytes) {
     return reinterpret_cast<uintptr_t>(ptr) % bytes == 0;
 }
 
@@ -24,7 +24,7 @@ inline void storeWord(uint64_t* dst, uint64_t value, [[maybe_unused]] bool nt) {
 }
 
 // Tag accumulator value for the pair holding global word `word` (even).
-inline uint64_t pairBase(const BeatPattern& p, uint64_t word) {
+[[maybe_unused]] inline uint64_t pairBase(const BeatPattern& p, uint64_t word) {
     return p.salt + (word >> 1) * p.step;
 }
 

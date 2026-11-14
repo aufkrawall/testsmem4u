@@ -109,3 +109,94 @@ void testSimpleTestBeatMode() {
     }
     cleanupFile(path);
 }
+
+void testMirrorKernels() {
+    alignas(64) std::array<uint64_t, 1100> memory{};
+    for (size_t offset : {size_t{0}, size_t{1}}) {
+        for (size_t count : {0, 1, 2, 3, 7, 8, 9, 15, 16, 24, 64, 72, 1024}) {
+            for (bool pairs : {false, true}) {
+                uint64_t* data = memory.data() + offset;
+                std::vector<uint64_t> expected(count);
+                for (size_t k = 0; k < count; ++k) data[k] = expected[k] = 0x1000 + k;
+                memory[offset + count] = 0xFEED;
+                if (pairs) {
+                    const size_t units = count / 2;
+                    for (size_t u = 0; u < units / 2; ++u) {
+                        std::swap(expected[2 * u], expected[2 * (units - 1 - u)]);
+                        std::swap(expected[2 * u + 1], expected[2 * (units - 1 - u) + 1]);
+                    }
+                    simd::mirror_reverse_pairs(data, count);
+                } else {
+                    std::reverse(expected.begin(), expected.end());
+                    simd::mirror_reverse_words(data, count);
+                }
+                const bool moved = std::equal(expected.begin(), expected.end(), data) && memory[offset + count] == 0xFEED;
+                if (pairs) simd::mirror_reverse_pairs(data, count);
+                else simd::mirror_reverse_words(data, count);
+                bool restored = true;
+                for (size_t k = 0; k < count; ++k) restored &= data[k] == 0x1000 + k;
+                expect(moved && restored, std::string("Mirror ") + (pairs ? "pairs" : "words") + " count=" +
+                                              std::to_string(count) + " offset=" + std::to_string(offset) +
+                                              " reverses exactly and twice restores");
+            }
+        }
+    }
+}
+
+void testMirrorMovesData() {
+    alignas(64) std::array<uint64_t, 2048> memory{};
+    MemoryRegion region{};
+    region.base = reinterpret_cast<uint8_t*>(memory.data());
+    region.size = memory.size() * sizeof(uint64_t);
+    region.base_offset_bytes = 0x80000;
+    const uint64_t g0 = region.base_offset_bytes / 8;
+    const size_t count = memory.size();
+    TestConfig tc;
+    tc.pattern_param0 = 0x5555555555555555ULL;
+    tc.pattern_param1 = 0xAAAAAAAAAAAAAAAAULL;
+    tc.parameter = 1;
+    {
+        TestContext ctx;
+        tc.function = "MirrorMove";
+        const auto result = TestEngine::runMirrorMove(ctx, region, tc, false);
+        // One pass leaves the chunk reversed: word 0 holds the former last word.
+        expect(result.total_errors() == 0 && result.bytes_tested == region.size * 2 &&
+                   memory[0] == tc.pattern_param0 + (g0 + count - 1) * tc.pattern_param1 &&
+                   memory[count - 1] == tc.pattern_param0 + g0 * tc.pattern_param1,
+               "MirrorMove swaps words between the two ends of the chunk");
+        tc.parameter = 2;
+        const auto twice = TestEngine::runMirrorMove(ctx, region, tc, false);
+        expect(twice.total_errors() == 0 && twice.bytes_tested == region.size * 3 &&
+                   memory[0] == tc.pattern_param0 + g0 * tc.pattern_param1,
+               "Two MirrorMove passes restore the original order and verify after each move");
+        tc.parameter = 1;
+    }
+    {
+        TestContext ctx;
+        const auto result = TestEngine::runMirrorMove128(ctx, region, tc, false);
+        const simd::BeatPattern original{tc.pattern_param0, tc.pattern_param1, 0, 0xD1B54A32D192ED03ULL};
+        expect(result.total_errors() == 0 && memory[0] == simd::beat_value(original, g0 + count - 2) &&
+                   memory[1] == simd::beat_value(original, g0 + count - 1) && memory[1] == ~memory[0],
+               "MirrorMove128 swaps 16-byte units between the two ends and keeps each unit's beat complement");
+    }
+    // A word corrupted before a move is carried to the mirrored position.
+    for (const char* phase : {"Mirror move", "Mirror128 move"}) {
+        TestContext ctx;
+        bool injected = false;
+        ctx.phase_hook = [&](const char* name, const MemoryRegion&) {
+            if (!injected && std::string(name) == phase) {
+                memory[0] ^= 4;
+                injected = true;
+            }
+        };
+        const bool words = std::string(phase) == "Mirror move";
+        const auto result = words ? TestEngine::runMirrorMove(ctx, region, tc, true)
+                                  : TestEngine::runMirrorMove128(ctx, region, tc, true);
+        const uint64_t landed = words ? memory[count - 1] : memory[count - 2];
+        const uint64_t clean = words ? tc.pattern_param0 + g0 * tc.pattern_param1
+                                     : simd::beat_value(simd::BeatPattern{tc.pattern_param0, tc.pattern_param1, 0,
+                                                                          0xD1B54A32D192ED03ULL}, g0);
+        expect(injected && result.total_errors() == 1 && ctx.shouldStop() && landed == (clean ^ 4),
+               std::string("Fault before a move travels with the data: ") + phase);
+    }
+}

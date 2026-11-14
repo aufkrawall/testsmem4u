@@ -730,6 +730,8 @@ int main() try {
     testVerifyPatternPair();
     testBeatPatternKernels();
     testSimpleTestBeatMode();
+    testMirrorKernels();
+    testMirrorMovesData();
 
     // Concurrency and infrastructure tests
     testTestContextBasics();

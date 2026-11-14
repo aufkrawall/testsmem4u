@@ -478,59 +478,6 @@ void generate_pattern_uniform<uint64_t>(uint64_t* dst, size_t count, uint64_t va
     sfence();
 }
 
-template<>
-void invert_array<uint64_t>(uint64_t* dst, size_t count, [[maybe_unused]] bool use_nt) {
-    [[maybe_unused]] const SimdCapabilities caps = getCapabilities();
-    size_t i = 0;
-
-#if defined(__AVX512F__)
-    if (caps.has_avx512) {
-        __m512i ones = _mm512_set1_epi64(~0ULL);
-        for (; i + 8 <= count; i += 8) {
-            __m512i v = _mm512_loadu_si512((const void*)(dst + i));
-            v = _mm512_xor_si512(v, ones);
-            if (use_nt && caps.has_nt_stores) {
-                _mm512_stream_si512((void*)(dst + i), v);
-            } else {
-                _mm512_storeu_si512((void*)(dst + i), v);
-            }
-        }
-    }
-#endif
-
-#if defined(__AVX2__)
-    if (caps.has_avx2) {
-        __m256i ones = _mm256_set1_epi64x(~0ULL);
-        for (; i + 4 <= count; i += 4) {
-            __m256i v = _mm256_loadu_si256((const __m256i*)(dst + i));
-            v = _mm256_xor_si256(v, ones);
-            if (use_nt && caps.has_nt_stores) {
-                _mm256_stream_si256((__m256i*)(dst + i), v);
-            } else {
-                _mm256_storeu_si256((__m256i*)(dst + i), v);
-            }
-        }
-    } else
-#endif
-#if defined(__SSE2__) || defined(__x86_64__) || defined(_M_X64)
-    if (caps.has_sse4_1) {
-        __m128i ones = _mm_set1_epi64x(~0ULL);
-        for (; i + 2 <= count; i += 2) {
-            __m128i v = _mm_loadu_si128((const __m128i*)(dst + i));
-            v = _mm_xor_si128(v, ones);
-            if (use_nt && caps.has_nt_stores) {
-                _mm_stream_si128((__m128i*)(dst + i), v);
-            } else {
-                _mm_storeu_si128((__m128i*)(dst + i), v);
-            }
-        }
-    }
-#endif
-
-    for (; i < count; ++i) dst[i] = ~dst[i];
-    sfence();
-}
-
 // Safe forced memory read after cache flush
 // Avoids undefined behavior of volatile casts
 // Performs: flush cache line, memory fence, read value

@@ -65,7 +65,7 @@ bool streaming_fill_bypasses_cache();
 
 // Call after a streaming fill (use_nt=true) and before verifying it: flushes
 // the region only where such a fill can leave lines cached. Never use it after
-// loads or cached stores (verify passes, march replace, memcpy, invert_array):
+// loads or cached stores (verify passes, march replace, memcpy, mirror moves):
 // those leave lines cached, and prefetchers trained by loads can refill lines.
 void flush_after_streaming_fill(void* ptr, size_t bytes);
 
@@ -78,10 +78,6 @@ void generate_pattern_xor(T* dst, size_t count, uint64_t param0, uint64_t param1
 
 template<typename T>
 void generate_pattern_uniform(T* dst, size_t count, uint64_t val, bool use_nt);
-
-// Utility
-template<typename T>
-void invert_array(T* dst, size_t count, bool use_nt);
 
 // Verification (Read from Memory)
 // Returns the total mismatch count and stores at most max_error_samples pairs
@@ -145,6 +141,17 @@ void generate_pattern_beat(uint64_t* dst, size_t count, const BeatPattern& p, ui
 size_t verify_pattern_beat(const uint64_t* src, size_t count, const BeatPattern& p, uint64_t start_word,
                            std::vector<std::pair<uint64_t, uint64_t>>& errors,
                            size_t max_error_samples = MAX_ERROR_SAMPLES_PER_BLOCK);
+
+// Mirror moves: two streams converge from both ends of the block and swap what
+// they read, so each step reads and writes two far-apart rows (row conflicts and
+// read/write turnarounds in one thread). Writes are non-temporal where
+// available and fenced; callers must flush before verifying (the loads cached
+// the lines). 64-byte aligned blocks of whole lines take the SIMD path.
+// mirror_reverse_words: word i <-> word count-1-i (the block is reversed).
+// mirror_reverse_pairs: 16-byte unit i <-> unit units-1-i, each unit kept in
+// order (units = count / 2; an odd final word stays in place).
+void mirror_reverse_words(uint64_t* data, size_t count);
+void mirror_reverse_pairs(uint64_t* data, size_t count);
 
 // Safe forced memory read after cache flush
 // Use this instead of volatile casts (which are UB in C++)
