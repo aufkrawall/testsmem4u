@@ -607,9 +607,9 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
     try {
         if (config.time_limit_seconds) {
             deadline.start(start + std::chrono::seconds(config.time_limit_seconds), [&ctx, &config]() {
+                ctx.requestStop(); // first: logging may throw
                 LOG_INFO("Time limit of %s reached; stopping the test workers",
                          formatTimeLimit(config.time_limit_seconds).c_str());
-                ctx.requestStop();
             });
         }
         for (uint32_t t = 0; t < threads; ++t) {

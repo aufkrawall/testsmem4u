@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -30,8 +31,9 @@ public:
             try {
                 on_expire();
             } catch (...) {
-                // on_expire only logs and requests a stop; a failed log line must not
-                // terminate the process. The expired flag is already set.
+                // A throwing callback must not terminate the process; callers request
+                // their stop before anything that can throw (logging).
+                std::fputs("testsmem4u: time-limit callback failed\n", stderr);
             }
         });
     }
