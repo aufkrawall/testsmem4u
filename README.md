@@ -276,7 +276,29 @@ transition with its chunk and duration. Every log (no `--debug` needed) records
 when each cycle completed on every chunk and ends with a `Time breakdown`: per
 sequence entry the share of worker time, completed runs, average duration, how
 many seconds after start it first ran, verified GiB, and invocations cut short
-(`stopped`) when the run ended.
+(`stopped`) when the run ended, then `Time by function` totals (all entries of a
+test function combined, with the earliest start of any of them).
+
+`default.cfg` interleaves short slices, TestMem5 style: a marginal timing or
+voltage usually fails only under one kind of stress (row misses, read/write
+turnarounds, refresh under load, maximum toggling), so every kind runs early and
+keeps coming back instead of each test running once per cycle in one long block.
+MirrorMove128 recurs six times per cycle, RandomAccess and RefreshStable three
+times. Runtime scales with memory size divided by memory bandwidth, not with the
+core count. Projected from measured 64/128 MB runs on a Ryzen 7 5700X (DDR4, 16
+threads): about one hour per cycle at 28 GB (three cycles about 3 hours), no slice
+longer than about 3 minutes, every test type within the first 45 minutes. A test
+listed several times in a cycle writes new data at every occurrence.
+
+`Sequence Start=staggered` in a preset's `[Main Section]`, or
+`--sequence-start staggered`, starts each chunk at a different, evenly spread
+sequence entry, so workers run different tests at the same time and every test
+type runs from the start; each chunk still runs every entry once per cycle. The
+default is `aligned`. Staggering trades all-core phases of one test (maximum
+bandwidth and toggling) for a constant traffic mix, and RowHammer then overlaps
+other tests (it runs slower, and errors elsewhere are more often tagged as
+possible cross-chunk disturbance). Which finds errors faster on unstable memory
+is not yet measured.
 
 The percentage after the test index is how far that least advanced chunk is
 through its current test, including the test's internal repetitions.
