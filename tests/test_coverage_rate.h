@@ -346,7 +346,7 @@ void testSequenceTimingSummary() {
     timings.record(0, at(0), at(3), uint64_t{1} << 30, true);
     timings.record(0, at(10), at(11), uint64_t{1} << 30, true);
     timings.record(1, at(2), at(8), 0, true);
-    timings.record(1, at(9), at(11), 0, false);
+    timings.record(1, at(9), at(11), uint64_t{1} << 29, false);
     std::map<uint32_t, TestConfig> configs;
     configs[5].function = "SimpleTest";
     configs[7].function = "RowHammer";
@@ -361,8 +361,9 @@ void testSequenceTimingSummary() {
                lines[1].find("runs=2 avg=2.00s first=0.0s verified=2.00GiB") != std::string::npos,
            "Completed runs report share, average, first start and verified bytes");
     expect(lines[2].find("share= 66.7%") != std::string::npos && lines[2].find("first=2.0s") != std::string::npos &&
+               lines[2].find("verified=0.50GiB") != std::string::npos &&
                lines[2].find("stopped=1/2.0s") != std::string::npos,
-           "Stopped invocations count toward worker time and are reported separately");
+           "Stopped invocations count toward worker time and verified bytes and are reported separately");
     expect(lines[3].find("Modulo20") != std::string::npos && lines[3].find("not reached") != std::string::npos &&
                lines[4].find("BlockMove") != std::string::npos && lines[4].find("disabled") != std::string::npos,
            "Unreached and disabled entries are named, not omitted");

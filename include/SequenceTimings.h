@@ -21,7 +21,10 @@ public:
 
     SequenceTimings(size_t entries, Clock::time_point start) : entries_(entries), start_(start) {}
 
-    // completed=false records an invocation cut short by a stop request.
+    // completed=false records an invocation cut short by a stop request. Its
+    // bytes were verified and count in the run total, so they count here too
+    // (as its time does in worker-seconds); otherwise entries stopped late in
+    // a run reported verified=0 against GiBs of real coverage.
     void record(size_t entry, Clock::time_point began, Clock::time_point ended, uint64_t verified_bytes,
                 bool completed) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -29,10 +32,10 @@ public:
         Entry& item = entries_[entry];
         const double seconds = std::chrono::duration<double>(ended - began).count();
         const double offset = std::chrono::duration<double>(began - start_).count();
+        item.bytes += verified_bytes;
         if (completed) {
             ++item.runs;
             item.seconds += seconds;
-            item.bytes += verified_bytes;
         } else {
             ++item.stopped;
             item.stopped_seconds += seconds;
