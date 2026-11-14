@@ -1,6 +1,10 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-11-14 for the review fixes (startup stop latch, reserved-only
+Last verified: 2026-11-14 for the TestMem5-inspired additions (real mirror moves,
+per-beat complement pattern, Line Stride, idle-chunk checks, time limit, preset OS
+reserve; Windows baseline/AVX2/x86 + CLI, WSL Linux x86_64/x86, ASan/UBSan,
+clang-tidy on changed units, nine release targets, bounded 1-2 GiB runs incl. an
+old/new A/B); 2026-11-14 for the review fixes (startup stop latch, reserved-only
 Windows CPU sets, exact-byte RowHammer points and per-entry budget lines, run-length
 estimate, staggered no-op message; Windows baseline/AVX2/x86 + CLI, WSL Linux
 x86_64/x86 incl. `taskset` and hidden CPU sysfs, ASan/UBSan runners, clang-tidy,
@@ -42,8 +46,16 @@ long-run stalls; low for tested native progress/accounting paths.
   reporting, first-cause ownership and static message fallback under allocation failure.
 - `include/DisturbanceWindow.h`: flags test invocations that overlapped another
   worker's RowHammer so their errors can be annotated.
-- `src/TestPatterns.cpp`: SimpleTest, MirrorMove, MirrorMove128, walking bits,
-  and the shared public pattern verification/reporting entry point.
+- `src/TestPatterns.cpp`: SimpleTest (all pattern modes, Line Stride fills),
+  walking bits, and the shared public pattern verification/reporting entry point.
+- `src/TestMirror.cpp`, `src/simd_mirror.cpp`: MirrorMove/MirrorMove128 and the
+  converging mirror kernels (`mirror_reverse_words/pairs`).
+- `src/simd_beat.cpp`, `simd::BeatPattern` in `include/simd_ops.h`: per-beat
+  complement generate/verify (SimpleTest Pattern Mode 3, MirrorMove128 data).
+- `include/IdleChunkCheck.h`, `src/IdleChunkCheck.cpp`, `ResidualPattern` in
+  `include/Types.h`: idle-chunk checks (leftover data re-verified on the next claim).
+- `include/RunDeadline.h`, `include/InputSpec.h`: run time limit timer and the
+  shared memory/time input parser (wizard, `--memory`, `--duration`).
 - `src/TestMarch.cpp`: LFSR verification and moving-inversion variants.
 - `src/simd_verify.cpp`, `include/MemoryTestKernels.h`: first-observation comparison,
   SIMD read/replace in either direction, and forward/inverse LFSR recurrence.
@@ -61,7 +73,7 @@ long-run stalls; low for tested native progress/accounting paths.
 - `src/ConsoleDisplay.cpp`: compact status with error count/time before the variable-length test name.
 - `tests/test_sequence_schedule.h`: occurrence numbering, repeated-entry data,
   staggered slot coverage/first tests, per-function time totals.
-- `default.cfg`: 19 test definitions (14 functions) in a 37-entry interleaved
+- `default.cfg`: 20 test definitions (14 functions) in a 39-entry interleaved
   sequence; see "Default preset layout" below.
 
 ## Page-allocation defaults and limits
@@ -324,8 +336,9 @@ before). Occurrences are keyed by test ID, not function: distinct IDs with ident
 settings are the preset author's choice. Kernels XOR `variationMask(variation, repetition)` into their pattern
 or seed; the mask is zero only for (0, 0), so the first repetition of the first pass
 writes exactly the configured data and existing contracts hold. Per kernel: SimpleTest
-modes 1/2 and MirrorMove vary param0 per repetition; MirrorMove128 XORs one mask into
-both pair words (keeps complements); BlockMove adds mask(v, 0) to its existing
+modes 1/2 vary param0 per repetition, mode 3 varies the beat tag salt (keeps the
+configured complement relations); MirrorMove varies its linear base and MirrorMove128
+its beat salt once per invocation (the mirror passes then move that data); BlockMove adds mask(v, 0) to its existing
 per-repetition step; MovingInversion uses value/complement pairs with a new value
 per pair (r / 2); LFSRPattern/MovingInversionLFSR use `regionSeed` (configured seed,
 variation, repetition and a chunk/sub-block offset salt; zero state replaced);
@@ -462,10 +475,11 @@ directly and injects faults at all three real uniform-march boundaries.
 
 Post-fill flush elision (2026-11-13; `simd::streaming_fill_bypasses_cache` and
 `flush_after_streaming_fill` in `src/simd_ops.cpp`): after a pure streaming fill
-(`generate_pattern_*`/`fill_lfsr`/MirrorMove128's fill with use_nt) the whole-region
-flush is skipped on x86-64 when `has_nt_stores` (SSE4.1 era) is set. Invariant: on
-that path every word, including odd tails, is a non-temporal store (the uniform
-tail and MirrorMove128's odd tail became MOVNTI for this); NT stores evict any
+(`generate_pattern_*` incl. `generate_pattern_beat`, `fill_lfsr`, Line Stride fills
+with use_nt) the whole-region flush is skipped on x86-64 when `has_nt_stores` (SSE4.1
+era) is set. Invariant: on that path every word, including odd tails, is a
+non-temporal store (the uniform tail became MOVNTI for this; beat and strided fills
+use MOVNTI for unaligned/odd words); NT stores evict any
 cached copy (Intel SDM Vol. 1 "Caching of Temporal vs. Non-Temporal Data"; older
 CPUs such as Pentium M could update a cached line in place, but lack SSE4.1).
 Measured with `tools/probes/nt_fill_cache_probe.cpp` on Zen 3: reads after an AVX2
@@ -474,8 +488,9 @@ CLFLUSHOPT (11.3-13.7 us per 256 KiB) against 1.9 us when cached. AMD's own manu
 text was not retrieved; run the probe on new CPU families. The probe uses CLFLUSH
 where CPUID lacks CLFLUSHOPT (Haswell/Broadwell, pre-Zen; it used to SIGILL there)
 and `--clflush` forces it; both measured equal on Zen 3. Kept flushes: after any
-load pass (verify sweeps, `invert_array`, whose loads also train prefetchers that
-could refill lines), march read/replace, memmove/memcpy, Modulo20 disturbance,
+load pass (verify sweeps; mirror moves, whose loads cache lines before the NT
+stores and also train prefetchers; idle-chunk checks, since the previous test's last
+verify blocks may still be cached), march read/replace, memcpy, Modulo20 disturbance,
 RefreshStable before verifying the held half (its 64-byte split is not page-aligned,
 so prefetchers on the active half can touch it), RowHammer final sweep, and
 everything on ARM64/32-bit x86/non-SSE4.1 CPUs. Rejected: flushing only a
@@ -493,8 +508,54 @@ Per-march summaries identify the selected pattern path; no per-flush logging is 
 
 BlockMove uses an address-dependent odd-stride pattern. It verifies both copies,
 poisons the return destination, copies in both directions, and checks odd tails.
-MirrorMove128 verifies initialization, an overlapping one-word rotation, and the
-restored alternating pair pattern (including odd-length wrapped tails).
+Mirror moves (since 2026-11-14; until then MirrorMove inverted in place and
+MirrorMove128 rotated by one word with memmove, so nothing moved between distant
+addresses). Two streams start at both ends of the region, load a 64-byte line each,
+and store them swapped while converging (`mirror_reverse_words`: word i <-> count-1-i;
+`mirror_reverse_pairs`: 16-byte unit i <-> units-1-i, units kept intact). Stores are
+non-temporal; SIMD line paths (SSE2/AVX2/AVX-512) need 64-byte alignment and whole
+lines, otherwise a scalar MOVNTI/plain-store path runs. The region is flushed after
+each pass and fully verified. MirrorMove data is linear (`base + g * step`, Param1 or
+the golden step if 0); after a reversal it is linear again with `base += (2 g0 + count
+- 1) step`, `step = -step`, so the existing linear verifier checks every pass.
+MirrorMove128 data is a beat pattern (Param0/Param1 even/odd words, tag step
+0xD1B54A32D192ED03); `simd::beat_mirrored` gives the pattern after reversing units
+(salt += (g0 + units - 1) step, step = -step; involution). A leading odd global word
+and an odd final word stay in place and are verified against the original pattern.
+Parameter = mirror passes. A word misread during a move is written to the mirrored
+position, so its error is reported where it landed and re-reads classify it as hard
+(the wrong value was stored); `--debug` logs a per-invocation summary.
+
+Per-beat complement pattern (`simd::BeatPattern`, SimpleTest Pattern Mode 3): global
+word g holds `(g odd ? odd : even) ^ beat_tag(salt + (g >> 1) * step)`, where
+`beat_tag` copies the low 32 bits into both halves. With odd = ~even, consecutive
+64-bit words in a 16-byte unit are complements; with even = X:~X (32-bit halves),
+each word's halves are complements, and the symmetric tag preserves both relations.
+An odd step makes every 16-byte unit's tag unique within 64 GiB. SimpleTest uses
+even = Param0, odd = ~Param0, step = Param1, salt = pass variation. Caveat: memory
+controllers that scramble bus data (on by default on most current platforms) XOR an
+address-keyed stream into what the bus carries, so the physical full toggling only
+holds with scrambling off; the pattern is then still a distinct address-tagged one.
+
+Line Stride (SimpleTest, preset key `Line Stride`, `TestConfig::line_stride`):
+`fillStridedLines` writes whole 64-byte lines in the order 0, s, 2s, ..., 1, s+1, ...,
+then a partial final line; every word is MOVNTI on x86-64. Verification stays
+sequential. Measured 2026-11-14 (2 GiB, 16 threads, 5700X): stride 256 costs ~23%
+more per fill+verify pass than a sequential fill; the controller's write reordering
+likely absorbs part of the intended row-miss effect (unmeasured).
+
+Idle-chunk checks (`IdleChunkCheck.cpp`): kernels that complete with known data set
+`TestResult::residual` (SimpleTest all modes, MirrorMove, MirrorMove128 without
+lead/tail words, RandomAccess); `runRegionWork` keeps it for sub-blocks only when
+every block left the same global-address data (so block-wise mirror moves leave
+none). The worker records it per chunk before releasing the lease; the next claim
+flushes and re-verifies the whole chunk ("Idle check after <test>") before the entry
+runs, then forgets it. Skipped when the claiming worker wrote it and completed
+nothing since (single worker). Chunk residual state needs no lock: only the lease
+holder touches it and the scheduler mutex orders claim/release. Errors note
+cross-chunk RowHammer (started since, or running). Run-end INFO line: checks, GiB,
+idle min/avg/max, errors, skips; `--debug` logs each check. Cost: one read pass plus
+a flush walk per entry (~1% of verified bytes in a 1 GiB default.cfg run).
 
 RandomAccess issues up to 16 independent locations in disjoint address bands,
 checks the original, inverted, and restored values, and flushes/fences writes as
@@ -604,6 +665,16 @@ tested; physical activation rates and fault-detection gains remain unmeasured.
 
 ## Default preset layout (interleaved, 2026-11-14)
 
+Update 2026-11-14 (TestMem5-inspired changes): 39 entries; Test19 (beat SimpleTest,
+Param0 0x33333333CCCCCCCC, Time 40) twice per cycle; Test4 with Line Stride 256 and
+Time 40 (was 50; strided fills ~25% slower); MirrorMove128 words
+0x55555555AAAAAAAA/0xAAAAAAAA55555555. Mirror pass counts recalibrated with an
+old/new A/B at 2 GiB (Parameter 10 each: MirrorMove 2.11 -> 1.43 s, MirrorMove128
+3.45 -> 1.32 s per invocation): MirrorMove 74 (was 50), MirrorMove128 100 (was 40),
+keeping slice lengths (MirrorMove128 ~3.2 min at 28 GiB, from 6.9 s per 57 MiB chunk
+x 28 in a 1 GiB run). Projection ~64 min per cycle (new entries ~1.2 min, idle checks
+~1%); unconfirmed by a full-size run. The text below describes the 37-entry layout.
+
 Sources: `default.cfg`; projection inputs from the user's 64 MiB `default.cfg` run
 (old layout, 18 chunks, 16 workers, Ryzen 7 5700X/DDR4) and a bounded 128 MiB run of
 the new layout with RowHammer/RefreshStable shortened (scratch only).
@@ -644,12 +715,35 @@ scaling the dwell with chunk size was considered and not done (would change the
 Parameter meaning and weaken small-window retention). Quick small-window runs can
 lower Test11's Parameter.
 
-Open/stale-risk: no unstable-hardware time-to-first-error data for any layout or for
-aligned vs staggered (suggested protocol: deliberately marginal timing/voltage, several
+Open/stale-risk: efficacy of real mirror moves, beat patterns, Line Stride and
+idle-chunk checks on marginal hardware is unmeasured; no unstable-hardware
+time-to-first-error data for any layout or for aligned vs staggered (suggested protocol: deliberately marginal timing/voltage, several
 20-30 min runs per variant, compare `Time by function` and first-error times);
 RandomAccess/RowHammer per-access cost at 28 GiB may exceed the small-window
 extrapolation (TLB reach, row-buffer misses); Test18 and RowHammer efficacy unmeasured;
 the user's full-size run has not yet confirmed the projection.
+
+## TestMem5 comparison (static analysis, 2026-11-14)
+
+Local copy of TestMem5 0.13.1 with anta777 presets, inspected with `llvm-objdump`
+(never executed). Verified in `bin/MT0.dll` (exports BlockMove, MemManager,
+MirrorMove128, MirrorMove, RefreshStable, SimpleTest): no non-temporal stores and no
+CLFLUSH, only cached `movaps` plus `prefetchnta`; `rdtsc` only as pass timing (start
+and delta / 1000). MirrorMove (loop at 0x401d79) walks one pointer up from the start
+and one down from the end, loads 64 bytes at each and stores them swapped with the
+16-byte lanes reversed; MirrorMove128 (0x4020d0) swaps 128-byte blocks in order. The
+base pattern generator (0x40224c, called by SimpleTest at 0x401a22 before the mode
+transform at 0x4022d0) derives a 16-bit value from the 4 KiB page number
+(addr >> 12, + addr >> 28, swapped with its complement by address bit 12), rotates it
+per 16-bit word, and alternates value/complement in runs of a geometry-derived width
+(8 bytes for the shipped `[Global Memory Setup]`): pattern mode 0 is therefore not a
+constant. Mode 1 XORs a fixed mask, mode 2 multiplies by the parameters (pmullw).
+Not verified (TM5.exe/TM5.dll not disassembled here): a hidden Test0 background
+pattern checked around every block, and `Minutes=0` falling back to 90 minutes.
+Adopted: real mirror moves, per-beat complement pattern, strided fills, idle-chunk
+checks (a cheaper form of the background pattern: verify what the previous test left
+instead of writing an extra pattern), time limits, the OS reserve. Not adopted:
+cached 4 MiB loops (they can stay in L3 on current CPUs) and removing flushes.
 
 ## Diagnostics and interpretation
 

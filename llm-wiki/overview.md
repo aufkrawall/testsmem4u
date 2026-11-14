@@ -15,8 +15,19 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   same question order/defaults; main resolves a copy and saves the original
   requested percentage/all-core policies. Wizard/CLI normalization uses the
   preferred native large-page size on both platforms. Program/version/default-path
-  constants now live in `include/RunConfiguration.h`.
+  constants now live in `include/RunConfiguration.h`. The wizard memory prompt,
+  `--memory` and `--duration` share `include/InputSpec.h` (`85%`, `2048MB`, `27GB`,
+  optional time limit `27GB4h`/`50MB30m`; first number = memory, so a later `m` is
+  minutes). A time limit without explicit cycles sets cycles to 0 (wizard skips the
+  cycle prompt); saved as `TimeLimitSeconds`. Sizing subtracts the preset's
+  `Reserved Memory for Windows (Mb)` (all platforms, floor 256 MB; was ignored before
+  2026-11-14) from percentage windows and the safe maximum.
 - `src/TestEngine.cpp`: allocation, dispatch, dynamic chunk scheduling (`include/RegionScheduler.h`), and monitoring.
+  `include/RunDeadline.h` stops the workers when the time limit expires (a thread
+  blocked on a condition variable, no polling); `RunResult::stop_reason` records why
+  testing ended (infrastructure failure > cycles > time limit > halt on error > stop
+  request). `include/IdleChunkCheck.h` re-verifies a chunk's leftover data on the
+  next claim.
 - `src/HugePageSetup.cpp`, `include/HugePageSetup.h`: checked Linux THP policy
   inspection and stream-driven runtime setup component, with injectable controls
   for deterministic regression coverage. Linux startup invokes it after the final
@@ -25,8 +36,10 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `include/TestProgress.h`: separate worker counters and scoped thread-local binding for nested kernels; `VerificationProgress` in `TestEngineInternal.h` publishes verified blocks and error deltas once.
 - `include/ProgressDiagnostics.h`: monitor-owned byte/age sampling and capped periodic debug summaries; worker phases are atomic pointers to static labels.
 - `include/InfrastructureFailure.h`: records thread failure/stop before allocating diagnostics, preserves the first cause, and uses bounded stderr reporting if detail storage or logging throws.
-- `src/TestPatterns.cpp`, `src/TestMarch.cpp`, `src/TestMemoryTraffic.cpp`, `src/TestModulo.cpp`,
-  `src/TestRowHammer.cpp`: algorithm units; `src/simd_verify.cpp` owns first-observation march kernels.
+- `src/TestPatterns.cpp`, `src/TestMirror.cpp`, `src/TestMarch.cpp`, `src/TestMemoryTraffic.cpp`,
+  `src/TestModulo.cpp`, `src/TestRowHammer.cpp`: algorithm units; `src/simd_verify.cpp` owns
+  first-observation march kernels, `src/simd_mirror.cpp` the mirror moves and
+  `src/simd_beat.cpp` the per-beat complement pattern.
 - `src/Platform.cpp`: privilege management, system RAM sizing and shutdown handlers.
 - `src/PlatformCpu.cpp`: CPU topology detection, affinity and cached platform info.
 - `src/PlatformMemory.cpp`: allocation/cleanup dispatch, RAII and residency checks.
