@@ -256,3 +256,23 @@ void testStreamingFillCacheContract() {
         expect(exact, "Streaming uniform fills write every word including odd tails, and nothing beyond");
     }
 }
+
+void testLfsrWordsAreIndependent() {
+    // Raw one-bit-step LFSR states made each word a shifted copy of the previous
+    // one (bit j of word i+1 == bit j+1 of word i, except four feedback taps).
+    // An unkeyed mix64(state) still produced ~27 exact shifted copies here.
+    alignas(64) std::array<uint64_t, 1024> words{};
+    simd::fill_lfsr(words.data(), words.size(), 0xACE1ACE2DEADBEEFULL);
+    constexpr uint64_t untapped = ~(0xD800000000000000ULL | (1ULL << 63) | (1ULL << 59));
+    size_t shifted_copies = 0;
+    uint64_t agreeing_bits = 0;
+    for (size_t i = 0; i + 1 < words.size(); ++i) {
+        const uint64_t predicted = words[i] >> 1;
+        shifted_copies += ((words[i + 1] ^ predicted) & untapped) == 0;
+        agreeing_bits += static_cast<uint64_t>(__builtin_popcountll(~(words[i + 1] ^ predicted) & untapped));
+    }
+    const double agreement = static_cast<double>(agreeing_bits) /
+                             (static_cast<double>(words.size() - 1) * __builtin_popcountll(untapped));
+    expect(shifted_copies == 0 && agreement > 0.48 && agreement < 0.52,
+           "LFSR words are not shifted copies of their predecessors (bit agreement near 50%)");
+}

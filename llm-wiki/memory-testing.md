@@ -306,6 +306,25 @@ old memcmp-then-re-read transient-loss window. Reverse LFSR generation starts fr
 the terminal state and walks the inverse recurrence; no count-sized seed-table
 prepass exists, and partial backward blocks use their actual indices.
 
+Stored LFSR words are `lfsrOutput(state)`: `p = (state ^ kLfsrOutputSalt) * odd;
+p ^ (p >> 32)` (changed 2026-11-13, `include/MemoryTestKernels.h`). The state
+recurrence, period, reverse traversal and partial-block handling are unchanged; fill
+and expected generation both apply the output function (AVX2 four lanes, SSE2 two
+lanes with a T^2 state step, scalar for prefixes/tails and other ISAs). Why: one
+Galois step per word made consecutive words shifted copies, so neighbouring data
+bits saw the same stream one word apart. Pitfall: mixing the raw state is not
+enough, even with the two-multiply `mix64`: odd multiplies and xor-shift-right
+commute with a one-bit right shift about half the time each, leaving ~3% exact
+shifted copies and neighbour bit correlations up to 0.24. The XOR before mixing
+removes both; pairwise (lags 1/2/3/8, within-word) and three-bit correlations are at
+noise level. Throughput (1 GiB, 16 threads, LFSR tests, medians of 4 runs with some
+background load): raw output 21.0 (SSE2 build) / 20.9 (AVX2) GiB/s; one-multiply
+20.7 / 20.9; rejected two-multiply `mix64` 17.8 (scalar) or 19.6 (SSE2 lanes) / 20.8.
+The expected-table generation runs serially with verification, so its compute cost
+appears directly as lost bandwidth on pre-AVX2 builds.
+Regression: `testLfsrWordsAreIndependent` (zero shifted copies, 48-52% agreement);
+scalar-reference tests compare SIMD output (all alignments/tails) with `lfsrOutput`.
+
 `src/simd_lfsr.cpp` advances four consecutive states with a closed-form T^4
 transform in AVX2 lanes. Cached expected generation shares that exact sequence.
 Reverse blocks find their initial state with T^-4 and a 16-entry constexpr

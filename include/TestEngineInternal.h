@@ -1,6 +1,7 @@
 #pragma once
 #include "TestEngine.h"
 #include "Logger.h"
+#include "MemoryTestKernels.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -91,12 +92,7 @@ inline void generatePatternValue(uint64_t index, uint8_t mode, uint64_t p0, uint
     else val = index;
 }
 
-// SplitMix64 finalizer: a bijective 64-bit mixer.
-constexpr uint64_t mix64(uint64_t value) {
-    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    value = (value ^ (value >> 27)) * 0x94D049BB133111EBULL;
-    return value ^ (value >> 31);
-}
+using simd::mix64;
 
 // XOR mask for one internal repetition of one scheduled pass. It is zero only
 // for the first repetition of the first pass, which therefore writes exactly the

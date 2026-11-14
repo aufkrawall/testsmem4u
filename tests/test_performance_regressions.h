@@ -38,7 +38,7 @@ void testLfsrParallelGeneration() {
             std::vector<uint64_t> reference(count);
             uint64_t end = seed;
             for (auto& value : reference) {
-                value = end;
+                value = simd::lfsrOutput(end);
                 end = (end >> 1) ^ ((end & 1) ? 0xD800000000000000ULL : 0);
             }
             for (size_t offset = 0; offset < 4; ++offset) {

@@ -22,7 +22,7 @@ void testEngineRegressions() {
         expect(result.bytes_tested == count * 8 * 3, "LFSR march: three verified passes");
         uint64_t value = regionSeed(tc.pattern_param0, region.base_offset_bytes, tc.variation, 0);
         for (size_t i = 0; i < count; ++i) {
-            expect(memory[i] == value, "LFSR march: backward writes restore original data");
+            expect(memory[i] == simd::lfsrOutput(value), "LFSR march: backward writes restore original data");
             expect(simd::lfsrPrevious(simd::lfsrNext(value)) == value, "LFSR inverse round trip");
             value = simd::lfsrNext(value);
         }
@@ -186,7 +186,7 @@ void testEngineRegressions() {
         const uint64_t next = simd::fill_lfsr(filled.data(), filled.size(), tc.pattern_param0);
         uint64_t value = tc.pattern_param0;
         for (uint64_t word : filled) {
-            expect(word == value, "fill_lfsr writes consecutive LFSR states");
+            expect(word == simd::lfsrOutput(value), "fill_lfsr writes the output of consecutive LFSR states");
             value = simd::lfsrNext(value);
         }
         expect(next == value, "fill_lfsr returns the state after the last word");

@@ -733,6 +733,7 @@ int main() try {
     testRegionSchedulerContracts();
     testSlowWorkerCannotStarveAChunk();
     testStreamingFillCacheContract();
+    testLfsrWordsAreIndependent();
     testPassVariationChangesData();
     testScheduledPassesUseNewData();
     testUniformMarchSpecialization();
