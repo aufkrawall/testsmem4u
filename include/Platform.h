@@ -98,8 +98,13 @@ public:
     // Verify memory is still resident in physical RAM (not swapped/reclaimed)
     static bool checkMemoryResident(const uint8_t* base, size_t size);
 
-    // Safe memory allocation with bounds checking
-    static uint64_t getMaxTestableMemory(uint64_t total_ram, uint32_t percent_requested);
+    // Memory never tested so the OS keeps running: the preset's "Reserved Memory
+    // for Windows (Mb)" (all platforms), but at least this much.
+    static constexpr uint32_t kMinOsReserveMB = 256;
+
+    // percent_requested of total_ram minus the OS reserve (0 if nothing is left).
+    static uint64_t getMaxTestableMemory(uint64_t total_ram, uint32_t percent_requested,
+                                         uint32_t reserve_mb = kMinOsReserveMB);
     
     // Control system-wide memory defragmentation (standby list purge, working set trim, etc.)
     static void setAggressiveDefrag(bool enabled);

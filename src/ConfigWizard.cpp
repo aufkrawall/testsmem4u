@@ -62,8 +62,8 @@ uint32_t normalizeWindowMBForLargePages(uint32_t memory_window_mb, bool use_larg
     return memory_pages::normalizeWindow(memory_window_mb, use_large_pages, Platform::getPreferredLargePageSize());
 }
 
-uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent, bool use_large_pages) {
-    uint64_t max_mem = Platform::getMaxTestableMemory(sizing_ram, percent);
+uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent, bool use_large_pages, uint32_t reserve_mb) {
+    uint64_t max_mem = Platform::getMaxTestableMemory(sizing_ram, percent, reserve_mb);
     uint32_t window_mb = static_cast<uint32_t>(max_mem / 1024 / 1024);
     return normalizeWindowMBForLargePages(window_mb, use_large_pages);
 }

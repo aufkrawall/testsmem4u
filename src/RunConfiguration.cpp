@@ -86,9 +86,20 @@ bool prepareConfigForRun(Config& config, const PlatformInfo& plat,
         return false;
     }
 
+    // Honor the preset's "Reserved Memory for Windows (Mb)" (OS reserve on every
+    // platform); it used to be parsed and ignored in favor of a fixed 256 MB.
+    const uint32_t reserve_mb = effectiveOsReserveMB(config.preset);
+    LOG_DEBUG("Sizing: RAM=%llu MB OS-reserve=%u MB (preset %u MB, minimum %u MB) request=%u MB / %u%%",
+              static_cast<unsigned long long>(sizing_ram / 1024 / 1024), reserve_mb, config.preset.reserved_memory_mb,
+              Platform::kMinOsReserveMB, config.memory_window_mb, config.memory_window_percent);
+    if (config.preset.reserved_memory_mb < Platform::kMinOsReserveMB) {
+        LOG_WARN("Preset reserves %u MB for the OS; keeping the %u MB minimum instead",
+                 config.preset.reserved_memory_mb, Platform::kMinOsReserveMB);
+    }
+
     if (config.memory_window_mb == 0) {
         config.memory_window_mb = computeWindowMBFromPercent(
-            sizing_ram, config.memory_window_percent, config.use_large_pages);
+            sizing_ram, config.memory_window_percent, config.use_large_pages, reserve_mb);
     }
 
     requested_window_mb = config.memory_window_mb;
@@ -103,21 +114,24 @@ bool prepareConfigForRun(Config& config, const PlatformInfo& plat,
         return false;
     }
 
-    uint64_t max_safe_bytes = Platform::getMaxTestableMemory(sizing_ram, 100);
-    if (max_safe_bytes > 0) {
-        uint64_t requested_bytes = static_cast<uint64_t>(config.memory_window_mb) * size_t{1024} * 1024;
-        if (requested_bytes > max_safe_bytes) {
-            std::ostringstream ss;
-            ss << "Requested memory window (" << config.memory_window_mb
-               << " MB) exceeds the safe maximum ("
-               << (max_safe_bytes / 1024ULL / 1024ULL)
-               << " MB) for this system.";
-            error = ss.str();
-            return false;
-        }
+    const uint64_t max_safe_bytes = Platform::getMaxTestableMemory(sizing_ram, 100, reserve_mb);
+    const uint64_t requested_bytes = static_cast<uint64_t>(config.memory_window_mb) * size_t{1024} * 1024;
+    if (requested_bytes > max_safe_bytes) {
+        std::ostringstream ss;
+        ss << "Requested memory window (" << config.memory_window_mb
+           << " MB) exceeds the safe maximum ("
+           << (max_safe_bytes / 1024ULL / 1024ULL)
+           << " MB = " << (sizing_ram / 1024ULL / 1024ULL) << " MB RAM minus the " << reserve_mb
+           << " MB OS reserve from the preset's 'Reserved Memory for Windows (Mb)') for this system.";
+        error = ss.str();
+        return false;
     }
 
     return true;
+}
+
+uint32_t effectiveOsReserveMB(const PresetInfo& preset) {
+    return std::max(preset.reserved_memory_mb, Platform::kMinOsReserveMB);
 }
 
 bool resolveConfiguration(const CliOptions& cli, bool automation_mode,
@@ -244,6 +258,11 @@ void printConfigSummary(const ConfigResolution& resolution, const CliOptions& cl
         std::ostringstream ss;
         ss << "  Alignment:       " << resolution.requested_window_mb
            << " MB requested, " << config.memory_window_mb << " MB effective";
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  OS reserve:      " << effectiveOsReserveMB(config.preset) << " MB (preset 'Reserved Memory for Windows (Mb)')";
         ConsoleDisplay::get().printLine(ss.str());
     }
     {

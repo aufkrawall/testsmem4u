@@ -275,14 +275,15 @@ uint64_t Platform::getAvailableSystemRAM() {
 #endif
 }
 
-uint64_t Platform::getMaxTestableMemory(uint64_t total_ram, uint32_t percent_requested) {
+uint64_t Platform::getMaxTestableMemory(uint64_t total_ram, uint32_t percent_requested, uint32_t reserve_mb) {
     if (percent_requested > 100) percent_requested = 100;
-    // Reorder operations to prevent overflow: total_ram / 100 * percent
-    // This is safe because total_ram / 100 <= 2^64 / 100 for any realistic RAM size
-    uint64_t max_allowed = (total_ram / 100) * percent_requested;
-    uint64_t min_reserved = size_t{256} * 1024 * 1024; // 256 MB minimum
-    if (max_allowed <= min_reserved) return 0;
-    return max_allowed - min_reserved;
+    // Exact floor(total_ram * percent / 100) without 64-bit overflow. The former
+    // (total_ram / 100) * percent dropped up to 99 bytes, so at 100% a window of
+    // exactly RAM minus the reserve was refused by one MB.
+    const uint64_t max_allowed = (total_ram / 100) * percent_requested + (total_ram % 100) * percent_requested / 100;
+    const uint64_t reserved = uint64_t{std::max(reserve_mb, kMinOsReserveMB)} * 1024 * 1024;
+    if (max_allowed <= reserved) return 0;
+    return max_allowed - reserved;
 }
 
 #ifdef _WIN32

@@ -66,3 +66,39 @@ void testWizardExplicitSettings() {
     config = fixture.run("\n\n0\n\n\n\n", prompts);
     expect(config.cycles == 0, "Explicit infinite-cycle selection remains supported");
 }
+
+// "Reserved Memory for Windows (Mb)" was parsed but sizing always reserved 256 MB.
+void testPresetOsReserveSizing() {
+    const auto platform = Platform::detectPlatform();
+    auto resolve = [&](uint32_t reserve_mb, uint32_t window_mb, uint64_t& sizing_ram, std::string& error) {
+        const auto path = uniqueTempPath("_reserve.cfg");
+        {
+            std::ofstream file(path);
+            file << "[Global Memory Setup]\nReserved Memory for Windows (Mb)=" << reserve_mb
+                 << "\nTest Sequence=0\n[Test0]\nFunction=SimpleTest\nParameter=1\n";
+        }
+        Config config;
+        config.preset_file = path;
+        config.memory_window_mb = window_mb;
+        config.memory_window_percent = window_mb ? 0 : 100;
+        config.use_large_pages = false;
+        uint32_t requested = 0;
+        const bool ok = prepareConfigForRun(config, platform, sizing_ram, requested, error);
+        cleanupFile(path);
+        return ok ? config.memory_window_mb : 0U;
+    };
+    uint64_t ram = 0;
+    std::string error;
+    const uint32_t with_512 = resolve(512, 0, ram, error);
+    const uint32_t with_2048 = resolve(2048, 0, ram, error);
+    const uint32_t with_0 = resolve(0, 0, ram, error);
+    expect(with_512 > 0 && with_512 - with_2048 == 1536 && with_0 - with_512 == 256,
+           "100% sizing subtracts the preset's OS reserve, at least 256 MB");
+    const uint32_t over = static_cast<uint32_t>(ram / 1024 / 1024) - 2048 + 1;
+    error.clear();
+    expect(resolve(2048, over, ram, error) == 0 && error.find("2048 MB OS reserve") != std::string::npos,
+           "An explicit window that eats into the preset's OS reserve is refused with the reason");
+    error.clear();
+    expect(resolve(2048, over - 1, ram, error) == over - 1,
+           "A window that leaves the OS reserve free is accepted: " + error);
+}

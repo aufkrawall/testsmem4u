@@ -83,5 +83,8 @@ void printConfigSummary(const ConfigResolution& resolution, const CliOptions& cl
 Config runConfigWizard(std::istream& input_stream, std::ostream& output_stream);
 uint64_t getSizingBaselineRAM();
 uint32_t normalizeWindowMBForLargePages(uint32_t memory_window_mb, bool use_large_pages);
-uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent, bool use_large_pages);
+uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent, bool use_large_pages,
+                                    uint32_t reserve_mb = Platform::kMinOsReserveMB);
+// The preset's OS reserve with the Platform::kMinOsReserveMB floor applied.
+uint32_t effectiveOsReserveMB(const PresetInfo& preset);
 } // namespace testsmem4u
