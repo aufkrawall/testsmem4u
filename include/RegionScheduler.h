@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <mutex>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -188,6 +190,32 @@ struct EnabledSequence {
         return cycle(position) * occurrences[s] + occurrence[s];
     }
 };
+
+// One startup line describing the cycle: enabled slots, distinct test IDs and
+// the IDs listed more than once (capped), so an interleaved preset's structure
+// is visible in every log without reading the preset.
+inline std::string describeSequence(const EnabledSequence& sequence, const std::vector<uint32_t>& ids,
+                                    const std::map<uint32_t, TestConfig>& configs) {
+    std::vector<uint32_t> distinct;
+    std::string repeated;
+    size_t repeated_ids = 0;
+    for (size_t slot = 0; slot < sequence.size(); ++slot) {
+        const uint32_t id = ids[sequence.entries[slot]];
+        if (std::find(distinct.begin(), distinct.end(), id) != distinct.end()) continue;
+        distinct.push_back(id);
+        if (sequence.occurrences[slot] < 2) continue;
+        if (++repeated_ids <= 8) {
+            const auto config = configs.find(id);
+            repeated += (repeated.empty() ? "" : ", ") +
+                        (config == configs.end() ? std::string("?") : config->second.function) + "(Test" +
+                        std::to_string(id) + ") x" + std::to_string(sequence.occurrences[slot]);
+        }
+    }
+    if (repeated_ids > 8) repeated += ", +" + std::to_string(repeated_ids - 8) + " more";
+    return "Sequence: " + std::to_string(sequence.size()) + " enabled entries per cycle, " +
+           std::to_string(distinct.size()) + " distinct tests; repeated per cycle: " +
+           (repeated.empty() ? std::string("none") : repeated);
+}
 
 // Returns the claimed chunk on every exit path; complete() publishes progress.
 class ChunkLease {

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- **Different tests on different cores (opt-in):** `Sequence Start=staggered` in a preset's `[Main Section]`, or `--sequence-start staggered` on the command line, makes each memory chunk start the test sequence at a different, evenly spread entry. Workers then run different tests at the same time, so the memory traffic always mixes streaming, copies, random accesses and retention holds instead of all cores running one test, and every test type is running from the first minutes. Every chunk still runs every entry once per cycle, so coverage and cycle counting are unchanged. The default stays `aligned` (all chunks start at the first entry) until comparisons on unstable hardware show which finds errors faster; RowHammer then overlaps other tests, so their errors are more often tagged as possible cross-chunk disturbance. `--show-config` shows the effective mode and its source, and the log records it at startup together with a one-line summary of the sequence (entries per cycle, distinct tests, tests listed more than once).
+
 ### Improved
 
 - **Cycle timing in every log:** `testsmem4u.log` now records when each cycle completed on every memory chunk and ends with a time breakdown per sequence entry: share of worker time, completed runs, average duration, seconds after start until it first ran, verified GiB, and invocations cut short when the run ended, followed by totals per test function (all its sequence entries combined, with the earliest start of any of them). Where a cycle's time goes, and how soon every test type runs, no longer needs `--debug` or log post-processing.

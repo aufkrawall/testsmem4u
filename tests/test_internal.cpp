@@ -744,6 +744,8 @@ int main() try {
     testSequenceOccurrencesNumberPasses();
     testRepeatedEntriesUseNewData();
     testFunctionTimingSummary();
+    testStaggeredSlotsCoverEveryEntry();
+    testStaggeredStartRunsDifferentTests();
     testUniformMarchSpecialization();
     testLfsrParallelGeneration();
     testTrafficKernelSpecializations();

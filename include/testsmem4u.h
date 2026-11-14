@@ -26,6 +26,9 @@ struct PresetInfo {
     uint32_t memory_window_mb = 0;
     std::string test_sequence;
     std::map<uint32_t, TestConfig> test_configs;
+    // "Sequence Start=staggered": chunk c starts the sequence at enabled slot
+    // c * N / chunks, so workers run different tests at the same time.
+    bool staggered_start = false;
 
     // TestMem5 extended fields
     uint32_t channels = 2;
@@ -40,6 +43,10 @@ struct PresetInfo {
     std::string validation_error;
 };
 
+// Where each memory chunk starts the test sequence. PRESET follows the
+// preset's "Sequence Start" key; the others are --sequence-start overrides.
+enum class SequenceStart : uint8_t { PRESET, ALIGNED, STAGGERED };
+
 // Main configuration
 struct Config {
     uint32_t memory_window_mb = 0;
@@ -52,7 +59,13 @@ struct Config {
     bool debug_mode = false;
     std::string preset_file;
     PresetInfo preset;
+    SequenceStart sequence_start = SequenceStart::PRESET; // runtime override only, not saved
 };
+
+inline bool staggeredSequenceStart(const Config& config) {
+    return config.sequence_start == SequenceStart::STAGGERED ||
+           (config.sequence_start == SequenceStart::PRESET && config.preset.staggered_start);
+}
 
 // Overall test run result
 struct RunResult {

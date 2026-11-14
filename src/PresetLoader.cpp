@@ -133,6 +133,17 @@ PresetInfo loadPreset(const std::string& filepath) {
             parseUintField(preset.memory_window_mb);
         } else if (key == "Test Sequence") {
             preset.test_sequence = value;
+        } else if (key == "Sequence Start") {
+            std::string mode = Utils::trim(value);
+            std::transform(mode.begin(), mode.end(), mode.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (mode == "aligned") {
+                preset.staggered_start = false;
+            } else if (mode == "staggered") {
+                preset.staggered_start = true;
+            } else {
+                invalidate("Sequence Start must be 'aligned' or 'staggered' at line " + std::to_string(line_number));
+            }
         } else if (key == "Language") {
             uint32_t parsed = 0;
             if (Utils::parseUintStrict(value, parsed)) {
@@ -237,8 +248,8 @@ PresetInfo loadPreset(const std::string& filepath) {
         invalidate("preset enables no runnable tests in its Test Sequence");
     }
 
-    LOG_INFO("Preset loaded: %u tests, %u cycles, window=%u MB",
-             preset.tests, preset.cycles, preset.memory_window_mb);
+    LOG_INFO("Preset loaded: %u tests, %u cycles, window=%u MB, sequence start=%s",
+             preset.tests, preset.cycles, preset.memory_window_mb, preset.staggered_start ? "staggered" : "aligned");
     LOG_INFO("Test sequence: %s", preset.test_sequence.c_str());
 
     return preset;

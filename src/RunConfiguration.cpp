@@ -170,6 +170,9 @@ bool resolveConfiguration(const CliOptions& cli, bool automation_mode,
     if (cli.large_pages_overridden) {
         resolution.config.use_large_pages = cli.use_large_pages;
     }
+    if (cli.sequence_start_overridden) {
+        resolution.config.sequence_start = cli.sequence_start;
+    }
 
     return prepareConfigForRun(
         resolution.config,
@@ -264,6 +267,12 @@ void printConfigSummary(const ConfigResolution& resolution, const CliOptions& cl
     {
         std::ostringstream ss;
         ss << "  Large pages:     " << (config.use_large_pages ? "Yes" : "No");
+        ConsoleDisplay::get().printLine(ss.str());
+    }
+    {
+        std::ostringstream ss;
+        ss << "  Sequence start:  " << (staggeredSequenceStart(config) ? "staggered" : "aligned")
+           << (config.sequence_start == SequenceStart::PRESET ? " (preset)" : " (--sequence-start)");
         ConsoleDisplay::get().printLine(ss.str());
     }
     {

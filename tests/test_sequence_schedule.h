@@ -79,3 +79,95 @@ void testFunctionTimingSummary() {
                lines[3].find("Modulo20") != std::string::npos && lines[3].find("not reached") != std::string::npos,
            "Functions appear in sequence order; unreached ones are named and disabled ones omitted");
 }
+
+void testStaggeredSlotsCoverEveryEntry() {
+    const std::vector<uint32_t> ids{0, 1, 0, 2};
+    const EnabledSequence staggered({0, 1, 2, 3}, ids, 6, true);
+    // Offsets c * 4 / 6 for six chunks.
+    const std::vector<size_t> expected{0, 0, 1, 2, 2, 3};
+    bool offsets = true;
+    bool complete = true;
+    std::set<std::pair<size_t, uint64_t>> passes; // (chunk, ID 0 pass) must be unique
+    bool unique = true;
+    for (size_t chunk = 0; chunk < 6; ++chunk) {
+        offsets &= staggered.offset(chunk) == expected[chunk];
+        for (uint64_t cycle = 0; cycle < 2; ++cycle) {
+            std::set<size_t> slots;
+            for (uint64_t step = 0; step < 4; ++step) {
+                const uint64_t position = cycle * 4 + step;
+                slots.insert(staggered.slot(position, chunk));
+                if (ids[staggered.entry(position, chunk)] == 0) {
+                    unique &= passes.insert({chunk, staggered.pass(position, chunk)}).second;
+                }
+            }
+            complete &= slots.size() == 4;
+        }
+    }
+    expect(offsets, "Staggered chunks start at evenly spread enabled slots");
+    expect(complete && staggered.startsCycle(4) && staggered.cycle(7) == 1,
+           "Every staggered chunk runs each enabled slot once per chunk cycle");
+    expect(unique && passes.size() == 6 * 4, "Repeated IDs get distinct data passes whatever the starting slot");
+}
+
+namespace sequence_schedule {
+
+// Kernel phase labels identify which test a chunk ran first.
+std::map<uint8_t*, std::string> firstTestPerChunk(SequenceStart start) {
+    std::map<uint8_t*, std::string> first;
+    const size_t page = Platform::getNativePageSize();
+    auto guard = Platform::allocateMemoryRAII(std::max(size_t{256} * 1024, 8 * page), false, false, true);
+    expect(guard.valid(), "Sequence-start allocation");
+    if (!guard.valid()) return first;
+    MemoryRegion region{};
+    region.base = guard.base();
+    region.size = guard.size();
+    Config config;
+    config.cores = 2;
+    config.cycles = 1;
+    config.preset.time_percent = 100;
+    config.sequence_start = start;
+    std::map<uint32_t, TestConfig> configs;
+    configs[0].function = "SimpleTest";
+    configs[1].function = "WalkingOnes";
+    configs[2].function = "LFSRPattern";
+    for (auto& [id, tc] : configs) tc.time_percent = 1;
+    std::mutex mutex;
+    TestContext ctx;
+    ctx.phase_hook = [&](const char* phase, const MemoryRegion& part) {
+        const std::string name(phase);
+        const char* test = name == "Simple fill" ? "SimpleTest" : name == "Walking fill" ? "WalkingOnes"
+                         : name == "LFSR filled" ? "LFSRPattern" : nullptr;
+        if (!test) return;
+        std::lock_guard<std::mutex> lock(mutex);
+        first.emplace(part.base, test);
+    };
+    const auto result = TestEngine::executeSuite(config, region, {0, 1, 2}, configs, &ctx);
+    expect(result.cycles_completed == 1 && result.total_errors() == 0 && !result.infrastructure_failure,
+           "Sequence-start runs complete one clean cycle");
+    return first;
+}
+
+} // namespace sequence_schedule
+
+void testStaggeredStartRunsDifferentTests() {
+    // Two workers get four chunks. Aligned: every chunk starts with test 0.
+    // Staggered: chunk offsets 0, 0, 1, 2 start with all three tests.
+    const auto platform = Platform::detectPlatform();
+    if (platform.cpu_cores < 2 || Platform::getNativePageSize() == 0) return;
+    std::set<std::string> aligned;
+    for (const auto& [base, test] : sequence_schedule::firstTestPerChunk(SequenceStart::ALIGNED)) aligned.insert(test);
+    std::set<std::string> staggered;
+    size_t chunks = 0;
+    for (const auto& [base, test] : sequence_schedule::firstTestPerChunk(SequenceStart::STAGGERED)) {
+        staggered.insert(test);
+        ++chunks;
+    }
+    expect(aligned == std::set<std::string>{"SimpleTest"}, "Aligned chunks all start with the first entry");
+    expect(chunks == 4 && staggered.size() == 3, "Staggered chunks start with different entries");
+    Config preset_config;
+    preset_config.preset.staggered_start = true;
+    Config override_config = preset_config;
+    override_config.sequence_start = SequenceStart::ALIGNED;
+    expect(staggeredSequenceStart(preset_config) && !staggeredSequenceStart(override_config),
+           "The preset's Sequence Start applies unless --sequence-start overrides it");
+}

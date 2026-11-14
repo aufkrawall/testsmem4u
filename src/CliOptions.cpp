@@ -203,6 +203,11 @@ void printUsage() {
     std::cout << "      --no-locked-memory   Allow swappable memory\n";
     std::cout << "      --large-pages        Prefer large pages / hugepages\n";
     std::cout << "      --no-large-pages     Disable large pages / hugepages\n";
+    std::cout << "      --sequence-start MODE\n";
+    std::cout << "                           aligned: every memory chunk starts the test sequence at\n";
+    std::cout << "                             its first entry. staggered: chunks start at evenly spread\n";
+    std::cout << "                             entries, so workers run different tests at the same time.\n";
+    std::cout << "                             Overrides the preset's Sequence Start (default aligned).\n";
     std::cout << "      --show-config        Print the resolved configuration before execution\n";
     std::cout << "      --dry-run            Validate inputs, print config, and exit\n";
     std::cout << "      --aggressive-defrag  Permit system-wide cache cleanup/compaction when full\n";
@@ -415,6 +420,22 @@ bool parseCliOptions(int argc, char* argv[], CliOptions& options, std::string& e
                 return false;
             }
             options.cores_overridden = true;
+            continue;
+        }
+
+        if (!readOptionValue(arg, "--sequence-start", argc, argv, i, value, matched, error)) {
+            return false;
+        }
+        if (matched) {
+            if (value == "aligned") {
+                options.sequence_start = SequenceStart::ALIGNED;
+            } else if (value == "staggered") {
+                options.sequence_start = SequenceStart::STAGGERED;
+            } else {
+                error = "--sequence-start must be 'aligned' or 'staggered'.";
+                return false;
+            }
+            options.sequence_start_overridden = true;
             continue;
         }
 

@@ -136,6 +136,27 @@ class ConfigCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("Config file not found", result.stdout + result.stderr)
 
+    def test_sequence_start_follows_preset_unless_overridden(self):
+        result = self.dry_run("--no-config")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Sequence start:  aligned (preset)", result.stdout)
+        self.preset.write_text("Sequence Start=Staggered\nTest Sequence=0\n[Test0]\nFunction=SimpleTest\n")
+        result = self.dry_run("--no-config")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Sequence start:  staggered (preset)", result.stdout)
+        result = self.dry_run("--no-config", "--sequence-start", "aligned")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Sequence start:  aligned (--sequence-start)", result.stdout)
+
+    def test_invalid_sequence_start_is_rejected(self):
+        result = self.dry_run("--no-config", "--sequence-start=shuffled")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--sequence-start must be 'aligned' or 'staggered'", result.stdout + result.stderr)
+        self.preset.write_text("Sequence Start=random\nTest Sequence=0\n[Test0]\nFunction=SimpleTest\n")
+        result = self.dry_run("--no-config")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Sequence Start must be 'aligned' or 'staggered'", result.stdout + result.stderr)
+
     def test_valid_implicit_config_preserves_requested_values(self):
         self.config.write_text("MemoryWindowMB=16\nCores=1\nCycles=2\nUseLargePages=0\n")
         result = self.dry_run()
