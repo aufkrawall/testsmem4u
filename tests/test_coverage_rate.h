@@ -178,7 +178,14 @@ void testPassVariationChangesData() {
         expect(!pass0.empty() && first.total_errors() == 0 && second.total_errors() == 0 &&
                again.total_errors() == 0 && first.bytes_tested == second.bytes_tested,
                tc.function + ": varied passes verify clean with unchanged coverage");
-        expect(pass0 != pass1, tc.function + ": a later pass writes different data");
+        // Compare each half: RefreshStable's two halves are written by different
+        // code (held fill vs active background test), and a whole-buffer check
+        // missed an active half that never varied.
+        const size_t half = pass0.size() / 2;
+        const bool low_varies = !pass0.empty() && !std::equal(pass0.begin(), pass0.begin() + half, pass1.begin());
+        const bool high_varies = !pass0.empty() && !std::equal(pass0.begin() + half, pass0.end(), pass1.begin() + half);
+        expect(pass1.size() == pass0.size() && low_varies && high_varies,
+               tc.function + ": a later pass writes different data in both halves of the region");
         expect(pass1 == repeat, tc.function + ": pass data is reproducible from the variation");
     }
 

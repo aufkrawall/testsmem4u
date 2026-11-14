@@ -50,7 +50,12 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
         TestConfig background;
         background.pattern_mode = 1;
         background.pattern_param1 = 0x9E3779B97F4A7C15ULL;
-        background.variation = config.variation;
+        // pattern already carries this pass's variation mask. Varying the
+        // background again XORs the same mask twice (runSimpleTest applies
+        // variationMask(variation, 0)), which cancelled it: the active half
+        // then rewrote identical data every pass and lost its complement
+        // relationship with the held half.
+        background.variation = 0;
         // The background cursor persists across dwell windows so short dwells
         // still sweep the whole active half instead of re-testing its start.
         size_t active_cursor = 0;
@@ -101,9 +106,11 @@ TestResult TestEngine::runRefreshStable(TestContext& ctx, const MemoryRegion& re
                 verifyAndReport(held, ptr + i, n, i, 0, pattern, 0, res, ctx, "RefreshStable", stop);
                 progress.addBytes(n * sizeof(uint64_t));
             }
-            LOG_DEBUG("RefreshStable: held offset=%zu bytes=%zu pattern=0x%016llx dwell=%.3fs "
-                      "(min %ums) active chunks=%zu full sweeps=%zu cursor=%zu errors=%llu",
+            LOG_DEBUG("RefreshStable: held offset=%zu bytes=%zu pattern=0x%016llx active-base=0x%016llx "
+                      "dwell=%.3fs (min %ums) active chunks=%zu full sweeps=%zu cursor=%zu errors=%llu",
                       held.base_offset_bytes, held.size, static_cast<unsigned long long>(pattern),
+                      static_cast<unsigned long long>(background.pattern_param0 ^
+                                                      variationMask(background.variation, 0)),
                       held_seconds, delay_ms, active_chunks, active_wraps, active_cursor,
                       static_cast<unsigned long long>(res.total_errors() - errors_before));
         }
