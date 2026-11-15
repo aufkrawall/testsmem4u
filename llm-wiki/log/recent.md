@@ -1,5 +1,13 @@
 # Recent Log
 
+## 2026-11-15 - Release v1.11
+
+Bumped version string to `1.11` across runtime and changelog:
+- Promoted unreleased improvements to `## 1.11 - 2026-11-15` in `CHANGELOG.md` and updated `kProgramVersion` in `include/RunConfiguration.h`.
+- Verified test suite (`python build.py --tests`: baseline, AVX2, x86, and 24 Python checks with one skipped), static analysis (`--lint`: 30 files clean), and runtime sanitizers (`--run-sanitizers`: ASan and UBSan passed).
+- Built all nine release binaries (`python build.py`) and verified `--version` reports `testsmem4u 1.11`.
+- Packaged `testsmem4u-1.11-allOS.7z` and published GitHub release `1.11`.
+
 ## 2026-11-15 - Follow-up review fixes
 
 Review of the November 13-14 commits confirmed that a very large accepted
