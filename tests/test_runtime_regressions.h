@@ -96,3 +96,53 @@ void testFreshUnlockedRun() {
            "Fresh unlocked allocation completes its first cycle without prior writes");
     expect(result.bytes_tested >= 1024ULL * 1024ULL, "Fresh unlocked run verifies its entire allocation");
 }
+
+void testRunExitCodeContracts() {
+    Config finite_cycles{};
+    finite_cycles.cycles = 1;
+
+    RunResult completed{};
+    completed.bytes_tested = 1024;
+    completed.cycles_completed = 1;
+    completed.stop_reason = "cycles";
+    expect(resolveRunExitCode(finite_cycles, completed) == 0, "Completed finite cycle run exits 0");
+
+    Config finite_timed{};
+    finite_timed.time_limit_seconds = 60;
+    RunResult timed_done{};
+    timed_done.bytes_tested = 1024;
+    timed_done.stop_reason = "time limit";
+    expect(resolveRunExitCode(finite_timed, timed_done) == 0, "Completed time-limited run exits 0");
+
+    RunResult stopped_zero{};
+    stopped_zero.stop_reason = "stop request";
+    expect(resolveRunExitCode(finite_cycles, stopped_zero) == 2,
+           "Interrupted finite run with zero verified bytes exits 2");
+
+    RunResult stopped_early{};
+    stopped_early.bytes_tested = 1024;
+    stopped_early.stop_reason = "stop request";
+    expect(resolveRunExitCode(finite_cycles, stopped_early) == 2,
+           "Interrupted finite cycle run before completion exits 2");
+    expect(resolveRunExitCode(finite_timed, stopped_early) == 2,
+           "Interrupted time-limited run before time limit exits 2");
+
+    RunResult pre_start_stop{};
+    expect(resolveRunExitCode(finite_cycles, pre_start_stop) == 2,
+           "Stop before testing started exits 2");
+
+    Config infinite{};
+    expect(resolveRunExitCode(infinite, stopped_zero) == 2,
+           "Infinite run interrupted with zero verified bytes exits 2");
+    expect(resolveRunExitCode(infinite, stopped_early) == 0,
+           "Infinite run stopped cleanly after verifying memory with zero errors exits 0");
+
+    RunResult stopped_with_error = stopped_early;
+    stopped_with_error.hard_errors = 1;
+    expect(resolveRunExitCode(finite_cycles, stopped_with_error) == 1,
+           "Interrupted run that already detected errors exits 1");
+
+    RunResult infra = completed;
+    infra.infrastructure_failure = true;
+    expect(resolveRunExitCode(finite_cycles, infra) == 2, "Infrastructure failure exits 2");
+}

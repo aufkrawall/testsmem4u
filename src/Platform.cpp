@@ -78,7 +78,7 @@ static BOOL WINAPI consoleCtrlHandler(DWORD dwCtrlType) {
     // A second Ctrl+C/Break force-quits. Close/logoff/shutdown never force-quit
     // here: Windows ends the process anyway when this handler returns.
     if (!terminating && g_shutdown_initiated.load(std::memory_order_acquire)) {
-        TerminateProcess(GetCurrentProcess(), 0);
+        TerminateProcess(GetCurrentProcess(), static_cast<UINT>(STATUS_CONTROL_C_EXIT));
         return TRUE;
     }
 

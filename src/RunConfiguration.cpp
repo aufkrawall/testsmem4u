@@ -134,6 +134,15 @@ uint32_t effectiveOsReserveMB(const PresetInfo& preset) {
     return std::max(preset.reserved_memory_mb, Platform::kMinOsReserveMB);
 }
 
+int resolveRunExitCode(const Config& config, const RunResult& res) {
+    if (res.infrastructure_failure) return 2;
+    if (res.total_errors() > 0) return 1;
+    const bool finite_run = config.cycles > 0 || config.time_limit_seconds > 0;
+    const bool interrupted = res.stop_reason == "stop request" || res.stop_reason.empty();
+    if (res.bytes_tested == 0 || (finite_run && interrupted)) return 2;
+    return 0;
+}
+
 bool resolveConfiguration(const CliOptions& cli, bool automation_mode,
                                  ConfigResolution& resolution, std::string& error) {
     resolution.platform = Platform::detectPlatform();

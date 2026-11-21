@@ -221,6 +221,7 @@ RunResult TestEngine::runTests(const Config& config
     if (g_stop_requested.load(std::memory_order_acquire)) {
         LOG_WARN("Stop requested before testing started (Ctrl+C or console close during startup); "
                  "no memory allocated or tested");
+        result.stop_reason = "stop request";
         return result;
     }
 

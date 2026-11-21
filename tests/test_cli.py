@@ -2,6 +2,7 @@
 
 import os
 import ctypes
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -229,6 +230,26 @@ class ConfigCliTests(unittest.TestCase):
         self.assertNotIn("0 bytes verified", output)
         log = (self.root / "testsmem4u.log").read_text()
         self.assertNotIn("verified-bytes=0", log)
+
+    @unittest.skipIf(os.name == "nt", "POSIX SIGINT interruption check")
+    def test_interrupted_finite_run_returns_nonzero_exit_code(self):
+        self.preset.write_text("Test Sequence=0\n[Test0]\nFunction=RefreshStable\nParameter=10000\n")
+        proc = subprocess.Popen([
+            str(self.binary), "--yes", "--no-config", "--no-elevation",
+            "--no-locked-memory", "--no-large-pages", "--preset", str(self.preset),
+            "--memory", "4", "--cores", "1", "--cycles", "1",
+        ], cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        lines = []
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            lines.append(line)
+            if "Starting tests with" in line:
+                break
+        proc.send_signal(signal.SIGINT)
+        stdout, stderr = proc.communicate(timeout=15)
+        output = "".join(lines) + stdout + stderr
+        self.assertEqual(proc.returncode, 2, output)
+        self.assertIn("Stopped by: stop request", output)
 
 
 if __name__ == "__main__":

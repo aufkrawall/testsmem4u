@@ -143,8 +143,8 @@ The executable now supports the following high-value operator options:
 ## Exit Codes
 
 - 0: success, informational command success, or dry-run success.
-- 1: memory test completed with detected errors.
-- 2: CLI, configuration, preset, or runtime infrastructure failure.
+- 1: memory test detected errors.
+- 2: CLI, configuration, preset, interrupted/incomplete run, or runtime infrastructure failure.
 
 ## Operational Notes
 

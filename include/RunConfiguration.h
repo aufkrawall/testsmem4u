@@ -87,4 +87,8 @@ uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent, bool 
                                     uint32_t reserve_mb = Platform::kMinOsReserveMB);
 // The preset's OS reserve with the Platform::kMinOsReserveMB floor applied.
 uint32_t effectiveOsReserveMB(const PresetInfo& preset);
+// Resolves the process exit code: 0 only when the requested run completed
+// cleanly with verified bytes; 1 when RAM errors were detected; 2 on
+// infrastructure failure, zero verified bytes, or an interrupted finite run.
+int resolveRunExitCode(const Config& config, const RunResult& res);
 } // namespace testsmem4u

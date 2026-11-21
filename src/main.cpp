@@ -1,5 +1,6 @@
 #include "TestEngine.h"
 #include "RunConfiguration.h"
+#include "InputSpec.h"
 #include "HugePageSetup.h"
 #include "Logger.h"
 #include "Platform.h"
@@ -635,6 +636,17 @@ int main(int argc, char* argv[]) {
         ConsoleDisplay::get().printError("Infrastructure failure: " + res.infrastructure_error);
     }
 
+    const int exit_code = resolveRunExitCode(config, res);
+    if (exit_code == 2 && !res.infrastructure_failure) {
+        LOG_WARN("Exiting with code %d: requested run did not complete (stop=%s verified-bytes=%llu "
+                 "completed-cycles=%llu target-cycles=%u time-limit=%s)",
+                 exit_code, res.stop_reason.empty() ? "none" : res.stop_reason.c_str(),
+                 static_cast<unsigned long long>(res.bytes_tested),
+                 static_cast<unsigned long long>(res.cycles_completed), config.cycles,
+                 formatTimeLimit(config.time_limit_seconds).c_str());
+        ConsoleDisplay::get().printError("Test did not complete its requested run.");
+    }
+
     Logger::get().deinit();
     Platform::setFinalResultsPending(false);
 
@@ -652,8 +664,7 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
-    if (res.infrastructure_failure) return 2;
-    return res.total_errors() == 0 ? 0 : 1;
+    return exit_code;
 }
 
 } // namespace testsmem4u

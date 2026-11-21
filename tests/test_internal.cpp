@@ -776,6 +776,7 @@ int main() try {
     testPreparationExceptionCleanup();
     testStopBeforeRunIsKept();
     testFreshUnlockedRun();
+    testRunExitCodeContracts();
     testMemoryPageContracts();
 #ifndef _WIN32
     testLinuxMemoryFallbacks();
