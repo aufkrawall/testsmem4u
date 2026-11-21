@@ -168,6 +168,17 @@ void testWindowsMemoryFallbacks() {
            "Windows chunk fallback reaches the actual native large-page minimum");
 
     {
+        auto no_ws_hooks = hooks;
+        no_ws_hooks.working_set = [](size_t, size_t) { return false; };
+        WindowsMemoryHookScope no_ws_scope(no_ws_hooks);
+        resetWindowsFixture(WindowsFixtureMode::HYBRID, size);
+        auto hybrid_no_ws = Platform::allocateMemoryRAII(size, true, true);
+        expect(hybrid_no_ws.valid() && hybrid_no_ws.is_locked() && hybrid_no_ws.size() == size &&
+                   hybrid_no_ws.large_page_bytes() == size_t{6} * 1024 * 1024,
+               "Windows hybrid large-page tail VirtualLock succeeds even when working-set expansion fails");
+    }
+
+    {
         auto no_priv_hooks = hooks;
         no_priv_hooks.lock_privilege = []() { return false; };
         no_priv_hooks.working_set = [](size_t, size_t) { return false; };

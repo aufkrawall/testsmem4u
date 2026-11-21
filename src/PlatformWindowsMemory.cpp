@@ -546,8 +546,10 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size, b
                         const size_t min_ws = remaining_bytes + overhead;
                         const size_t max_ws = remaining_bytes + overhead + (size_t{512} * 1024 * 1024);
                         if (!setWorkingSet(min_ws, max_ws)) {
-                            hybrid_ok = false;
-                            break;
+                            const DWORD ws_err = GetLastError();
+                            LOG_WARN("Chunked LP: SetProcessWorkingSetSize(min=%zu MB, max=%zu MB) failed: error %lu; "
+                                     "attempting hybrid VirtualLock tail within existing working-set limits.",
+                                     min_ws / (size_t{1024} * 1024), max_ws / (size_t{1024} * 1024), ws_err);
                         }
                         ws_set = true;
                         LOG_INFO("Chunked LP: full large-page coverage unavailable; locking the remaining %zu MB with VirtualLock",

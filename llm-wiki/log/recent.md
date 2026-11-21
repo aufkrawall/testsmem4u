@@ -17,21 +17,24 @@ Verified and fixed all 12 findings reported against v1.11:
   32-bit percentage sizing and rejected explicit windows exceeding `Platform::getMaxMappableMemory()`
   (`< 2 GiB`, below `PTRDIFF_MAX` minus alignment).
 - **Windows `VirtualLock` privilege & working-set residency:** removed `SeLockMemoryPrivilege`
-  gate from `tryAllocateVirtualLock` and non-LP startup prompts; implemented real `QueryWorkingSetEx`
-  `Valid` checks after `VirtualQuery` in `Platform::checkMemoryResident` and prefaulted native
-  pages in `tryAllocateStandard`.
+  gate from `tryAllocateVirtualLock` and non-LP startup prompts and made `SetProcessWorkingSetSize`
+  best-effort in both `tryAllocateVirtualLock` and hybrid `tryAllocateLargePagesChunked`;
+  implemented real `QueryWorkingSetEx` `Valid` checks after `VirtualQuery` in
+  `Platform::checkMemoryResident` and prefaulted native pages in `tryAllocateStandard`.
 - **Config durability & validated `.tmp` recovery:** `saveConfig` verifies stream write/flush/close
   plus OS buffer flushes (`FlushFileBuffers` / `fsync`) before rename and writes `; End of configuration`;
   `recoverOrphanedTempFile` only promotes complete regular `.tmp` files passing the shared parser
   when the target is absent (rejecting truncated timed saves such as `Cycles=0` before `TimeLimitSeconds`).
 - **Deferred log truncation, EOF-safe privilege prompt, & terminal relaunch gate:** added
-  `Logger::attachFile` so `--dry-run` / invalid configs preserve `testsmem4u.log`; extracted
+  `Logger::attachFile` (synchronizing `file_handle_` and deferred drop-summary reporting under
+  `queue_mutex_`) so `--dry-run` / invalid configs preserve `testsmem4u.log`; extracted
   EOF-safe `promptMemoryLockPrivilegeOffer`; moved Linux terminal auto-relaunch (`shouldRelaunchInTerminal`)
   after CLI parsing/early exits and restricted it to bare GUI launches (`argc <= 1`, no stdio TTY,
   non-pipe stdout).
 - **Full `x86-64-v3`/`v4` CPUID feature detection:** added `include/SimdCpuSupport.h` (`supportsX8664V2`/`V3`/`V4`)
   requiring all psABI v3/v4 CPUID extensions and OS XCR0 bits (`AVX512F`/`DQ`/`CD`/`BW`/`VL`, `BMI1`/`2`,
-  `FMA`, `F16C`, `MOVBE`, `LZCNT`, `POPCNT`, `SSE4.1`/`4.2`) instead of `AVX512F` alone.
+  `FMA`, `F16C`, `MOVBE`, `LZCNT`, `POPCNT`, `SSE4.1`/`4.2`) instead of `AVX512F` alone, and restricted
+  `-v3`/`-v4` sibling-binary warnings to 64-bit `x86_64` builds.
 - **Verification:** `python build.py --lint` (30/30 files clean), `python build.py --tests`
   (Windows baseline/AVX2/x86 + 31 Python tests: `27 OK, 4 skipped`), `python build.py --run-sanitizers`
   (ASan & UBSan baseline/v3 + Python suite), all 9 release cross-builds, WSL `x86_64-linux-musl`

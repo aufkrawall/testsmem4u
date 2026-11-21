@@ -481,7 +481,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                   caps.cache_line_size, caps.flush_granule_advertised, caps.has_clflushopt ? "CLFLUSHOPT region/batch" :
                   caps.has_clflush ? "CLFLUSH" : "platform fallback", simd::kLfsrGenerationLanes,
                   simd::streaming_fill_bypasses_cache() ? "skipped (non-temporal fills evict lines)" : "region flush");
-#if !defined(__AVX512F__)
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__AVX512F__)
         if (caps.has_avx512) {
             LOG_WARN("This CPU supports AVX-512: use the -v4 binary variant for maximum RAM-test throughput.");
         }

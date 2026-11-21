@@ -18,6 +18,7 @@ void Logger::init(const std::string& filename, LogLevel level, bool purge) {
         std::queue<std::pair<LogLevel, std::string>> empty;
         log_queue_.swap(empty);
         defer_file_attach_ = filename.empty();
+        file_handle_ = nullptr;
     }
 
     log_filename_ = filename;
@@ -61,10 +62,10 @@ bool Logger::attachFile(const std::string& filename, bool purge) {
         return false;
     }
 
-    file_handle_ = opened;
-    log_filename_ = filename;
     {
         std::lock_guard<std::mutex> qlock(queue_mutex_);
+        file_handle_ = opened;
+        log_filename_ = filename;
         defer_file_attach_ = false;
     }
     writer_cv_.notify_one();
@@ -243,7 +244,8 @@ void Logger::writerThreadFunc() {
          std::unique_lock<std::mutex> lock(queue_mutex_);
 
           auto now = std::chrono::steady_clock::now();
-          if (std::chrono::duration_cast<std::chrono::seconds>(now - last_dropped_report).count() >= 30) {
+          if (!defer_file_attach_ &&
+              std::chrono::duration_cast<std::chrono::seconds>(now - last_dropped_report).count() >= 30) {
               uint64_t crit = dropped_critical_messages_.load(std::memory_order_relaxed);
               uint64_t noncrit = dropped_noncritical_messages_.load(std::memory_order_relaxed);
               uint64_t new_crit = crit - last_reported_critical;

@@ -989,8 +989,10 @@ complaint have not been reproduced or diagnosed.
   or interrupted finite runs (`--cycles` or `--duration`) and preserves exit `1` if
   errors were already recorded; Windows double Ctrl+C `TerminateProcess` exits with
   `STATUS_CONTROL_C_EXIT`.
-- Windows `tryAllocateVirtualLock` no longer gates ordinary `VirtualLock` on
-  `SeLockMemoryPrivilege`; `tryAllocateStandard` prefaults native pages and
+- Windows `tryAllocateVirtualLock` and hybrid large-page tail locking in
+  `tryAllocateLargePagesChunked` treat `SetProcessWorkingSetSize` as best-effort
+  and no longer gate ordinary `VirtualLock` on `SeLockMemoryPrivilege`;
+  `tryAllocateStandard` prefaults native pages and
   `Platform::checkMemoryResident` (`src/PlatformMemory.cpp`) verifies actual working-set
   residency with `QueryWorkingSetEx` (`Valid != 0`) after `VirtualQuery` checks.
 - `detect_x86_capabilities` (`src/simd_ops.cpp` + `include/SimdCpuSupport.h`) checks

@@ -140,8 +140,7 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   fields in 64-bit arithmetic and `getMaxMappableMemory` enforces the `< 2 GiB`
   ILP32 mapping limit; `shouldRelaunchInTerminal` runs after CLI parsing/early exits
   only for bare graphical file-manager launches (`argc <= 1`, no stdio TTY, non-pipe stdout).
-- Windows locking and prompts: `tryAllocateVirtualLock` attempts `VirtualLock`
-  without requiring `SeLockMemoryPrivilege` (which is gated only for large pages),
+- Windows locking and prompts: `tryAllocateVirtualLock` and the hybrid large-page tail fallback in `tryAllocateLargePagesChunked` attempt `VirtualLock` with best-effort `SetProcessWorkingSetSize` and without requiring `SeLockMemoryPrivilege` for ordinary pages (`SeLockMemoryPrivilege` is gated only for large pages),
   `checkMemoryResident` verifies `QueryWorkingSetEx` `Valid` bits after
   `VirtualQuery` checks while `tryAllocateStandard` prefaults native pages, and
   `promptMemoryLockPrivilegeOffer` checks `std::getline` stream state so EOF never
