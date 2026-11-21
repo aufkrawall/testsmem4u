@@ -32,6 +32,7 @@ public:
     }
 
     void init(const std::string& filename, LogLevel level = LogLevel::DEBUG, bool purge = true);
+    bool attachFile(const std::string& filename, bool purge = true);
     void deinit();
     void setErrorRateLimit(uint32_t errors_per_second);
 
@@ -57,7 +58,7 @@ public:
     }
 
 private:
-    Logger() : running_(false), file_handle_(nullptr), log_filename_(), log_level_(LogLevel::DEBUG),
+    Logger() : running_(false), defer_file_attach_(false), file_handle_(nullptr), log_filename_(), log_level_(LogLevel::DEBUG),
                start_time_(std::chrono::high_resolution_clock::now()),
                error_count_(0), error_rate_limit_(500), suppressed_count_(0),
                last_summary_time_(start_time_) {}
@@ -84,6 +85,7 @@ private:
     std::queue<std::pair<LogLevel, std::string>> log_queue_;
     std::thread writer_thread_;
     std::atomic<bool> running_;
+    bool defer_file_attach_;
 
     FILE* file_handle_;
     std::string log_filename_;

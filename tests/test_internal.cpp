@@ -720,6 +720,7 @@ int main() try {
     testConfigRejectsUnsafePath();
     testConfigLoadStatuses();
     testConfigSaveAndRecoveryContracts();
+    testPrivilegePromptAndDeferredLog();
     testWizardDefaultPolicies();
     testWizardExplicitSettings();
     testMemoryAndTimeInput();

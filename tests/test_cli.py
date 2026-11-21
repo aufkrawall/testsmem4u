@@ -303,6 +303,27 @@ class ConfigCliTests(unittest.TestCase):
         self.assertIn("Cycles:          3", out)
         self.assertNotIn("infinite", out.lower())
 
+    def test_dry_run_and_invalid_config_preserve_existing_log(self):
+        log_path = self.root / "testsmem4u.log"
+        sentinel = "Results: verified-bytes=123456 complete-cycles=1\n"
+        log_path.write_text(sentinel)
+
+        dry = subprocess.run([
+            str(self.binary), "--dry-run", "--yes", "--no-config", "--no-elevation",
+            "--preset", str(self.preset),
+        ], cwd=self.root, capture_output=True, text=True, timeout=30)
+        self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+        self.assertEqual(log_path.read_text(), sentinel, "Dry run overwrote previous testsmem4u.log")
+
+        bad_cfg = self.root / "bad.ini"
+        bad_cfg.write_text("Cores=not_a_number\n")
+        invalid = subprocess.run([
+            str(self.binary), "--yes", "--no-elevation", "--config", str(bad_cfg),
+            "--preset", str(self.preset),
+        ], cwd=self.root, capture_output=True, text=True, timeout=30)
+        self.assertEqual(invalid.returncode, 2, invalid.stdout + invalid.stderr)
+        self.assertEqual(log_path.read_text(), sentinel, "Invalid config overwrote previous testsmem4u.log")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,13 @@ void Logger::init(const std::string& filename, LogLevel level, bool purge) {
         return; // Already initialized
     }
 
+    {
+        std::lock_guard<std::mutex> qlock(queue_mutex_);
+        std::queue<std::pair<LogLevel, std::string>> empty;
+        log_queue_.swap(empty);
+        defer_file_attach_ = filename.empty();
+    }
+
     log_filename_ = filename;
     log_level_ = level;
 
@@ -35,6 +42,35 @@ void Logger::init(const std::string& filename, LogLevel level, bool purge) {
     writer_thread_ = std::thread(&Logger::writerThreadFunc, this);
 }
 
+bool Logger::attachFile(const std::string& filename, bool purge) {
+    std::lock_guard<std::mutex> lock(init_mutex_);
+
+    if (!running_ || filename.empty()) {
+        return false;
+    }
+    if (file_handle_) {
+        return true;
+    }
+
+    FILE* opened = fopen(filename.c_str(), purge ? "w" : "a");
+    if (!opened) {
+        std::cerr << "[-] Failed to open log file: " << filename << '\n';
+        std::lock_guard<std::mutex> qlock(queue_mutex_);
+        defer_file_attach_ = false;
+        writer_cv_.notify_one();
+        return false;
+    }
+
+    file_handle_ = opened;
+    log_filename_ = filename;
+    {
+        std::lock_guard<std::mutex> qlock(queue_mutex_);
+        defer_file_attach_ = false;
+    }
+    writer_cv_.notify_one();
+    return true;
+}
+
 void Logger::setErrorRateLimit(uint32_t errors_per_second) {
     error_rate_limit_.store(errors_per_second, std::memory_order_relaxed);
 }
@@ -48,6 +84,13 @@ void Logger::deinit() {
 
     if (writer_thread_.joinable()) {
         writer_thread_.join();
+    }
+
+    {
+        std::lock_guard<std::mutex> qlock(queue_mutex_);
+        std::queue<std::pair<LogLevel, std::string>> empty;
+        log_queue_.swap(empty);
+        defer_file_attach_ = false;
     }
 
     if (file_handle_) {
@@ -233,10 +276,11 @@ void Logger::writerThreadFunc() {
           }
 
           writer_cv_.wait_for(lock, std::chrono::seconds(5), [this] {
-              return !log_queue_.empty() || !running_;
+              return (!defer_file_attach_ && !log_queue_.empty()) || !running_;
           });
 
-          if (!running_ && log_queue_.empty()) break;
+          if (!running_ && (defer_file_attach_ || log_queue_.empty())) break;
+          if (defer_file_attach_) continue;
 
          while (!log_queue_.empty() && local_batch.size() < 2000) {
              local_batch.push_back(std::move(log_queue_.front()));

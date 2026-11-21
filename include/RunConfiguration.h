@@ -2,6 +2,7 @@
 
 #include "testsmem4u.h"
 #include "Platform.h"
+#include <functional>
 #include <string>
 #include <iosfwd>
 
@@ -91,4 +92,7 @@ uint32_t effectiveOsReserveMB(const PresetInfo& preset);
 // cleanly with verified bytes; 1 when RAM errors were detected; 2 on
 // infrastructure failure, zero verified bytes, or an interrupted finite run.
 int resolveRunExitCode(const Config& config, const RunResult& res);
+// Reads confirmation for granting SeLockMemoryPrivilege; closed/EOF input never counts as confirmation.
+bool promptMemoryLockPrivilegeOffer(std::istream& input, std::ostream& output,
+                                    const std::function<bool()>& grant_privilege);
 } // namespace testsmem4u

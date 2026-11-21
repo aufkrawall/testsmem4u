@@ -338,3 +338,66 @@ void testConfigSaveAndRecoveryContracts() {
     cleanupFile(tmp_path);
     cleanupFile(src_path);
 }
+
+void testPrivilegePromptAndDeferredLog() {
+    {
+        std::istringstream eof_input("");
+        std::ostringstream out;
+        bool granted = false;
+        expect(!promptMemoryLockPrivilegeOffer(eof_input, out, [&]() { granted = true; return true; }),
+               "Closed/EOF stdin must not auto-confirm privilege grant");
+        expect(!granted, "Privilege grant callback is not invoked on EOF");
+    }
+    {
+        std::istringstream no_input("no\n");
+        std::ostringstream out;
+        bool granted = false;
+        expect(!promptMemoryLockPrivilegeOffer(no_input, out, [&]() { granted = true; return true; }),
+               "Negative answer declines privilege grant");
+        expect(!granted, "Privilege grant callback is not invoked when declined");
+    }
+    {
+        std::istringstream yes_input(" yes \n");
+        std::ostringstream out;
+        bool granted = false;
+        expect(promptMemoryLockPrivilegeOffer(yes_input, out, [&]() { granted = true; return true; }) && granted,
+               "Explicit affirmative answer invokes privilege grant");
+    }
+    {
+        std::istringstream enter_input("\n");
+        std::ostringstream out;
+        bool granted = false;
+        expect(promptMemoryLockPrivilegeOffer(enter_input, out, [&]() { granted = true; return true; }) && granted,
+               "Live empty newline (Enter) invokes default-Yes privilege grant");
+    }
+
+    const std::string log_path = uniqueTempPath("_deferred.log");
+    {
+        std::ofstream prior(log_path);
+        prior << "previous results preserved\n";
+    }
+    auto& log = Logger::get();
+    log.init("", LogLevel::INFO, true);
+    log.info("dry-run buffered diagnostic");
+    log.deinit();
+    {
+        std::ifstream after_dry(log_path);
+        std::string content((std::istreambuf_iterator<char>(after_dry)), std::istreambuf_iterator<char>());
+        expect(content == "previous results preserved\n",
+               "Deferred logger without attachFile leaves existing log file untouched");
+    }
+
+    log.init("", LogLevel::INFO, true);
+    log.info("buffered startup line");
+    expect(log.attachFile(log_path, true), "attachFile opens deferred log file");
+    log.info("attached runtime line");
+    log.deinit();
+    {
+        std::ifstream after_run(log_path);
+        std::string content((std::istreambuf_iterator<char>(after_run)), std::istreambuf_iterator<char>());
+        expect(content.find("buffered startup line") != std::string::npos &&
+                   content.find("attached runtime line") != std::string::npos,
+               "attachFile flushes buffered pre-attach messages plus subsequent runtime logs");
+    }
+    cleanupFile(log_path);
+}

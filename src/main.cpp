@@ -417,10 +417,10 @@ int main(int argc, char* argv[]) {
     bool automation_mode = cli.non_interactive || !input_interactive || cli.requestsDirectRun();
     bool should_pause_on_exit = !cli.no_pause && input_interactive && output_interactive && !automation_mode;
 
-    // Initialize the logger before configuration/preset resolution so their
-    // diagnostics reach the log file (pre-init messages are dropped).
+    // Buffer startup/config diagnostics in memory until an actual test run begins,
+    // so --dry-run, invalid configs, or pre-run exits never truncate an existing log.
     auto& log = Logger::get();
-    log.init("testsmem4u.log", cli.debug ? LogLevel::DEBUG : LogLevel::INFO, true);
+    log.init("", cli.debug ? LogLevel::DEBUG : LogLevel::INFO, true);
     log.setErrorRateLimit(100);
     log.info("%s %s starting...", kProgramName, kProgramVersion);
 
@@ -451,7 +451,9 @@ int main(int argc, char* argv[]) {
         if (relaunchAsPrivileged(argc, argv, elevated_exit_code)) {
             return elevated_exit_code;
         }
-        log.init("testsmem4u.log", cli.debug ? LogLevel::DEBUG : LogLevel::INFO, false);
+        log.init("", cli.debug ? LogLevel::DEBUG : LogLevel::INFO, true);
+        log.setErrorRateLimit(100);
+        log.info("%s %s continuing without elevation...", kProgramName, kProgramVersion);
         ConsoleDisplay::get().printLine("[!] Elevation unavailable. Continuing without elevation.");
     }
 
@@ -471,22 +473,10 @@ int main(int argc, char* argv[]) {
         
         if (automation_mode) {
             ConsoleDisplay::get().printLine("    Direct/non-interactive mode: skipping automatic privilege grant.");
-        } else {
-            std::cout << "    [Y/n]: ";
-
-            std::string answer;
-            std::getline(std::cin, answer);
-            if (answer.empty() || answer == "y" || answer == "Y") {
-                if (Platform::grantMemoryLockPrivilege()) {
-                    ConsoleDisplay::get().printLine("");
-                    ConsoleDisplay::get().printLine("[+] Privilege granted successfully!");
-                    ConsoleDisplay::get().printLine("    PLEASE SIGN OUT AND SIGN BACK IN for the changes to take effect. A reboot is not required.");
-                    ConsoleDisplay::get().printLine("    The program will now exit.");
-                    Logger::get().deinit();
-                    return 0;
-                }
-                ConsoleDisplay::get().printError("[-] Failed to grant privilege. You may need to run as Administrator manually.");
-            }
+        } else if (promptMemoryLockPrivilegeOffer(
+                       std::cin, std::cout, []() { return Platform::grantMemoryLockPrivilege(); })) {
+            Logger::get().deinit();
+            return 0;
         }
     }
 #else
@@ -566,6 +556,10 @@ int main(int argc, char* argv[]) {
 #endif
         Logger::get().deinit();
         return 2;
+    }
+
+    if (!log.attachFile("testsmem4u.log", true)) {
+        ConsoleDisplay::get().printError("[!] Warning: unable to open testsmem4u.log for writing.");
     }
 
     RunResult res = {};

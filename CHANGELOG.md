@@ -12,6 +12,8 @@
 - **Windows working-set residency verification:** `checkMemoryResident` on Windows now inspects actual page residency with `QueryWorkingSetEx` (after `VirtualQuery` commit/protection checks) instead of accepting nonresident `MEM_COMMIT` pages, and `tryAllocateStandard` prefaults each native page at allocation time so freshly allocated unlocked memory is materialized before pattern tests begin.
 - **Config save write/flush verification:** `saveConfig` now checks stream write/flush/close status and flushes OS file buffers/fsync before replacing the target file, deleting the `.tmp` file and preserving any previous valid configuration on failure.
 - **Complete config `.tmp` validation in crash recovery:** `recoverOrphanedTempFile` only promotes an orphaned `.tmp` when the target is absent and the temp file passes validation with all settings and its completion marker, discarding truncated temp files instead of turning partial timed saves (`Cycles=0` before `TimeLimitSeconds`) into infinite runs.
+- **Previous log preserved on dry runs and startup errors:** startup diagnostics buffer in memory until an actual test run starts (`Logger::attachFile`), so `--dry-run`, invalid configs/presets, and pre-run exits no longer truncate the previous `testsmem4u.log`.
+- **Closed stdin does not grant Windows privilege:** the `SeLockMemoryPrivilege` interactive prompt checks `std::getline` stream state and only treats an explicit `y`/`yes` or a live empty Enter press as confirmation, never triggering on EOF.
 
 ## 1.11 - 2026-11-15
 

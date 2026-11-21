@@ -169,6 +169,37 @@ int resolveRunExitCode(const Config& config, const RunResult& res) {
     return 0;
 }
 
+bool promptMemoryLockPrivilegeOffer(std::istream& input, std::ostream& output,
+                                    const std::function<bool()>& grant_privilege) {
+    output << "    [Y/n]: " << std::flush;
+
+    std::string raw_answer;
+    if (!std::getline(input, raw_answer)) {
+        output << "    No answer received; skipping automatic privilege grant.\n";
+        LOG_DEBUG("Privilege setup: input closed; no privilege grant");
+        return false;
+    }
+
+    std::string answer = Utils::trim(raw_answer);
+    std::transform(answer.begin(), answer.end(), answer.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (!answer.empty() && answer != "y" && answer != "yes") {
+        output << "    Privilege grant declined.\n";
+        LOG_DEBUG("Privilege setup: offer declined answer-length=%zu", raw_answer.size());
+        return false;
+    }
+
+    if (grant_privilege && grant_privilege()) {
+        output << "\n[+] Privilege granted successfully!\n"
+               << "    PLEASE SIGN OUT AND SIGN BACK IN for the changes to take effect. A reboot is not required.\n"
+               << "    The program will now exit.\n";
+        return true;
+    }
+
+    output << "[-] Failed to grant privilege. You may need to run as Administrator manually.\n";
+    return false;
+}
+
 bool resolveConfiguration(const CliOptions& cli, bool automation_mode,
                                  ConfigResolution& resolution, std::string& error) {
     resolution.platform = Platform::detectPlatform();
