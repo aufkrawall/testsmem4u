@@ -160,6 +160,41 @@ void testEngineRegressions() {
             TestEngine::runRowHammerTest(ctx, hammer, tc, false);
             expect(g_rowhammer_large_page_warning_emitted.load(),
                    "Unmeasured allocation coverage still produces the RowHammer warning");
+
+            // Regions at or below 24 KiB cannot run any RowHammer stride and must
+            // fail closed instead of completing a cycle with zero verified bytes.
+            MemoryRegion tiny = hammer;
+            tiny.size = size_t{24} * 1024;
+            TestContext tiny_ctx;
+            const auto tiny_direct = TestEngine::runRowHammerTest(tiny_ctx, tiny, tc, false);
+            expect(tiny_ctx.hasInfrastructureFailure() && tiny_direct.bytes_tested == 0,
+                   "Direct RowHammer on <=24 KiB fails closed instead of silently skipping");
+
+            Config tiny_cfg;
+            tiny_cfg.cores = 4;
+            tiny_cfg.cycles = 1;
+            tiny_cfg.preset.time_percent = 100;
+            TestConfig rh_tc = tc;
+            rh_tc.function = "RowHammer";
+            rh_tc.time_percent = 1;
+            const auto tiny_suite = TestEngine::executeSuite(tiny_cfg, tiny, {0}, {{0, rh_tc}});
+            expect(tiny_suite.infrastructure_failure && tiny_suite.cycles_completed == 0 &&
+                       tiny_suite.bytes_tested == 0,
+                   "Engine fails closed when the whole window is too small for RowHammer");
+
+            // A 64 KiB window with 4 requested workers used to split into 8-12 KiB
+            // chunks and credit 1 completed cycle with 0 verified bytes; capping
+            // chunks keeps every chunk above 24 KiB so memory is actually tested.
+            MemoryRegion small_suite_region = hammer;
+            small_suite_region.size = size_t{64} * 1024;
+            const auto capped_suite = TestEngine::executeSuite(tiny_cfg, small_suite_region, {0}, {{0, rh_tc}});
+            expect(!capped_suite.infrastructure_failure && capped_suite.cycles_completed == 1 &&
+                       capped_suite.bytes_tested > 0 && capped_suite.total_errors() == 0,
+                   "Multi-worker RowHammer caps chunks above 24 KiB and actually verifies memory");
+
+            expect(maxWorkersForRowHammer(size_t{1024} * 1024, 4096, 2) == 34 &&
+                       maxWorkersForRowHammer(size_t{24} * 1024, 4096, 2) == 0,
+                   "RowHammer worker cap keeps 1 MiB chunks above 24 KiB and rejects <=24 KiB");
         }
     }
 

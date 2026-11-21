@@ -62,7 +62,7 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
     std::mt19937_64 rng(rd());
 
     const std::array<size_t, 4> row_stride_bytes = {
-        size_t{8} * 1024,
+        kMinRowHammerStrideBytes,
         size_t{16} * 1024,
         size_t{32} * 1024,
         size_t{64} * 1024,
@@ -78,7 +78,9 @@ TestResult TestEngine::runRowHammerTest(TestContext& ctx, const MemoryRegion& re
     }
 
     if (usable_strides.empty()) {
-        LOG_WARN("Region too small for RowHammer test");
+        LOG_ERROR("RowHammer: region size %zu bytes is too small (minimum %zu bytes required for %zu KiB stride)",
+                  region.size, kMinRowHammerBytes, kMinRowHammerStrideBytes / 1024);
+        ctx.setInfrastructureFailure("RowHammer region is too small (minimum > 24 KiB required).");
         return res;
     }
 

@@ -216,6 +216,20 @@ class ConfigCliTests(unittest.TestCase):
         log = (self.root / "testsmem4u.log").read_text()
         self.assertIn("Results: verified-bytes=50331648 complete-cycles=1", log)
 
+    def test_rowhammer_1mb_many_cores_verifies_memory(self):
+        self.preset.write_text("Test Sequence=0\n[Test0]\nFunction=RowHammer\nParameter=1\n")
+        result = subprocess.run([
+            str(self.binary), "--yes", "--no-config", "--no-elevation",
+            "--no-locked-memory", "--no-large-pages", "--preset", str(self.preset),
+            "--memory", "1", "--cores", "48", "--cycles", "1",
+        ], cwd=self.root, capture_output=True, text=True, timeout=60)
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("Completed cycles: 1", output)
+        self.assertNotIn("0 bytes verified", output)
+        log = (self.root / "testsmem4u.log").read_text()
+        self.assertNotIn("verified-bytes=0", log)
+
 
 if __name__ == "__main__":
     unittest.main()

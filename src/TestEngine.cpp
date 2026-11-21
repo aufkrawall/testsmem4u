@@ -164,6 +164,12 @@ TestResult TestEngine::runRegionWork(TestContext& ctx, const MemoryRegion& regio
 
     TestResult total = {};
     size_t blocks = (region.size + block_size - 1) / block_size;
+    // Keep a tiny sub-24-KiB RowHammer tail attached to the preceding block so
+    // configured block splitting cannot create an untestable tail slice.
+    if (test_config.function == "RowHammer" && blocks > 1) {
+        const size_t tail = region.size - (blocks - 1) * block_size;
+        if (tail < kMinRowHammerBytes) --blocks;
+    }
     // The chunk's leftover data is known only if every block left the same
     // global-address data (SimpleTest), not block-relative data (mirror moves).
     bool residual_consistent = true;
@@ -171,7 +177,7 @@ TestResult TestEngine::runRegionWork(TestContext& ctx, const MemoryRegion& regio
     for (size_t i = 0; i < blocks; ++i) {
         if (ctx.shouldStop()) break;
         size_t offset = i * block_size;
-        size_t len = std::min(block_size, region.size - offset);
+        size_t len = (i + 1 == blocks) ? (region.size - offset) : std::min(block_size, region.size - offset);
 
         ProgressBinding::beginBlock(&ctx, i, blocks);
         MemoryRegion sub = region;
@@ -393,6 +399,27 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
         memory_pages::workerLimit(region.size, native_page_size), size_t{std::numeric_limits<uint32_t>::max()}));
     threads = std::min(threads, max_threads_for_region);
     if (threads == 0) threads = 1;
+
+    const bool has_enabled_rowhammer = std::any_of(seq.begin(), seq.end(), [&](uint32_t id) {
+        const auto it = configs.find(id);
+        return it != configs.end() && it->second.enabled && it->second.function == "RowHammer";
+    });
+    if (has_enabled_rowhammer) {
+        const uint32_t max_rh_threads = maxWorkersForRowHammer(region.size, native_page_size, kSpareChunks);
+        if (max_rh_threads == 0) {
+            LOG_ERROR("RowHammer requires a memory region of at least %zu bytes (got %zu bytes).",
+                      kMinRowHammerBytes, region.size);
+            result.infrastructure_failure = true;
+            result.infrastructure_error = "Memory region is too small for RowHammer (minimum > 24 KiB).";
+            return result;
+        }
+        if (threads > max_rh_threads) {
+            LOG_WARN("RowHammer: capping worker threads from %u to %u so every memory chunk stays above 24 KiB "
+                     "(window=%zu KiB)",
+                     threads, max_rh_threads, region.size / 1024);
+            threads = max_rh_threads;
+        }
+    }
 
     const std::vector<CpuTarget> targets = selectWorkerTargets(region, threads, native_page_size);
     threads = static_cast<uint32_t>(targets.size());
@@ -684,6 +711,14 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         // A cancelled test must not count as covered; the lease returns the chunk.
                         if (ctx.shouldStop()) {
                             timings.record(seq_idx, test_start, test_end, verified, false);
+                            break;
+                        }
+                        if (verified == 0) {
+                            LOG_ERROR("Worker %u chunk %zu cycle %llu test %zu: %s completed without verifying any memory",
+                                      t, claim.chunk, static_cast<unsigned long long>(cycle + 1), seq_idx + 1,
+                                      tc.function.c_str());
+                            timings.record(seq_idx, test_start, test_end, verified, false);
+                            ctx.setInfrastructureFailure("Test '" + tc.function + "' completed without verifying any memory.");
                             break;
                         }
                         timings.record(seq_idx, test_start, test_end, verified, true);

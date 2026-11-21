@@ -177,6 +177,20 @@ inline uint64_t randomAccessIterations(uint32_t parameter, size_t words) {
 // usable stride, at most kRowHammerMaxPoints.
 constexpr uint64_t kRowHammerDefaultPointsPerGiB = 2048;
 constexpr size_t kRowHammerMaxPoints = 100000;
+constexpr size_t kMinRowHammerStrideBytes = size_t{8} * 1024;
+// RowHammer selects random aggressor indices from [0, count - 3*stride - 1],
+// requiring strictly more than 3 * 8 KiB of 64-bit words (> 24 KiB).
+constexpr size_t kMinRowHammerBytes = 3 * kMinRowHammerStrideBytes + sizeof(uint64_t);
+
+inline uint32_t maxWorkersForRowHammer(size_t region_bytes, size_t native_page_size, size_t spare_chunks) {
+    if (region_bytes < kMinRowHammerBytes || native_page_size == 0) return 0;
+    const size_t min_pages_per_chunk = (kMinRowHammerBytes + native_page_size - 1) / native_page_size;
+    const size_t total_pages = region_bytes / native_page_size;
+    const size_t max_chunks = total_pages / min_pages_per_chunk;
+    if (max_chunks < spare_chunks + 2) return 1;
+    const size_t max_workers = max_chunks - spare_chunks;
+    return static_cast<uint32_t>(std::min<size_t>(max_workers, std::numeric_limits<uint32_t>::max()));
+}
 
 inline size_t rowHammerPoints(size_t region_bytes, uint32_t points_per_gib, size_t usable_strides) {
     const uint64_t density = points_per_gib ? points_per_gib : kRowHammerDefaultPointsPerGiB;

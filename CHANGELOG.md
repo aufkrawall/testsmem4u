@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **RowHammer minimum chunk size and zero-byte completion guard:** `RowHammer` on regions of 24 KiB or less now fails closed with an infrastructure error instead of returning an empty result and letting the scheduler credit a completed cycle with zero verified bytes; multi-worker runs on small windows (such as 1 MiB across 48 requested threads) cap worker/chunk counts so every chunk stays above the 24 KiB threshold, `Test Block Size` folds tiny sub-24-KiB RowHammer tails into the preceding block, and the engine refuses to credit any test entry that completes without verifying memory.
+
 ## 1.11 - 2026-11-15
 
 ### New
