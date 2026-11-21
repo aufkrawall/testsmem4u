@@ -46,6 +46,10 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `src/PlatformWindowsMemory.cpp`, `src/PlatformLinuxMemory.cpp`: native allocation
   and optional memory preparation; `include/PlatformMemoryInternal.h` exposes
   process-local Linux syscall substitution only to regression builds.
+- `include/CgroupMemoryLimit.h`, `include/SimdCpuSupport.h`: Linux cgroup v2/v1
+  hierarchical memory limit parser and full psABI x86-64-v2/v3/v4 CPUID + XCR0
+  feature checks (`AVX512F`/`DQ`/`CD`/`BW`/`VL`, `AVX2`, `BMI1`/`2`, `FMA`, `F16C`,
+  `MOVBE`, `LZCNT`, `POPCNT`, `SSE4.1`/`4.2`).
 - `src/simd_ops.cpp`: capability detection, cache management/fences and optimized pattern writers.
 - `src/simd_patterns_verify.cpp`: first-observation address/uniform/pair verifiers.
 - `src/simd_lfsr.cpp`, `src/simd_traffic.cpp`: exact-sequence LFSR generation and
@@ -62,9 +66,11 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - Logger split into header (.h) + implementation (.cpp) to reduce compile-time overhead per translation unit.
 - `flush_cache_region` caches `getCapabilities()` once per call to avoid repeated function call overhead in hot loops.
 - SIMD dispatch uses `#if`/`else`/`#if` chains (not `#elif`) so SSE2 NT-store path is available as runtime fallback in AVX2-compiled builds.
-- AVX-512 capability (`caps.has_avx512`) is detected unconditionally (not behind
-  `#if __AVX512F__`) so baseline/v3 binaries can warn that the -v4 variant would
-  fit the CPU; AVX-512 *instruction emission* stays `#if __AVX512F__`-guarded.
+- AVX-512 and AVX2 capabilities (`caps.has_avx512`, `caps.has_avx2`) are detected
+  unconditionally via `include/SimdCpuSupport.h` (`supportsX8664V3`, `supportsX8664V4`)
+  checking all required psABI extensions and OS XCR0 state so baseline/v3 binaries warn
+  accurately without misclassifying partial AVX-512 CPUs (e.g. Knights Landing) as
+  `-v4`-capable; AVX-512 *instruction emission* stays `#if __AVX512F__`-guarded.
 - MovingInversionLFSR uses the inverse LFSR recurrence for backward traversal;
   no seed-table precomputation is needed, and partial blocks are supported.
 - Workers pull equal page-aligned chunks (workers + 2); each chunk walks the sequence
@@ -114,8 +120,32 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - Logger console output is always rate-limited (also during active testing) and
   routed through `ConsoleDisplay::printLine/printError` so it coordinates with
   the status line under a single mutex. The log file never drops ERR lines
-  until queue backpressure (counted + reported). Logger initializes before
-  config/preset resolution and is closed/reopened around elevation relaunch.
+  until queue backpressure (counted + reported). Logger buffers startup/config
+  diagnostics in memory (`Logger::init("", ...)`), restarts cleanly if elevation
+  relaunch falls back without opening disk files, and only opens/truncates
+  `testsmem4u.log` via `Logger::attachFile` when a real test run starts (preserving
+  previous logs across `--dry-run`, invalid configs/presets, and privilege exits).
+- CLI exit codes (`resolveRunExitCode`): `0` only on completed runs with verified
+  bytes, `1` on detected memory errors, `2` on infrastructure failure, interrupted
+  finite runs (`--cycles` or `--duration`), or zero verified bytes; Windows second
+  Ctrl+C force-termination exits with `STATUS_CONTROL_C_EXIT` instead of `0`.
+- Config persistence and crash recovery (`src/ConfigManager.cpp`): `saveConfig`
+  checks stream write/flush/close state and OS buffer flushes (`FlushFileBuffers` /
+  `fsync`) before atomic rename; `recoverOrphanedTempFile` only promotes an
+  orphaned `.tmp` when the target is absent and all settings plus the
+  `; End of configuration` marker validate through the shared parser.
+- Linux sizing and terminal relaunch: `getSizingBaselineRAM` and
+  `getProcessMemoryLimit` enforce cgroup v2 `memory.max`, cgroup v1 limits, and
+  `RLIMIT_AS`; `getTotalSystemRAM`/`getAvailableSystemRAM` multiply `sysinfo`
+  fields in 64-bit arithmetic and `getMaxMappableMemory` enforces the `< 2 GiB`
+  ILP32 mapping limit; `shouldRelaunchInTerminal` runs after CLI parsing/early exits
+  only for bare graphical file-manager launches (`argc <= 1`, no stdio TTY, non-pipe stdout).
+- Windows locking and prompts: `tryAllocateVirtualLock` attempts `VirtualLock`
+  without requiring `SeLockMemoryPrivilege` (which is gated only for large pages),
+  `checkMemoryResident` verifies `QueryWorkingSetEx` `Valid` bits after
+  `VirtualQuery` checks while `tryAllocateStandard` prefaults native pages, and
+  `promptMemoryLockPrivilegeOffer` checks `std::getline` stream state so EOF never
+  grants privilege.
 - x86_64 scalar fill fallbacks (linear/xor/increment) use `_mm_stream_si64` NT
   stores when requested, so baseline (SSE2) binaries keep DRAM write stress.
 
@@ -167,9 +197,16 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `tests/test_cli.py` and `tests/test_build.py`: real configuration resolution,
   database generation, and fail-closed analysis (including zero-exit diagnostics).
 
-Last verified: 2026-10-14 for Linux strict-lock failure ordering; 2026-10-13
-for Windows/WSL baseline+AVX2 progress/results tests,
-ASan/UBSan, strict native analysis and all nine release cross-builds; 2026-09-30
-for other reviewed runtime paths. Other details retain their earlier dates.
-Stale risk: Medium for hardware effectiveness and historical lint claims; see
+Last verified: 2026-11-21 for all 12 audit fixes (RowHammer min-chunk/zero-byte
+guards, non-zero interrupted/zero-byte exit codes, Linux cgroup/`RLIMIT_AS` and
+32-bit `< 2 GiB` sizing, Windows `VirtualLock` without `SeLockMemoryPrivilege`
+plus `QueryWorkingSetEx` residency checks, `saveConfig`/`.tmp` recovery checks,
+deferred `Logger::attachFile`, EOF-safe privilege prompt, scoped Linux terminal
+relaunch, and full psABI `x86-64-v3`/`v4` CPUID checks across MinGW baseline/v3/x86,
+ASan/UBSan, strict `clang-tidy` on all 30 translation units, all nine release
+cross-builds, and WSL `x86_64` + `x86` C++/CLI suites). Other historical entries
+retain their earlier dates.
+Stale risk: Low for tested Windows/Linux paths and lint gates; Medium for
+unobserved hardware effectiveness and ARM64/AVX-512 runtime execution (cross-build
+only on this Ryzen AVX2 host); see
 [memory testing](memory-testing.md) and [the recent review](log/recent.md).

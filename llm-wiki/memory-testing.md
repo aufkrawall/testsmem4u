@@ -1,6 +1,12 @@
 # Memory testing: workload and coverage
 
-Last verified: 2026-11-15 for bounded Line Stride traversal (exactly-once word
+Last verified: 2026-11-21 for the v1.11 audit fixes (RowHammer >24 KiB minimum
+chunk / thread-cap / tail-merge and zero-byte completion guard, non-zero exit
+codes on interrupted finite/zero-byte runs, Windows `VirtualLock` without
+`SeLockMemoryPrivilege`, `QueryWorkingSetEx` residency checks + standard
+prefaulting, full psABI `x86-64-v3`/`v4` CPUID gating, Linux cgroup/`RLIMIT_AS`
++ `< 2 GiB` ILP32 sizing, config save/recovery validation, deferred log file open,
+EOF-safe privilege prompt, and scoped terminal relaunch); 2026-11-15 for bounded Line Stride traversal (exactly-once word
 writes, boundary sentinels and large-stride regressions) and one-CPU regression
 portability; 2026-11-14 for the
 TestMem5-inspired additions (real mirror moves,
@@ -58,6 +64,8 @@ long-run stalls; low for tested native progress/accounting paths.
 - `include/IdleChunkCheck.h`, `src/IdleChunkCheck.cpp`, `ResidualPattern` in
   `include/Types.h`: idle-chunk checks (leftover data re-verified on the next claim).
 - `include/RunDeadline.h`, `include/InputSpec.h`: run time limit timer and the
+- `include/CgroupMemoryLimit.h`, `include/SimdCpuSupport.h`: hierarchical Linux
+  cgroup memory limits and full psABI `x86-64-v2`/`v3`/`v4` + XCR0 feature checks.
   shared memory/time input parser (wizard, `--memory`, `--duration`).
 - `src/TestMarch.cpp`: LFSR verification and moving-inversion variants.
 - `src/simd_verify.cpp`, `include/MemoryTestKernels.h`: first-observation comparison,
@@ -967,6 +975,35 @@ unresponsiveness, a permanent long-run stall and the original unspecified Linux
 complaint have not been reproduced or diagnosed.
 
 ## Validation and measurements
+
+### 2026-11-21 v1.11 audit fixes (reliability, sizing, and ISA detection)
+
+- `RowHammer` regions at or below `24 KiB` (`TestEngineInternal.h::kMinRowHammerBytes`)
+  now fail closed with an infrastructure error instead of returning an empty
+  success result (`TestRowHammer.cpp`). When `RowHammer` is enabled in the sequence,
+  `TestEngine.cpp` caps effective workers/chunks so every chunk stays above 24 KiB,
+  folds sub-threshold `Test Block Size` remainders into the preceding block, and
+  refuses to advance scheduler progress (`RegionScheduler`) for any zero-byte test
+  entry unless it was intentionally stopped before executing.
+- `resolveRunExitCode` (`src/RunConfiguration.cpp`) exits `2` on zero verified bytes
+  or interrupted finite runs (`--cycles` or `--duration`) and preserves exit `1` if
+  errors were already recorded; Windows double Ctrl+C `TerminateProcess` exits with
+  `STATUS_CONTROL_C_EXIT`.
+- Windows `tryAllocateVirtualLock` no longer gates ordinary `VirtualLock` on
+  `SeLockMemoryPrivilege`; `tryAllocateStandard` prefaults native pages and
+  `Platform::checkMemoryResident` (`src/PlatformMemory.cpp`) verifies actual working-set
+  residency with `QueryWorkingSetEx` (`Valid != 0`) after `VirtualQuery` checks.
+- `detect_x86_capabilities` (`src/simd_ops.cpp` + `include/SimdCpuSupport.h`) checks
+  every psABI v3/v4 CPUID feature and XCR0 state before setting `has_avx2`/`has_avx512`.
+- Verification on 2026-11-21: `python build.py --lint` clean across all 30 translation
+  units (`WarningsAsErrors`); `python build.py --tests` passed baseline/v3/x86 C++
+  runners and 31 Python tests (`27 OK, 4 Linux-only skipped`); `python build.py --run-sanitizers`
+  passed ASan and UBSan (baseline, v3, and Python suite); all 9 release targets built
+  cleanly; inside WSL, both Zig-built `x86_64-linux-musl` and `x86-linux-musl` C++
+  test suites passed (`All internal tests passed.`), 22 Python CLI tests passed
+  (`21 OK, 1 Windows-only skipped`), `testsmem4u-linux-x86 --memory 85% --dry-run`
+  clamped cleanly to `2044 MB` (rejecting `2048 MB --no-large-pages`), and a 16 MiB
+  `testsmem4u-linux-x86` cycle verified `16,777,216` bytes with zero errors.
 
 ### 2026-10-13 kernel optimization check
 

@@ -1,5 +1,44 @@
 # Recent Log
 
+## 2026-11-21 - v1.11 Reliability, Sizing, and Detection Audit Fixes
+
+Verified and fixed all 12 findings reported against v1.11:
+- **Zero-byte RowHammer & completion accounting:** `TestRowHammer` now fails closed
+  on chunks <= 24 KiB (`kMinRowHammerBytes`); `TestEngine` caps workers/chunks (`maxWorkersForRowHammer`)
+  and folds tiny `Test Block Size` RowHammer remainders so multi-worker small-window
+  runs (e.g., 1 MiB / 48 threads) never skip memory, and refuses to credit zero-byte completions.
+- **Non-zero interrupted/zero-byte exit codes:** added `resolveRunExitCode` (exit `1` on
+  detected errors, `2` on infrastructure failure, zero verified bytes, or interrupted finite runs),
+  populated `stop_reason` on pre-run latches, and switched Windows second Ctrl+C termination
+  from `0` to `STATUS_CONTROL_C_EXIT`.
+- **Linux process limits & 32-bit addressable sizing:** added `include/CgroupMemoryLimit.h`
+  and `Platform::getProcessMemoryLimit()` (cgroup v2 hierarchy `memory.max`, cgroup v1 limits,
+  and `RLIMIT_AS`); widened `sysinfo` `totalram`/`freeram` multiplication to `uint64_t`; capped
+  32-bit percentage sizing and rejected explicit windows exceeding `Platform::getMaxMappableMemory()`
+  (`< 2 GiB`, below `PTRDIFF_MAX` minus alignment).
+- **Windows `VirtualLock` privilege & working-set residency:** removed `SeLockMemoryPrivilege`
+  gate from `tryAllocateVirtualLock` and non-LP startup prompts; implemented real `QueryWorkingSetEx`
+  `Valid` checks after `VirtualQuery` in `Platform::checkMemoryResident` and prefaulted native
+  pages in `tryAllocateStandard`.
+- **Config durability & validated `.tmp` recovery:** `saveConfig` verifies stream write/flush/close
+  plus OS buffer flushes (`FlushFileBuffers` / `fsync`) before rename and writes `; End of configuration`;
+  `recoverOrphanedTempFile` only promotes complete regular `.tmp` files passing the shared parser
+  when the target is absent (rejecting truncated timed saves such as `Cycles=0` before `TimeLimitSeconds`).
+- **Deferred log truncation, EOF-safe privilege prompt, & terminal relaunch gate:** added
+  `Logger::attachFile` so `--dry-run` / invalid configs preserve `testsmem4u.log`; extracted
+  EOF-safe `promptMemoryLockPrivilegeOffer`; moved Linux terminal auto-relaunch (`shouldRelaunchInTerminal`)
+  after CLI parsing/early exits and restricted it to bare GUI launches (`argc <= 1`, no stdio TTY,
+  non-pipe stdout).
+- **Full `x86-64-v3`/`v4` CPUID feature detection:** added `include/SimdCpuSupport.h` (`supportsX8664V2`/`V3`/`V4`)
+  requiring all psABI v3/v4 CPUID extensions and OS XCR0 bits (`AVX512F`/`DQ`/`CD`/`BW`/`VL`, `BMI1`/`2`,
+  `FMA`, `F16C`, `MOVBE`, `LZCNT`, `POPCNT`, `SSE4.1`/`4.2`) instead of `AVX512F` alone.
+- **Verification:** `python build.py --lint` (30/30 files clean), `python build.py --tests`
+  (Windows baseline/AVX2/x86 + 31 Python tests: `27 OK, 4 skipped`), `python build.py --run-sanitizers`
+  (ASan & UBSan baseline/v3 + Python suite), all 9 release cross-builds, WSL `x86_64-linux-musl`
+  and `x86-linux-musl` C++ suites (`All internal tests passed.`), WSL Python CLI suite
+  (`21 OK, 1 skipped`), and WSL `testsmem4u-linux-x86` probes (`85% -> 2044 MB`, `2048 MB` rejected,
+  16 MiB cycle verified `16,777,216` bytes with 0 errors).
+
 ## 2026-11-15 - Release v1.11
 
 Bumped version string to `1.11` across runtime and changelog:
