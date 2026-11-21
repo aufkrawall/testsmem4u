@@ -289,6 +289,20 @@ class ConfigCliTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2, output)
         self.assertIn("Stopped by: stop request", output)
 
+    def test_orphaned_incomplete_tmp_config_is_not_promoted(self):
+        tmp_cfg = self.root / "config.ini.tmp"
+        tmp_cfg.write_text("[Settings]\nMemoryWindowPercent=0\nMemoryWindowMB=16\nCores=1\nCycles=0\n")
+        res = subprocess.run([
+            str(self.binary), "--dry-run", "--show-config", "--yes", "--no-elevation",
+            "--preset", str(self.preset),
+        ], cwd=self.root, capture_output=True, text=True, timeout=30)
+        out = res.stdout + res.stderr
+        self.assertEqual(res.returncode, 0, out)
+        self.assertFalse((self.root / "config.ini").exists(), "Incomplete .tmp was promoted to config.ini")
+        self.assertFalse(tmp_cfg.exists(), "Incomplete .tmp was not cleaned up")
+        self.assertIn("Cycles:          3", out)
+        self.assertNotIn("infinite", out.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

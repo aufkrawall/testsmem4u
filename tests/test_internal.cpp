@@ -19,7 +19,11 @@
 #include <psapi.h>
 #else
 #include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <cerrno>
+#include <csignal>
+#include <unistd.h>
 #endif
 #include "MemoryTestKernels.h"
 #include "RegionScheduler.h"
@@ -715,6 +719,7 @@ int main() try {
     testConfigInvalidLoadDoesNotPartiallyApply();
     testConfigRejectsUnsafePath();
     testConfigLoadStatuses();
+    testConfigSaveAndRecoveryContracts();
     testWizardDefaultPolicies();
     testWizardExplicitSettings();
     testMemoryAndTimeInput();

@@ -10,6 +10,8 @@
 - **32-bit Linux RAM detection and addressable limit:** `getTotalSystemRAM` and `getAvailableSystemRAM` now multiply `totalram`/`freeram` by `mem_unit` in 64-bit arithmetic instead of wrapping modulo 4 GiB, and 32-bit builds clamp percentage windows and reject explicit windows exceeding the single-region 32-bit mappable ceiling (`< 2 GiB`).
 - **Windows ordinary `VirtualLock` without `SeLockMemoryPrivilege`:** `tryAllocateVirtualLock` and the startup privilege prompt no longer reject or gate ordinary `VirtualLock` allocations on `SeLockMemoryPrivilege` (which is only required for `MEM_LARGE_PAGES`), letting Windows decide locking within the process working-set quota.
 - **Windows working-set residency verification:** `checkMemoryResident` on Windows now inspects actual page residency with `QueryWorkingSetEx` (after `VirtualQuery` commit/protection checks) instead of accepting nonresident `MEM_COMMIT` pages, and `tryAllocateStandard` prefaults each native page at allocation time so freshly allocated unlocked memory is materialized before pattern tests begin.
+- **Config save write/flush verification:** `saveConfig` now checks stream write/flush/close status and flushes OS file buffers/fsync before replacing the target file, deleting the `.tmp` file and preserving any previous valid configuration on failure.
+- **Complete config `.tmp` validation in crash recovery:** `recoverOrphanedTempFile` only promotes an orphaned `.tmp` when the target is absent and the temp file passes validation with all settings and its completion marker, discarding truncated temp files instead of turning partial timed saves (`Cycles=0` before `TimeLimitSeconds`) into infinite runs.
 
 ## 1.11 - 2026-11-15
 

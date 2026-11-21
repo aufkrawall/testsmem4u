@@ -229,3 +229,112 @@ void testMemoryLimitAnd32BitSizing() {
     }
     expect(Platform::getTotalSystemRAM() > 0, "Total system RAM query succeeds");
 }
+
+void testConfigSaveAndRecoveryContracts() {
+    const std::string path = uniqueTempPath("_config_recovery.ini");
+    const std::string tmp_path = path + ".tmp";
+    std::error_code ec;
+    cleanupFile(path);
+    cleanupFile(tmp_path);
+
+    // 1. Truncated first-save .tmp ending at Cycles=0 must be discarded, not promoted into an infinite run.
+    {
+        std::ofstream f(tmp_path);
+        f << "[Settings]\nMemoryWindowPercent=0\nMemoryWindowMB=64\nCores=1\nCycles=0\n";
+    }
+    Config loaded;
+    loaded.cycles = 3;
+    loaded.time_limit_seconds = 90;
+    expect(loadConfigWithStatus(path, loaded) == ConfigLoadStatus::NOT_FOUND,
+           "Truncated orphaned .tmp file ending at Cycles=0 is discarded");
+    expect(!std::filesystem::exists(path, ec) && !std::filesystem::exists(tmp_path, ec),
+           "Incomplete .tmp is deleted rather than promoted to target");
+    expect(loaded.cycles == 3 && loaded.time_limit_seconds == 90,
+           "Discarding incomplete .tmp preserves caller defaults");
+
+    // 2. .tmp with all keys but missing completion marker must also be rejected.
+    {
+        std::ofstream f(tmp_path);
+        f << "[Settings]\nMemoryWindowPercent=0\nMemoryWindowMB=64\nCores=1\n"
+          << "Cycles=0\nTimeLimitSeconds=120\nUseLockedMemory=1\n"
+          << "UseLargePages=0\nHaltOnError=1\nPresetFile=default.cfg\n";
+    }
+    expect(loadConfigWithStatus(path, loaded) == ConfigLoadStatus::NOT_FOUND &&
+               !std::filesystem::exists(path, ec) && !std::filesystem::exists(tmp_path, ec),
+           "Orphaned .tmp without completion marker is rejected");
+
+    // 3. Complete valid .tmp created by saveConfig is safely recovered when target is absent.
+    const std::string src_path = uniqueTempPath("_config_src.ini");
+    Config timed;
+    timed.memory_window_percent = 0;
+    timed.memory_window_mb = 64;
+    timed.cores = 2;
+    timed.cycles = 0;
+    timed.time_limit_seconds = 120;
+    timed.use_locked_memory = true;
+    timed.use_large_pages = false;
+    timed.halt_on_error = false;
+    timed.preset_file = "default.cfg";
+    expect(saveConfig(src_path, timed), "Helper config save succeeds");
+    std::filesystem::rename(src_path, tmp_path, ec);
+    expect(!ec, "Renamed complete config into .tmp");
+    Config recovered;
+    expect(loadConfigWithStatus(path, recovered) == ConfigLoadStatus::LOADED &&
+               recovered.cycles == 0 && recovered.time_limit_seconds == 120 &&
+               recovered.cores == 2 && !recovered.halt_on_error,
+           "Complete orphaned .tmp with end marker is promoted when target is absent");
+    expect(std::filesystem::exists(path, ec) && !std::filesystem::exists(tmp_path, ec),
+           "Promoted .tmp becomes authoritative target config");
+
+    // 4. Truncated/corrupt .tmp alongside an existing target leaves the good target untouched.
+    {
+        std::ofstream f(tmp_path);
+        f << "[Settings]\nCycles=999\n";
+    }
+    Config reloaded;
+    expect(loadConfigWithStatus(path, reloaded) == ConfigLoadStatus::LOADED &&
+               reloaded.cycles == 0 && reloaded.time_limit_seconds == 120 &&
+               !std::filesystem::exists(tmp_path, ec),
+           "Stale .tmp alongside existing target is removed without altering target");
+
+    // 5. Failed saveConfig preserves the previous good config file.
+    Config updated = timed;
+    updated.cycles = 7;
+    updated.time_limit_seconds = 0;
+    std::filesystem::create_directory(tmp_path, ec);
+    expect(!ec, "Setup directory collision at .tmp path succeeds");
+    expect(!saveConfig(path, updated), "saveConfig fails cleanly when .tmp cannot be opened");
+    std::filesystem::remove(tmp_path, ec);
+    Config after_fail;
+    expect(loadConfigWithStatus(path, after_fail) == ConfigLoadStatus::LOADED &&
+               after_fail.cycles == 0 && after_fail.time_limit_seconds == 120,
+           "Failed saveConfig leaves the previous good configuration intact");
+
+#ifndef _WIN32
+    // 6. Real write/flush truncation via 32-byte RLIMIT_FSIZE preserves existing target and cleans up .tmp.
+    const pid_t child = ::fork();
+    expect(child >= 0, "fork() succeeds for RLIMIT_FSIZE saveConfig check");
+    if (child == 0) {
+        std::signal(SIGXFSZ, SIG_IGN);
+        struct rlimit rl{};
+        rl.rlim_cur = 32;
+        rl.rlim_max = 32;
+        if (::setrlimit(RLIMIT_FSIZE, &rl) != 0) _exit(2);
+        const bool ok = saveConfig(path, updated);
+        _exit(ok ? 3 : 0);
+    }
+    int status = 0;
+    const pid_t waited = ::waitpid(child, &status, 0);
+    expect(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+           "saveConfig under 32-byte RLIMIT_FSIZE fails cleanly without returning success");
+    Config after_rlimit;
+    expect(loadConfigWithStatus(path, after_rlimit) == ConfigLoadStatus::LOADED &&
+               after_rlimit.cycles == 0 && after_rlimit.time_limit_seconds == 120 &&
+               !std::filesystem::exists(tmp_path, ec),
+           "Failed 32-byte write preserves previous good config and removes partial .tmp");
+#endif
+
+    cleanupFile(path);
+    cleanupFile(tmp_path);
+    cleanupFile(src_path);
+}
