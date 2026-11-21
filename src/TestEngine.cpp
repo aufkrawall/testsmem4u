@@ -469,10 +469,13 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
         const char* built_isa = "SSE2 baseline";
 #endif
         const simd::SimdCapabilities caps = simd::getCapabilities();
-        LOG_INFO("SIMD: built for %s; CPU supports AVX2=%s AVX-512=%s; worker threads = %u",
+        LOG_INFO("SIMD: built for %s; CPU supports x86-64-v3 (AVX2)=%s x86-64-v4 (AVX-512)=%s; worker threads = %u",
                  built_isa,
                  caps.has_avx2 ? "yes" : "no",
                  caps.has_avx512 ? "yes" : "no", threads);
+        if (caps.has_partial_avx512) {
+            LOG_DEBUG("SIMD: CPU advertises AVX512F without full x86-64-v4 extensions/OS state (DQ/CD/BW/VL + ZMM); keeping -v4 disabled");
+        }
         LOG_DEBUG("Kernels: uniform-march=register-pattern flush-stride=%zu advertised-granule=%zu flush=%s "
                   "LFSR-lanes=%zu post-fill-flush=%s",
                   caps.cache_line_size, caps.flush_granule_advertised, caps.has_clflushopt ? "CLFLUSHOPT region/batch" :

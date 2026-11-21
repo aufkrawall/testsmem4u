@@ -15,6 +15,7 @@
 - **Previous log preserved on dry runs and startup errors:** startup diagnostics buffer in memory until an actual test run starts (`Logger::attachFile`), so `--dry-run`, invalid configs/presets, and pre-run exits no longer truncate the previous `testsmem4u.log`.
 - **Closed stdin does not grant Windows privilege:** the `SeLockMemoryPrivilege` interactive prompt checks `std::getline` stream state and only treats an explicit `y`/`yes` or a live empty Enter press as confirmation, never triggering on EOF.
 - **Linux terminal auto-relaunch scoped to bare GUI launches:** terminal emulator relaunch now runs after CLI parsing/early exits and only when launched without arguments, TTYs on stdio, or a stdout pipe, preventing graphical sessions from diverting scripted or invalid CLI invocations into a terminal wrapper.
+- **Full `x86-64-v3` and `x86-64-v4` CPUID feature detection:** x86 SIMD capability detection now checks all required psABI v3/v4 CPUID extensions (`BMI1`, `BMI2`, `FMA`, `F16C`, `MOVBE`, `POPCNT`, `LZCNT`, `SSE4.1`/`4.2`, `AVX512F`/`DQ`/`CD`/`BW`/`VL`, and XCR0 state) instead of treating `AVX512F` alone as `v4`-capable or `AVX2` alone as `v3`-capable.
 
 ## 1.11 - 2026-11-15
 

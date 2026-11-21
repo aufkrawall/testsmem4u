@@ -1,6 +1,7 @@
 #include "simd_ops.h"
 #include "SimdPatternMath.h"
 #include "SimdCacheGeometry.h"
+#include "SimdCpuSupport.h"
 #include <atomic>
 #include <cstring>
 
@@ -45,46 +46,46 @@ static inline uint64_t read_xcr0() {
 
 static SimdCapabilities detect_x86_capabilities() {
     SimdCapabilities caps;
+    detail::X86CpuFeatures features;
 
     int info[4] = {0, 0, 0, 0};
     queryCpuId(info, 0, 0);
-    const int max_leaf = info[0];
+    features.max_leaf = info[0] >= 0 ? static_cast<uint32_t>(info[0]) : 0;
 
-    queryCpuId(info, 1, 0);
-    const bool cpu_has_sse41 = (info[2] & (1 << 19)) != 0;
-    const bool cpu_has_avx = (info[2] & (1 << 28)) != 0;
-    const bool cpu_has_osxsave = (info[2] & (1 << 27)) != 0;
-    caps.has_clflush = (info[3] & (1 << 19)) != 0;
-    caps.flush_granule_advertised = detail::x86AdvertisedFlushGranule(static_cast<uint32_t>(info[1]),
-                                                                      static_cast<uint32_t>(info[3]));
-    caps.cache_line_size = detail::x86FlushLineSize(static_cast<uint32_t>(info[1]),
-                                                  static_cast<uint32_t>(info[3]));
-
-    // Detect XSAVE-enabled OS state support. AVX-512 state is probed
-    // unconditionally (not behind __AVX512F__) so baseline/v3 binaries can tell
-    // the user when the -v4 sibling variant would match their hardware.
-    bool os_has_avx_state = false;
-    bool os_has_avx512_state = false;
-    if (cpu_has_osxsave) {
-        const uint64_t xcr0 = read_xcr0();
-        os_has_avx_state = (xcr0 & 0x6ULL) == 0x6ULL;        // XMM + YMM state
-        os_has_avx512_state = os_has_avx_state && ((xcr0 & 0xE0ULL) == 0xE0ULL); // Opmask + ZMM_Hi256 + Hi16_ZMM
+    queryCpuId(info, static_cast<int>(0x80000000U), 0);
+    features.max_ext_leaf = static_cast<uint32_t>(info[0]);
+    if (features.max_ext_leaf >= 0x80000001U) {
+        queryCpuId(info, static_cast<int>(0x80000001U), 0);
+        features.ext1_ecx = static_cast<uint32_t>(info[2]);
     }
 
-    bool cpu_has_avx2 = false;
-    bool cpu_has_avx512f = false;
-    if (max_leaf >= 7) {
+    if (features.max_leaf >= 1) {
+        queryCpuId(info, 1, 0);
+        features.leaf1_ecx = static_cast<uint32_t>(info[2]);
+        features.leaf1_edx = static_cast<uint32_t>(info[3]);
+        caps.has_clflush = detail::hasBit(features.leaf1_edx, 19);
+        caps.flush_granule_advertised = detail::x86AdvertisedFlushGranule(
+            static_cast<uint32_t>(info[1]), features.leaf1_edx);
+        caps.cache_line_size = detail::x86FlushLineSize(
+            static_cast<uint32_t>(info[1]), features.leaf1_edx);
+        if (detail::hasBit(features.leaf1_ecx, 27)) { // OSXSAVE
+            features.xcr0 = read_xcr0();
+        }
+    }
+
+    if (features.max_leaf >= 7) {
         queryCpuId(info, 7, 0);
-        caps.has_clflushopt = (info[1] & (1 << 23)) != 0;
-        cpu_has_avx2 = (info[1] & (1 << 5)) != 0;
-        cpu_has_avx512f = (info[1] & (1 << 16)) != 0;
+        features.leaf7_ebx = static_cast<uint32_t>(info[1]);
+        caps.has_clflushopt = detail::hasBit(features.leaf7_ebx, 23);
     }
 
-    // Report true CPU+OS AVX-512 support regardless of the instruction set this
-    // binary was compiled for. This flag drives the use-the-v4-binary hint; it is
-    // only acted on for code generation where guarded by __AVX512F__, so the
-    // baseline/v3 binaries never emit AVX-512 instructions even when it is true.
-    caps.has_avx512 = cpu_has_avx512f && cpu_has_avx && os_has_avx512_state;
+    // Only report full x86-64-v3 / x86-64-v4 capability when every baseline/psABI
+    // extension and OS XSAVE state required by the -v3 / -v4 builds is active.
+    const bool has_v3 = detail::supportsX86_64_v3(features);
+    const bool has_v4 = detail::supportsX86_64_v4(features);
+    caps.has_avx512 = has_v4;
+    caps.has_partial_avx512 =
+        features.max_leaf >= 7 && detail::hasBit(features.leaf7_ebx, 16) && !has_v4;
 
 #if defined(__AVX512F__)
     if (caps.has_avx512) {
@@ -95,13 +96,13 @@ static SimdCapabilities detect_x86_capabilities() {
         caps.vector_width = 64;
     } else
 #endif
-    if (cpu_has_avx2 && cpu_has_avx && os_has_avx_state) {
+    if (has_v3) {
         caps.level = SimdLevel::AVX2;
         caps.has_avx2 = true;
         caps.has_sse4_1 = true;
         caps.has_nt_stores = true;
         caps.vector_width = 32;
-    } else if (cpu_has_sse41) {
+    } else if (detail::supportsSse41(features)) {
         caps.level = SimdLevel::SSE4_1;
         caps.has_sse4_1 = true;
         caps.has_nt_stores = true;

@@ -2,6 +2,7 @@
 #include "TestEngine.h"
 #include "simd_ops.h"
 #include "SimdCacheGeometry.h"
+#include "SimdCpuSupport.h"
 #if defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 #endif

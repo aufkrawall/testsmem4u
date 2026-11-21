@@ -21,6 +21,7 @@ struct SimdCapabilities {
     SimdLevel level = SimdLevel::NONE;
     bool has_nt_stores = false;
     bool has_avx512 = false;
+    bool has_partial_avx512 = false;
     bool has_avx2 = false;
     bool has_sse4_1 = false;
     bool has_neon = false;
