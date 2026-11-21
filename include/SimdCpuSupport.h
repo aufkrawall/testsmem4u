@@ -31,7 +31,7 @@ constexpr bool osSupportsAvx512State(const X86CpuFeatures& features) {
     return osSupportsAvxState(features) && (features.xcr0 & 0xE0ULL) == 0xE0ULL;
 }
 
-constexpr bool supportsX86_64_v2(const X86CpuFeatures& features) {
+constexpr bool supportsX8664V2(const X86CpuFeatures& features) {
     if (features.max_leaf < 1) return false;
     const bool leaf1_ok =
         hasBit(features.leaf1_ecx, 0) &&   // SSE3
@@ -45,8 +45,8 @@ constexpr bool supportsX86_64_v2(const X86CpuFeatures& features) {
     return leaf1_ok && ext_ok;
 }
 
-constexpr bool supportsX86_64_v3(const X86CpuFeatures& features) {
-    if (!supportsX86_64_v2(features) || features.max_leaf < 7 || !osSupportsAvxState(features)) {
+constexpr bool supportsX8664V3(const X86CpuFeatures& features) {
+    if (!supportsX8664V2(features) || features.max_leaf < 7 || !osSupportsAvxState(features)) {
         return false;
     }
     const bool leaf1_ok =
@@ -63,8 +63,8 @@ constexpr bool supportsX86_64_v3(const X86CpuFeatures& features) {
     return leaf1_ok && leaf7_ok && lzcnt_ok;
 }
 
-constexpr bool supportsX86_64_v4(const X86CpuFeatures& features) {
-    if (!supportsX86_64_v3(features) || !osSupportsAvx512State(features)) {
+constexpr bool supportsX8664V4(const X86CpuFeatures& features) {
+    if (!supportsX8664V3(features) || !osSupportsAvx512State(features)) {
         return false;
     }
     return hasBit(features.leaf7_ebx, 16) && // AVX512F

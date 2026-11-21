@@ -43,37 +43,37 @@ void testCacheFlushGeometry() {
                             (uint32_t{1} << 30) | (uint32_t{1} << 31);
         full_v4.ext1_ecx = (uint32_t{1} << 0) | (uint32_t{1} << 5);
         full_v4.xcr0 = 0xE6ULL;
-        expect(supportsX86_64_v3(full_v4) && supportsX86_64_v4(full_v4),
+        expect(supportsX8664V3(full_v4) && supportsX8664V4(full_v4),
                "Full psABI v4 + XCR0 feature set satisfies both x86-64-v3 and x86-64-v4");
 
         // Knights Landing: AVX512F + AVX512CD only (no DQ, BW, VL).
         X86CpuFeatures knl = full_v4;
         knl.leaf7_ebx &= ~((uint32_t{1} << 17) | (uint32_t{1} << 30) | (uint32_t{1} << 31));
-        expect(supportsX86_64_v3(knl) && !supportsX86_64_v4(knl),
+        expect(supportsX8664V3(knl) && !supportsX8664V4(knl),
                "Partial AVX-512 (AVX512F+CD without DQ/BW/VL) satisfies v3 but rejects x86-64-v4");
 
         // Missing any single v4 bit (e.g. AVX512VL) rejects v4.
         for (unsigned bit : {16U, 17U, 28U, 30U, 31U}) {
             X86CpuFeatures missing_one = full_v4;
             missing_one.leaf7_ebx &= ~(uint32_t{1} << bit);
-            expect(!supportsX86_64_v4(missing_one),
+            expect(!supportsX8664V4(missing_one),
                    "Missing any required AVX-512 v4 feature bit disables x86-64-v4");
         }
 
         // OS XCR0 with YMM only enables v3 but disables v4.
         X86CpuFeatures no_zmm_os = full_v4;
         no_zmm_os.xcr0 = 0x6ULL;
-        expect(supportsX86_64_v3(no_zmm_os) && !supportsX86_64_v4(no_zmm_os),
+        expect(supportsX8664V3(no_zmm_os) && !supportsX8664V4(no_zmm_os),
                "OS without ZMM XCR0 state enables x86-64-v3 only");
 
         // Missing BMI2 or LZCNT or FMA rejects v3 and v4.
         X86CpuFeatures no_bmi2 = full_v4;
         no_bmi2.leaf7_ebx &= ~(uint32_t{1} << 8);
-        expect(!supportsX86_64_v3(no_bmi2) && !supportsX86_64_v4(no_bmi2),
+        expect(!supportsX8664V3(no_bmi2) && !supportsX8664V4(no_bmi2),
                "Missing BMI2 rejects x86-64-v3 and x86-64-v4");
         X86CpuFeatures no_lzcnt = full_v4;
         no_lzcnt.ext1_ecx &= ~(uint32_t{1} << 5);
-        expect(!supportsX86_64_v3(no_lzcnt) && !supportsX86_64_v4(no_lzcnt),
+        expect(!supportsX8664V3(no_lzcnt) && !supportsX8664V4(no_lzcnt),
                "Missing LZCNT rejects x86-64-v3 and x86-64-v4");
     }
 }

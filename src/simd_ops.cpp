@@ -81,8 +81,8 @@ static SimdCapabilities detect_x86_capabilities() {
 
     // Only report full x86-64-v3 / x86-64-v4 capability when every baseline/psABI
     // extension and OS XSAVE state required by the -v3 / -v4 builds is active.
-    const bool has_v3 = detail::supportsX86_64_v3(features);
-    const bool has_v4 = detail::supportsX86_64_v4(features);
+    const bool has_v3 = detail::supportsX8664V3(features);
+    const bool has_v4 = detail::supportsX8664V4(features);
     caps.has_avx512 = has_v4;
     caps.has_partial_avx512 =
         features.max_leaf >= 7 && detail::hasBit(features.leaf7_ebx, 16) && !has_v4;
