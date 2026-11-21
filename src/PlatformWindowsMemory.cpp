@@ -106,6 +106,15 @@ bool enableMemoryLockPrivilege() {
 #endif
     return Platform::enablePrivilege(SE_LOCK_MEMORY_NAME);
 }
+
+void prefault(uint8_t* base, size_t size) {
+    const auto started = std::chrono::steady_clock::now();
+    auto* pages = static_cast<volatile uint8_t*>(base);
+    const size_t native = std::max<size_t>(Platform::getNativePageSize(), 4096);
+    for (size_t offset = 0; offset < size; offset += native) pages[offset] = 0;
+    LOG_DEBUG("Allocation: prefault bytes=%zu native-page=%zu seconds=%.3f", size, native,
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+}
 } // namespace
 
 #ifdef TESTSMEM4U_TESTING
@@ -135,24 +144,18 @@ memory_pages::Coverage Platform::queryLargePageCoverage(const MemoryRegion& regi
 }
 
 bool Platform::tryAllocateVirtualLock(MemoryRegion& region, size_t size, size_t min_required_bytes) {
-    // Enable privilege first
-    if (!enableMemoryLockPrivilege()) {
-        LOG_ERROR("SeLockMemoryPrivilege not available. Cannot lock memory.");
-        return false;
-    }
-
-    // Set working set size before allocating so VirtualLock can reserve enough pages.
+    // Ordinary VirtualLock operates within the process working-set quota and
+    // does not require SeLockMemoryPrivilege (which is only needed for MEM_LARGE_PAGES).
+    // Raise the working-set bounds best-effort, then let VirtualLock make the OS decision.
     const size_t overhead = size_t{128} * 1024 * 1024;
     const size_t min_ws = size + overhead;
     const size_t max_ws = size + overhead + (size_t{512} * 1024 * 1024);
 
     if (!setWorkingSet(min_ws, max_ws)) {
         DWORD err = GetLastError();
-        LOG_ERROR("SetProcessWorkingSetSize(min=%zu MB, max=%zu MB) failed: error %lu. "
-                  "Cannot guarantee memory lock without sufficient working set.",
-                  min_ws / 1024 / 1024, max_ws / 1024 / 1024, err);
-        // This is now a critical failure - VirtualLock will likely fail without sufficient working set
-        return false;
+        LOG_WARN("SetProcessWorkingSetSize(min=%zu MB, max=%zu MB) failed: error %lu; "
+                 "attempting VirtualLock within the existing working-set limits.",
+                 min_ws / 1024 / 1024, max_ws / 1024 / 1024, err);
     }
 
     // Free any existing allocation before reassigning
@@ -244,6 +247,8 @@ bool Platform::tryAllocateStandard(MemoryRegion& region, size_t size) {
     if (region.base) {
         MappingCleanup cleanup{region.base, 1, 0};
         region.size = size;
+        // Materialize every native page into the working set before residency checks and pattern tests.
+        prefault(region.base, size);
         LOG_INFO("Allocated %zu MB (Standard)", size / 1024 / 1024);
         region.is_locked = false;
         region.is_large_pages = false;

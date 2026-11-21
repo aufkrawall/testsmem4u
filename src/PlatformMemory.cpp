@@ -130,18 +130,73 @@ void Platform::freeMemory(MemoryRegion& region) {
 
 bool Platform::checkMemoryResident(const uint8_t* base, size_t size) {
 #ifdef _WIN32
-    // On Windows, VirtualLock'd and Large Pages memory is guaranteed resident
-    // Use VirtualQuery to verify the region is still committed
-    MEMORY_BASIC_INFORMATION mbi;
+    if (!base || size == 0) return false;
+
     const uint8_t* addr = base;
     size_t remaining = size;
     while (remaining > 0) {
-        if (VirtualQuery(addr, &mbi, sizeof(mbi)) == 0) return false;
-        if (mbi.State != MEM_COMMIT) return false;
-        size_t chunk = mbi.RegionSize - (addr - static_cast<const uint8_t*>(mbi.BaseAddress));
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(addr, &mbi, sizeof(mbi)) == 0) {
+            LOG_ERROR("VirtualQuery() failed at %p (error=%lu)",
+                      static_cast<const void*>(addr), GetLastError());
+            return false;
+        }
+        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+            LOG_ERROR("Memory residency check: region at %p is not committed accessible memory (state=0x%lx protect=0x%lx)",
+                      static_cast<const void*>(addr), mbi.State, mbi.Protect);
+            return false;
+        }
+        const size_t offset = static_cast<size_t>(addr - static_cast<const uint8_t*>(mbi.BaseAddress));
+        const size_t chunk = mbi.RegionSize - offset;
         if (chunk >= remaining) break;
         remaining -= chunk;
         addr += chunk;
+    }
+
+    const size_t page_size = std::max<size_t>(getNativePageSize(), 4096);
+    const uintptr_t raw_start = reinterpret_cast<uintptr_t>(base);
+    if (size > std::numeric_limits<uintptr_t>::max() - raw_start) {
+        LOG_ERROR("Memory residency check: address range overflow");
+        return false;
+    }
+    const uintptr_t raw_end = raw_start + size;
+    if (raw_end > std::numeric_limits<uintptr_t>::max() - (page_size - 1)) {
+        LOG_ERROR("Memory residency check: aligned end overflow");
+        return false;
+    }
+    const uintptr_t aligned_start = raw_start & ~(static_cast<uintptr_t>(page_size) - 1);
+    const uintptr_t aligned_end = (raw_end + page_size - 1) & ~(static_cast<uintptr_t>(page_size) - 1);
+    const size_t num_pages = static_cast<size_t>((aligned_end - aligned_start) / page_size);
+    if (num_pages == 0) return false;
+
+    constexpr size_t kBatchPages = 4096;
+    std::vector<PSAPI_WORKING_SET_EX_INFORMATION> batch(std::min(num_pages, kBatchPages));
+    size_t non_resident = 0;
+    size_t first_missing_page = 0;
+    for (size_t page_idx = 0; page_idx < num_pages; page_idx += kBatchPages) {
+        const size_t count = std::min(kBatchPages, num_pages - page_idx);
+        for (size_t i = 0; i < count; ++i) {
+            batch[i].VirtualAddress = reinterpret_cast<PVOID>(aligned_start + (page_idx + i) * page_size);
+            batch[i].VirtualAttributes.Flags = 0;
+        }
+        if (!QueryWorkingSetEx(GetCurrentProcess(), batch.data(),
+                               static_cast<DWORD>(count * sizeof(PSAPI_WORKING_SET_EX_INFORMATION)))) {
+            LOG_ERROR("QueryWorkingSetEx() failed (pages=%zu, error=%lu)", count, GetLastError());
+            return false;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            if (batch[i].VirtualAttributes.Valid == 0) {
+                if (non_resident == 0) first_missing_page = page_idx + i;
+                ++non_resident;
+            }
+        }
+    }
+
+    if (non_resident > 0) {
+        const double pct = 100.0 * static_cast<double>(non_resident) / static_cast<double>(num_pages);
+        LOG_ERROR("Memory residency check: %zu of %zu pages (%.1f%%) NOT resident in working set (first-missing-page=%zu)!",
+                  non_resident, num_pages, pct, first_missing_page);
+        return false;
     }
     return true;
 #else

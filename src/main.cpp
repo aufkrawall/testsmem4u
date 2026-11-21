@@ -462,10 +462,10 @@ int main(int argc, char* argv[]) {
     }
 
 #ifdef _WIN32
-    if ((config.use_locked_memory || config.use_large_pages) && !Platform::hasMemoryLockPrivilege()) {
+    if (config.use_large_pages && !Platform::hasMemoryLockPrivilege()) {
         ConsoleDisplay::get().printLine("");
         ConsoleDisplay::get().printLine("[!] 'Lock Pages in Memory' privilege (SeLockMemoryPrivilege) is MISSING.");
-        ConsoleDisplay::get().printLine("    Locked memory and large-page allocations may fail or fall back.");
+        ConsoleDisplay::get().printLine("    Large-page allocations require it and will fall back without it (VirtualLock does not need it).");
         ConsoleDisplay::get().printLine("    Do you want to grant this privilege to the current user now?");
         ConsoleDisplay::get().printLine("    Recommended for large pages. Sign out and sign back in after granting it; a reboot is not required.");
         

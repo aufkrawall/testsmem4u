@@ -8,6 +8,8 @@
 - **Interrupted finite and zero-byte runs exit non-zero:** finite runs (`--cycles` or `--duration`) stopped before completion, runs that verify zero bytes, and a second Ctrl+C force-quit on Windows (`STATUS_CONTROL_C_EXIT` instead of `0`) no longer exit with status `0`; detected errors continue to take precedence with exit code `1`.
 - **Linux process memory limits in sizing:** percentage sizing and safe-maximum checks on Linux (`getProcessMemoryLimit`, `getSizingBaselineRAM`) now honor cgroup v2 `memory.max` across the hierarchy, cgroup v1 memory limits, and `RLIMIT_AS` instead of sizing only against host RAM.
 - **32-bit Linux RAM detection and addressable limit:** `getTotalSystemRAM` and `getAvailableSystemRAM` now multiply `totalram`/`freeram` by `mem_unit` in 64-bit arithmetic instead of wrapping modulo 4 GiB, and 32-bit builds clamp percentage windows and reject explicit windows exceeding the single-region 32-bit mappable ceiling (`< 2 GiB`).
+- **Windows ordinary `VirtualLock` without `SeLockMemoryPrivilege`:** `tryAllocateVirtualLock` and the startup privilege prompt no longer reject or gate ordinary `VirtualLock` allocations on `SeLockMemoryPrivilege` (which is only required for `MEM_LARGE_PAGES`), letting Windows decide locking within the process working-set quota.
+- **Windows working-set residency verification:** `checkMemoryResident` on Windows now inspects actual page residency with `QueryWorkingSetEx` (after `VirtualQuery` commit/protection checks) instead of accepting nonresident `MEM_COMMIT` pages, and `tryAllocateStandard` prefaults each native page at allocation time so freshly allocated unlocked memory is materialized before pattern tests begin.
 
 ## 1.11 - 2026-11-15
 

@@ -166,6 +166,48 @@ void testWindowsMemoryFallbacks() {
     auto native = Platform::allocateMemoryRAII(native_window, true, true);
     expect(native.valid() && native.size() == native_window && native.large_page_bytes() == native_window && g_windows_large_chunks == 3,
            "Windows chunk fallback reaches the actual native large-page minimum");
+
+    {
+        auto no_priv_hooks = hooks;
+        no_priv_hooks.lock_privilege = []() { return false; };
+        no_priv_hooks.working_set = [](size_t, size_t) { return false; };
+        WindowsMemoryHookScope no_priv_scope(no_priv_hooks);
+        resetWindowsFixture(WindowsFixtureMode::DIRECT, size_t{1024} * 1024);
+        auto std_locked = Platform::allocateMemoryRAII(size_t{1024} * 1024, false, true);
+        expect(std_locked.valid() && std_locked.is_locked() && !std_locked.is_large_pages(),
+               "Windows VirtualLock succeeds without SeLockMemoryPrivilege or working-set expansion");
+        auto fallback_locked = Platform::allocateMemoryRAII(size, true, true);
+        expect(fallback_locked.valid() && fallback_locked.is_locked() && !fallback_locked.is_large_pages(),
+               "Windows locked large-page request without SeLockMemoryPrivilege still falls back to VirtualLock");
+    }
+}
+
+void testWindowsRealResidencyAndLock() {
+    const size_t page_size = std::max<size_t>(Platform::getNativePageSize(), 4096);
+    const size_t probe_size = 65536;
+    void* raw = VirtualAlloc(nullptr, probe_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    expect(raw != nullptr, "Raw VirtualAlloc probe succeeds");
+    if (raw) {
+        auto* bytes = static_cast<const uint8_t*>(raw);
+        expect(!Platform::checkMemoryResident(bytes, probe_size),
+               "Untouched Windows VirtualAlloc pages are rejected by checkMemoryResident");
+        auto* touch = static_cast<volatile uint8_t*>(raw);
+        for (size_t off = 0; off < probe_size; off += page_size) touch[off] = 1;
+        expect(Platform::checkMemoryResident(bytes, probe_size),
+               "Touched Windows VirtualAlloc pages pass checkMemoryResident");
+        if (EmptyWorkingSet(GetCurrentProcess())) {
+            expect(!Platform::checkMemoryResident(bytes, probe_size),
+                   "Emptied Windows working-set pages fail checkMemoryResident");
+        }
+        VirtualFree(raw, 0, MEM_RELEASE);
+    }
+    auto real_locked = Platform::allocateMemoryRAII(probe_size, false, true, false);
+    expect(real_locked.valid() && real_locked.is_locked(),
+           "Real 64 KiB Windows VirtualLock allocation succeeds");
+    if (real_locked.valid()) {
+        expect(Platform::checkMemoryResident(real_locked.base(), real_locked.size()),
+               "Real Windows VirtualLock pages report resident");
+    }
 }
 #endif
 

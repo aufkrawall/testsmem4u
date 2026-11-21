@@ -16,6 +16,7 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <psapi.h>
 #else
 #include <sys/mman.h>
 #include <cerrno>
@@ -783,6 +784,7 @@ int main() try {
     testLinuxMemoryFallbacks();
 #else
     testWindowsMemoryFallbacks();
+    testWindowsRealResidencyAndLock();
 #endif
     testLiveProgressAndCancellation();
     testAllKernelProgress();

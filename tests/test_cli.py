@@ -227,9 +227,23 @@ class ConfigCliTests(unittest.TestCase):
         output = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, output)
         self.assertIn("Completed cycles: 1", output)
-        self.assertNotIn("0 bytes verified", output)
+        self.assertNotIn("(0 bytes verified", output)
         log = (self.root / "testsmem4u.log").read_text()
         self.assertNotIn("verified-bytes=0", log)
+
+    @unittest.skipUnless(os.name == "nt", "Windows VirtualLock without SeLockMemoryPrivilege check")
+    def test_windows_locked_memory_without_large_pages(self):
+        self.preset.write_text("Test Sequence=0\n[Test0]\nFunction=SimpleTest\nParameter=1\n")
+        result = subprocess.run([
+            str(self.binary), "--yes", "--no-config", "--no-elevation",
+            "--locked-memory", "--no-large-pages", "--preset", str(self.preset),
+            "--memory", "1", "--cores", "1", "--cycles", "1",
+        ], cwd=self.root, capture_output=True, text=True, timeout=30)
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("Locked:     Yes", output)
+        self.assertIn("LargePages: No", output)
+        self.assertNotIn("SeLockMemoryPrivilege", output)
 
     @unittest.skipIf(os.name == "nt", "POSIX RLIMIT_AS sizing check")
     def test_linux_process_rlimit_caps_sizing_and_rejects_excess(self):
