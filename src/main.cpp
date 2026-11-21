@@ -35,6 +35,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <fcntl.h>
 #endif
@@ -114,9 +115,13 @@ static void clearInput() {
     fcntl(STDIN_FILENO, F_SETFL, flags);
 }
 
-// Check if running inside a terminal
-static bool isRunningInTerminal() {
-    return isatty(STDOUT_FILENO) != 0;
+static bool isStdoutPipe() {
+    struct stat st{};
+    return fstat(STDOUT_FILENO, &st) == 0 && S_ISFIFO(st.st_mode);
+}
+
+static bool isStderrInteractive() {
+    return isatty(STDERR_FILENO) != 0;
 }
 
 // Check if in a graphical session
@@ -381,17 +386,6 @@ void onShutdown() {
 }
 
 int main(int argc, char* argv[]) {
-#ifndef _WIN32
-    // Auto-terminal launch check for Linux - must be first
-    if (!isRunningInTerminal() && isGraphicalSession()) {
-        relaunchInTerminal(argc, argv);
-        // If relaunch failed, continue anyway
-    }
-#endif
-
-    ConsoleDisplay::get().init();
-    Platform::registerShutdownHandler(onShutdown);
-
     CliOptions cli;
     std::string cli_error;
     if (!parseCliOptions(argc, argv, cli, cli_error)) {
@@ -414,6 +408,18 @@ int main(int argc, char* argv[]) {
 
     bool input_interactive = isStdinInteractive();
     bool output_interactive = isStdoutInteractive();
+#ifndef _WIN32
+    // Only bare file-manager launches (no args, no TTY on stdio, non-pipe stdout)
+    // should spawn a graphical terminal window; scripted redirects/pipelines stay in-process.
+    if (shouldRelaunchInTerminal(argc, cli, input_interactive, output_interactive,
+                                 isStderrInteractive(), isGraphicalSession(), isStdoutPipe())) {
+        relaunchInTerminal(argc, argv);
+        // If relaunch failed, continue anyway
+    }
+#endif
+
+    ConsoleDisplay::get().init();
+    Platform::registerShutdownHandler(onShutdown);
     bool automation_mode = cli.non_interactive || !input_interactive || cli.requestsDirectRun();
     bool should_pause_on_exit = !cli.no_pause && input_interactive && output_interactive && !automation_mode;
 

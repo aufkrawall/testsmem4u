@@ -95,4 +95,8 @@ int resolveRunExitCode(const Config& config, const RunResult& res);
 // Reads confirmation for granting SeLockMemoryPrivilege; closed/EOF input never counts as confirmation.
 bool promptMemoryLockPrivilegeOffer(std::istream& input, std::ostream& output,
                                     const std::function<bool()>& grant_privilege);
+// Returns true only for bare graphical file-manager launches (no args, no TTY, non-pipe stdout).
+bool shouldRelaunchInTerminal(int argc, const CliOptions& cli,
+                              bool stdin_tty, bool stdout_tty, bool stderr_tty,
+                              bool graphical_session, bool stdout_is_fifo);
 } // namespace testsmem4u

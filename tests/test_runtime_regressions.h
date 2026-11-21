@@ -401,3 +401,29 @@ void testPrivilegePromptAndDeferredLog() {
     }
     cleanupFile(log_path);
 }
+
+void testTerminalRelaunchGate() {
+    CliOptions empty;
+    expect(shouldRelaunchInTerminal(1, empty, false, false, false, true, false),
+           "Bare graphical launch without stdio TTY or pipe may relaunch in terminal");
+    expect(!shouldRelaunchInTerminal(1, empty, false, false, false, false, false),
+           "Non-graphical session never relaunches in terminal");
+    expect(!shouldRelaunchInTerminal(2, empty, false, false, false, true, false),
+           "Any CLI argument suppresses terminal relaunch");
+    expect(!shouldRelaunchInTerminal(1, empty, true, false, false, true, false),
+           "Attached stdin TTY suppresses terminal relaunch even if stdout is redirected");
+    expect(!shouldRelaunchInTerminal(1, empty, false, false, true, true, false),
+           "Attached stderr TTY suppresses terminal relaunch even if stdout is redirected");
+    expect(!shouldRelaunchInTerminal(1, empty, false, false, false, true, true),
+           "Piped stdout FIFO suppresses terminal relaunch");
+
+    CliOptions non_interactive;
+    non_interactive.non_interactive = true;
+    expect(!shouldRelaunchInTerminal(1, non_interactive, false, false, false, true, false),
+           "--non-interactive suppresses terminal relaunch");
+
+    CliOptions no_pause;
+    no_pause.no_pause = true;
+    expect(!shouldRelaunchInTerminal(1, no_pause, false, false, false, true, false),
+           "--no-pause suppresses terminal relaunch");
+}

@@ -324,6 +324,33 @@ class ConfigCliTests(unittest.TestCase):
         self.assertEqual(invalid.returncode, 2, invalid.stdout + invalid.stderr)
         self.assertEqual(log_path.read_text(), sentinel, "Invalid config overwrote previous testsmem4u.log")
 
+    @unittest.skipIf(os.name == "nt", "POSIX graphical terminal relaunch check")
+    def test_linux_graphical_session_does_not_divert_cli_or_invalid_args(self):
+        fake_bin = self.root / "fake-bin"
+        fake_bin.mkdir()
+        marker = self.root / "terminal_invoked.txt"
+        xterm = fake_bin / "xterm"
+        xterm.write_text(f"#!/bin/sh\ntouch {marker}\nexit 0\n")
+        xterm.chmod(0o755)
+
+        env = os.environ.copy()
+        env["DISPLAY"] = ":99"
+        env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+        bad = subprocess.run([
+            str(self.binary), "--non-interactive", "--definitely-invalid-option",
+        ], cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(bad.returncode, 2, bad.stdout + bad.stderr)
+        self.assertFalse(marker.exists(), "Invalid CLI options invoked terminal launcher")
+
+        dry = subprocess.run([
+            str(self.binary), "--non-interactive", "--no-config", "--no-elevation",
+            "--dry-run", "--preset", str(self.preset),
+        ], cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+        self.assertIn("Dry run complete", dry.stdout)
+        self.assertFalse(marker.exists(), "Redirected --dry-run invoked terminal launcher")
+
 
 if __name__ == "__main__":
     unittest.main()

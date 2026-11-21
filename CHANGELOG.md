@@ -14,6 +14,7 @@
 - **Complete config `.tmp` validation in crash recovery:** `recoverOrphanedTempFile` only promotes an orphaned `.tmp` when the target is absent and the temp file passes validation with all settings and its completion marker, discarding truncated temp files instead of turning partial timed saves (`Cycles=0` before `TimeLimitSeconds`) into infinite runs.
 - **Previous log preserved on dry runs and startup errors:** startup diagnostics buffer in memory until an actual test run starts (`Logger::attachFile`), so `--dry-run`, invalid configs/presets, and pre-run exits no longer truncate the previous `testsmem4u.log`.
 - **Closed stdin does not grant Windows privilege:** the `SeLockMemoryPrivilege` interactive prompt checks `std::getline` stream state and only treats an explicit `y`/`yes` or a live empty Enter press as confirmation, never triggering on EOF.
+- **Linux terminal auto-relaunch scoped to bare GUI launches:** terminal emulator relaunch now runs after CLI parsing/early exits and only when launched without arguments, TTYs on stdio, or a stdout pipe, preventing graphical sessions from diverting scripted or invalid CLI invocations into a terminal wrapper.
 
 ## 1.11 - 2026-11-15
 

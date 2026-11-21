@@ -200,6 +200,18 @@ bool promptMemoryLockPrivilegeOffer(std::istream& input, std::ostream& output,
     return false;
 }
 
+bool shouldRelaunchInTerminal(int argc, const CliOptions& cli,
+                              bool stdin_tty, bool stdout_tty, bool stderr_tty,
+                              bool graphical_session, bool stdout_is_fifo) {
+    if (argc > 1 || cli.non_interactive || cli.no_pause || cli.requestsDirectRun()) {
+        return false;
+    }
+    if (!graphical_session || stdin_tty || stdout_tty || stderr_tty || stdout_is_fifo) {
+        return false;
+    }
+    return true;
+}
+
 bool resolveConfiguration(const CliOptions& cli, bool automation_mode,
                                  ConfigResolution& resolution, std::string& error) {
     resolution.platform = Platform::detectPlatform();

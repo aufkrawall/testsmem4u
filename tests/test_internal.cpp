@@ -721,6 +721,7 @@ int main() try {
     testConfigLoadStatuses();
     testConfigSaveAndRecoveryContracts();
     testPrivilegePromptAndDeferredLog();
+    testTerminalRelaunchGate();
     testWizardDefaultPolicies();
     testWizardExplicitSettings();
     testMemoryAndTimeInput();
