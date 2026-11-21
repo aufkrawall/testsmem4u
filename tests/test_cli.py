@@ -231,6 +231,30 @@ class ConfigCliTests(unittest.TestCase):
         log = (self.root / "testsmem4u.log").read_text()
         self.assertNotIn("verified-bytes=0", log)
 
+    @unittest.skipIf(os.name == "nt", "POSIX RLIMIT_AS sizing check")
+    def test_linux_process_rlimit_caps_sizing_and_rejects_excess(self):
+        import resource
+        limit_bytes = 768 * 1024 * 1024
+
+        def limit_as():
+            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+
+        res_pct = subprocess.run([
+            str(self.binary), "--dry-run", "--yes", "--no-config", "--no-elevation",
+            "--preset", str(self.preset), "--memory", "85%",
+        ], cwd=self.root, capture_output=True, text=True, timeout=30, preexec_fn=limit_as)
+        out_pct = res_pct.stdout + res_pct.stderr
+        self.assertEqual(res_pct.returncode, 0, out_pct)
+        # 85% of 768 MiB minus 256 MiB reserve = 396 MiB
+        self.assertIn("Memory window:   85% -> 396 MB", out_pct)
+
+        res_over = subprocess.run([
+            str(self.binary), "--dry-run", "--yes", "--no-config", "--no-elevation",
+            "--preset", str(self.preset), "--memory", "600",
+        ], cwd=self.root, capture_output=True, text=True, timeout=30, preexec_fn=limit_as)
+        self.assertEqual(res_over.returncode, 2, res_over.stdout + res_over.stderr)
+        self.assertIn("exceeds the safe maximum", res_over.stdout + res_over.stderr)
+
     @unittest.skipIf(os.name == "nt", "POSIX SIGINT interruption check")
     def test_interrupted_finite_run_returns_nonzero_exit_code(self):
         self.preset.write_text("Test Sequence=0\n[Test0]\nFunction=RefreshStable\nParameter=10000\n")

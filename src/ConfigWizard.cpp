@@ -53,9 +53,13 @@ bool parseUintOrDefault(const std::string& str, uint32_t& result, uint32_t defau
 }
 
 uint64_t getSizingBaselineRAM() {
-    uint64_t total_ram = Platform::getTotalSystemRAM();
-    if (total_ram != 0) return total_ram;
-    return Platform::getAvailableSystemRAM();
+    uint64_t baseline = Platform::getTotalSystemRAM();
+    if (baseline == 0) baseline = Platform::getAvailableSystemRAM();
+    const uint64_t process_limit = Platform::getProcessMemoryLimit();
+    if (process_limit != std::numeric_limits<uint64_t>::max()) {
+        baseline = baseline == 0 ? process_limit : std::min(baseline, process_limit);
+    }
+    return baseline;
 }
 
 uint32_t normalizeWindowMBForLargePages(uint32_t memory_window_mb, bool use_large_pages) {
@@ -64,6 +68,10 @@ uint32_t normalizeWindowMBForLargePages(uint32_t memory_window_mb, bool use_larg
 
 uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent, bool use_large_pages, uint32_t reserve_mb) {
     uint64_t max_mem = Platform::getMaxTestableMemory(sizing_ram, percent, reserve_mb);
+    const uint64_t max_mappable = Platform::getMaxMappableMemory(use_large_pages);
+    if (max_mem > max_mappable) {
+        max_mem = max_mappable;
+    }
     uint32_t window_mb = static_cast<uint32_t>(max_mem / 1024 / 1024);
     return normalizeWindowMBForLargePages(window_mb, use_large_pages);
 }
@@ -78,7 +86,7 @@ Config runConfigWizard(std::istream& input_stream, std::ostream& output_stream) 
     output_stream << "\n--- testsmem4u Configuration Wizard ---\n";
     output_stream << "Detected " << plat.cpu_cores << " cores, " << (total_ram / 1024 / 1024) << " MB RAM";
     if (sizing_ram > 0 && sizing_ram != total_ram) {
-        output_stream << " (" << (sizing_ram / 1024 / 1024) << " MB currently available)";
+        output_stream << " (" << (sizing_ram / 1024 / 1024) << " MB effective process limit)";
     }
     output_stream << ".\n\n";
 

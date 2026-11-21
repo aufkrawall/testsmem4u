@@ -80,6 +80,10 @@ bool prepareConfigForRun(Config& config, const PlatformInfo& plat,
         return false;
     }
 
+    const uint64_t total_ram = Platform::getTotalSystemRAM();
+    const uint64_t process_limit = Platform::getProcessMemoryLimit();
+    const bool process_limit_active =
+        process_limit != std::numeric_limits<uint64_t>::max() && (total_ram == 0 || process_limit < total_ram);
     sizing_ram = getSizingBaselineRAM();
     if (sizing_ram == 0) {
         error = "Unable to detect available system memory for sizing.";
@@ -89,9 +93,21 @@ bool prepareConfigForRun(Config& config, const PlatformInfo& plat,
     // Honor the preset's "Reserved Memory for Windows (Mb)" (OS reserve on every
     // platform); it used to be parsed and ignored in favor of a fixed 256 MB.
     const uint32_t reserve_mb = effectiveOsReserveMB(config.preset);
-    LOG_DEBUG("Sizing: RAM=%llu MB OS-reserve=%u MB (preset %u MB, minimum %u MB) request=%u MB / %u%%",
-              static_cast<unsigned long long>(sizing_ram / 1024 / 1024), reserve_mb, config.preset.reserved_memory_mb,
-              Platform::kMinOsReserveMB, config.memory_window_mb, config.memory_window_percent);
+    const uint64_t max_mappable_bytes = Platform::getMaxMappableMemory(config.use_large_pages);
+    const std::string process_limit_text = process_limit == std::numeric_limits<uint64_t>::max()
+        ? std::string("none")
+        : std::to_string(process_limit / 1024 / 1024) + " MB";
+    const std::string mappable_cap_text = max_mappable_bytes == std::numeric_limits<uint64_t>::max()
+        ? std::string("unlimited")
+        : std::to_string(max_mappable_bytes / 1024 / 1024) + " MB";
+    LOG_DEBUG("Sizing: host-RAM=%llu MB process-limit=%s sizing-RAM=%llu MB mappable-cap=%s "
+              "OS-reserve=%u MB (preset %u MB, minimum %u MB) request=%u MB / %u%%",
+              static_cast<unsigned long long>(total_ram / 1024 / 1024),
+              process_limit_text.c_str(),
+              static_cast<unsigned long long>(sizing_ram / 1024 / 1024),
+              mappable_cap_text.c_str(),
+              reserve_mb, config.preset.reserved_memory_mb, Platform::kMinOsReserveMB,
+              config.memory_window_mb, config.memory_window_percent);
     if (config.preset.reserved_memory_mb < Platform::kMinOsReserveMB) {
         LOG_WARN("Preset reserves %u MB for the OS; keeping the %u MB minimum instead",
                  config.preset.reserved_memory_mb, Platform::kMinOsReserveMB);
@@ -115,14 +131,24 @@ bool prepareConfigForRun(Config& config, const PlatformInfo& plat,
     }
 
     const uint64_t max_safe_bytes = Platform::getMaxTestableMemory(sizing_ram, 100, reserve_mb);
-    const uint64_t requested_bytes = static_cast<uint64_t>(config.memory_window_mb) * size_t{1024} * 1024;
+    const uint64_t requested_bytes = static_cast<uint64_t>(config.memory_window_mb) * uint64_t{1024} * 1024;
     if (requested_bytes > max_safe_bytes) {
         std::ostringstream ss;
         ss << "Requested memory window (" << config.memory_window_mb
            << " MB) exceeds the safe maximum ("
            << (max_safe_bytes / 1024ULL / 1024ULL)
-           << " MB = " << (sizing_ram / 1024ULL / 1024ULL) << " MB RAM minus the " << reserve_mb
+           << " MB = " << (sizing_ram / 1024ULL / 1024ULL) << " MB "
+           << (process_limit_active ? "process memory limit" : "RAM") << " minus the " << reserve_mb
            << " MB OS reserve from the preset's 'Reserved Memory for Windows (Mb)') for this system.";
+        error = ss.str();
+        return false;
+    }
+    if (requested_bytes > max_mappable_bytes) {
+        std::ostringstream ss;
+        ss << "Requested memory window (" << config.memory_window_mb
+           << " MB) exceeds this 32-bit build's mappable address-space limit ("
+           << (max_mappable_bytes / 1024ULL / 1024ULL)
+           << " MB). Use a 64-bit build to test more memory.";
         error = ss.str();
         return false;
     }

@@ -6,6 +6,8 @@
 
 - **RowHammer minimum chunk size and zero-byte completion guard:** `RowHammer` on regions of 24 KiB or less now fails closed with an infrastructure error instead of returning an empty result and letting the scheduler credit a completed cycle with zero verified bytes; multi-worker runs on small windows (such as 1 MiB across 48 requested threads) cap worker/chunk counts so every chunk stays above the 24 KiB threshold, `Test Block Size` folds tiny sub-24-KiB RowHammer tails into the preceding block, and the engine refuses to credit any test entry that completes without verifying memory.
 - **Interrupted finite and zero-byte runs exit non-zero:** finite runs (`--cycles` or `--duration`) stopped before completion, runs that verify zero bytes, and a second Ctrl+C force-quit on Windows (`STATUS_CONTROL_C_EXIT` instead of `0`) no longer exit with status `0`; detected errors continue to take precedence with exit code `1`.
+- **Linux process memory limits in sizing:** percentage sizing and safe-maximum checks on Linux (`getProcessMemoryLimit`, `getSizingBaselineRAM`) now honor cgroup v2 `memory.max` across the hierarchy, cgroup v1 memory limits, and `RLIMIT_AS` instead of sizing only against host RAM.
+- **32-bit Linux RAM detection and addressable limit:** `getTotalSystemRAM` and `getAvailableSystemRAM` now multiply `totalram`/`freeram` by `mem_unit` in 64-bit arithmetic instead of wrapping modulo 4 GiB, and 32-bit builds clamp percentage windows and reject explicit windows exceeding the single-region 32-bit mappable ceiling (`< 2 GiB`).
 
 ## 1.11 - 2026-11-15
 

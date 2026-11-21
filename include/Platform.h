@@ -79,6 +79,12 @@ public:
     static PlatformInfo detectPlatform();
     static uint64_t getTotalSystemRAM();
     static uint64_t getAvailableSystemRAM();
+    // Effective hard memory limit imposed on this process (e.g. Linux cgroup
+    // memory.max / RLIMIT_AS), or std::numeric_limits<uint64_t>::max() if unbounded.
+    static uint64_t getProcessMemoryLimit();
+    // Maximum single contiguous region size this build can map (bounded on
+    // 32-bit targets by ptrdiff_t and alignment headroom; unbounded on 64-bit).
+    static uint64_t getMaxMappableMemory(bool use_large_pages);
     static size_t getNativePageSize();
     static size_t getPreferredLargePageSize();
     static memory_pages::Coverage queryLargePageCoverage(const MemoryRegion& region);

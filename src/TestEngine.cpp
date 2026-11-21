@@ -226,11 +226,18 @@ RunResult TestEngine::runTests(const Config& config
     }
 
     MemoryRegion region;
-    uint64_t needed_bytes = (uint64_t)config.memory_window_mb * size_t{1024} * 1024;
+    uint64_t needed_bytes = static_cast<uint64_t>(config.memory_window_mb) * uint64_t{1024} * 1024;
     if (needed_bytes == 0) {
         LOG_ERROR("Configured memory window is 0 MB. Refusing to run an empty RAM test.");
         result.infrastructure_failure = true;
         result.infrastructure_error = "Configured memory window is 0 MB.";
+        return result;
+    }
+    if (needed_bytes > std::numeric_limits<size_t>::max()) {
+        LOG_ERROR("Configured memory window (%u MB) exceeds platform addressable size_t range.",
+                  config.memory_window_mb);
+        result.infrastructure_failure = true;
+        result.infrastructure_error = "Configured memory window exceeds platform addressable size.";
         return result;
     }
 

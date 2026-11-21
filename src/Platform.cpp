@@ -1,4 +1,5 @@
 #include "Platform.h"
+#include "CgroupMemoryLimit.h"
 #include "Logger.h"
 #include <iostream>
 #include <thread>
@@ -252,7 +253,7 @@ uint64_t Platform::getTotalSystemRAM() {
 #else
     struct sysinfo info;
     if (sysinfo(&info) == 0) {
-        return info.totalram * info.mem_unit;
+        return static_cast<uint64_t>(info.totalram) * static_cast<uint64_t>(info.mem_unit);
     }
     return 0;
 #endif
@@ -269,10 +270,61 @@ uint64_t Platform::getAvailableSystemRAM() {
 #else
     struct sysinfo info;
     if (sysinfo(&info) == 0) {
-        return info.freeram * info.mem_unit;
+        return static_cast<uint64_t>(info.freeram) * static_cast<uint64_t>(info.mem_unit);
     }
     return 0;
 #endif
+}
+
+#ifndef _WIN32
+static bool readBoundedFile(const std::string& path, std::string& content) {
+    FILE* file = std::fopen(path.c_str(), "r");
+    if (!file) return false;
+    content.clear();
+    char buf[4096];
+    constexpr size_t kMaxBytes = 1024 * 1024;
+    while (content.size() < kMaxBytes) {
+        const size_t n = std::fread(buf, 1, sizeof(buf), file);
+        if (n > 0) content.append(buf, n);
+        if (n < sizeof(buf)) break;
+    }
+    const bool ok = !std::ferror(file);
+    std::fclose(file);
+    return ok;
+}
+#endif
+
+uint64_t Platform::getProcessMemoryLimit() {
+#ifdef _WIN32
+    return std::numeric_limits<uint64_t>::max();
+#else
+    uint64_t limit = cgroup_limit::kUnlimitedMemory;
+    std::string proc_cgroup;
+    if (readBoundedFile("/proc/self/cgroup", proc_cgroup)) {
+        std::string proc_mountinfo;
+        readBoundedFile("/proc/self/mountinfo", proc_mountinfo);
+        limit = std::min(limit, cgroup_limit::resolveCgroupMemoryLimit(proc_cgroup, proc_mountinfo, readBoundedFile));
+    }
+    struct rlimit rl{};
+    if (getrlimit(RLIMIT_AS, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur > 0) {
+        limit = std::min(limit, static_cast<uint64_t>(rl.rlim_cur));
+    }
+    return limit;
+#endif
+}
+
+uint64_t Platform::getMaxMappableMemory(bool use_large_pages) {
+    if (sizeof(size_t) > 4) {
+        return std::numeric_limits<uint64_t>::max();
+    }
+    // On 32-bit targets (ILP32), ptrdiff_t limits a single contiguous span to
+    // PTRDIFF_MAX (< 2 GiB), and musl mmap rejects >= 2 GiB allocations.
+    // Large-page alignment (mapAligned) temporarily maps size + alignment.
+    const uint64_t max_span = static_cast<uint64_t>(std::numeric_limits<ptrdiff_t>::max());
+    const uint64_t native_page = std::max<uint64_t>(getNativePageSize(), 4096ULL);
+    const uint64_t large_page = use_large_pages ? static_cast<uint64_t>(getPreferredLargePageSize()) : 0ULL;
+    const uint64_t alignment = std::max(native_page, large_page);
+    return max_span > alignment ? max_span - alignment : 0ULL;
 }
 
 uint64_t Platform::getMaxTestableMemory(uint64_t total_ram, uint32_t percent_requested, uint32_t reserve_mb) {

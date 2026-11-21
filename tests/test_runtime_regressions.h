@@ -1,4 +1,5 @@
 #pragma once
+#include "CgroupMemoryLimit.h"
 
 void testConfigLoadStatuses() {
     Config config;
@@ -145,4 +146,86 @@ void testRunExitCodeContracts() {
     RunResult infra = completed;
     infra.infrastructure_failure = true;
     expect(resolveRunExitCode(finite_cycles, infra) == 2, "Infrastructure failure exits 2");
+}
+
+void testMemoryLimitAnd32BitSizing() {
+    using namespace testsmem4u::cgroup_limit;
+    auto mapReader = [](const std::map<std::string, std::string>& files) {
+        return [&files](const std::string& path, std::string& out) -> bool {
+            const auto it = files.find(path);
+            if (it == files.end()) return false;
+            out = it->second;
+            return true;
+        };
+    };
+
+    const std::string mountinfo =
+        "28 22 0:25 / /sys/fs/cgroup rw,nosuid - cgroup2 cgroup2 rw\n"
+        "29 22 0:26 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory\n";
+
+    // cgroup v2: parent slice holds memory.max while leaf says "max".
+    {
+        const std::map<std::string, std::string> files{
+            {"/sys/fs/cgroup/memory.max", "max\n"},
+            {"/sys/fs/cgroup/system.slice/memory.max", "805306368\n"}, // 768 MiB
+            {"/sys/fs/cgroup/system.slice/test.service/memory.max", "max\n"},
+        };
+        const uint64_t limit = resolveCgroupMemoryLimit(
+            "0::/system.slice/test.service\n", mountinfo, mapReader(files));
+        expect(limit == uint64_t{768} * 1024 * 1024,
+               "cgroup v2 inherits tighter parent-slice memory.max when leaf is max");
+    }
+
+    // cgroup v2 with cgroupns=host (mount root strips container prefix).
+    {
+        const std::string ns_mountinfo =
+            "40 22 0:25 /docker/abc /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n";
+        const std::map<std::string, std::string> files{
+            {"/sys/fs/cgroup/memory.max", "536870912\n"}, // 512 MiB
+        };
+        const uint64_t limit = resolveCgroupMemoryLimit(
+            "0::/docker/abc\n", ns_mountinfo, mapReader(files));
+        expect(limit == uint64_t{512} * 1024 * 1024,
+               "cgroup v2 resolves host-mounted container root without duplicating path");
+    }
+
+    // cgroup v1: ignores huge sentinel and reads hierarchical_memory_limit.
+    {
+        const std::map<std::string, std::string> files{
+            {"/sys/fs/cgroup/memory/memory.limit_in_bytes", "9223372036854771712\n"},
+            {"/sys/fs/cgroup/memory/app/memory.limit_in_bytes", "9223372036854771712\n"},
+            {"/sys/fs/cgroup/memory/app/memory.stat", "cache 0\nhierarchical_memory_limit 805306368\n"},
+        };
+        const uint64_t limit = resolveCgroupMemoryLimit(
+            "4:memory:/app\n", mountinfo, mapReader(files));
+        expect(limit == uint64_t{768} * 1024 * 1024,
+               "cgroup v1 reads hierarchical_memory_limit and ignores kernel unlimited sentinel");
+    }
+
+    // Unbounded cgroup files leave limit unlimited.
+    {
+        const std::map<std::string, std::string> files{
+            {"/sys/fs/cgroup/memory.max", "max\n"},
+            {"/sys/fs/cgroup/user.slice/memory.max", "max\n"},
+        };
+        expect(resolveCgroupMemoryLimit("0::/user.slice\n", mountinfo, mapReader(files)) == kUnlimitedMemory,
+               "Unbounded cgroups report unlimited memory");
+    }
+
+    // 32-bit mappable cap stays below 2 GiB (PTRDIFF_MAX) and fits alignment,
+    // while percentage sizing clamps smoothly instead of overflowing size_t.
+    const uint64_t max_lp = Platform::getMaxMappableMemory(true);
+    const uint64_t max_std = Platform::getMaxMappableMemory(false);
+    if (sizeof(size_t) == 4) {
+        expect(max_lp < (uint64_t{2} << 30) && max_std < (uint64_t{2} << 30) && max_lp <= max_std,
+               "32-bit mappable limit stays strictly below 2 GiB ptrdiff_t ceiling");
+        const uint32_t pct_mb = computeWindowMBFromPercent(uint64_t{16} << 30, 85, true, 512);
+        expect(pct_mb > 0 && static_cast<uint64_t>(pct_mb) * 1024ULL * 1024ULL <= max_lp,
+               "32-bit percentage sizing on >=4 GiB host caps cleanly to mappable memory");
+    } else {
+        expect(max_lp == std::numeric_limits<uint64_t>::max() &&
+                   max_std == std::numeric_limits<uint64_t>::max(),
+               "64-bit builds have no 32-bit addressable cap");
+    }
+    expect(Platform::getTotalSystemRAM() > 0, "Total system RAM query succeeds");
 }

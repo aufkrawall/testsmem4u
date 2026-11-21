@@ -92,13 +92,35 @@ void testPresetOsReserveSizing() {
     const uint32_t with_512 = resolve(512, 0, ram, error);
     const uint32_t with_2048 = resolve(2048, 0, ram, error);
     const uint32_t with_0 = resolve(0, 0, ram, error);
-    expect(with_512 > 0 && with_512 - with_2048 == 1536 && with_0 - with_512 == 256,
-           "100% sizing subtracts the preset's OS reserve, at least 256 MB");
+    const uint32_t raw_mappable_mb = static_cast<uint32_t>(
+        Platform::getMaxMappableMemory(false) / 1024ULL / 1024ULL);
+    if (Platform::getMaxMappableMemory(false) == std::numeric_limits<uint64_t>::max() ||
+        with_0 < raw_mappable_mb) {
+        expect(with_512 > 0 && with_512 - with_2048 == 1536 && with_0 - with_512 == 256,
+               "100% sizing subtracts the preset's OS reserve, at least 256 MB");
+    } else {
+        expect(with_512 == raw_mappable_mb && with_2048 == raw_mappable_mb && with_0 == raw_mappable_mb,
+               "100% sizing clamps OS-reserve-adjusted windows to the 32-bit mappable cap");
+        const uint64_t sub_2gb_ram = uint64_t{2000} * 1024 * 1024;
+        const uint32_t c_256 = computeWindowMBFromPercent(sub_2gb_ram, 100, false, 256);
+        const uint32_t c_512 = computeWindowMBFromPercent(sub_2gb_ram, 100, false, 512);
+        const uint32_t c_1024 = computeWindowMBFromPercent(sub_2gb_ram, 100, false, 1024);
+        expect(c_256 - c_512 == 256 && c_512 - c_1024 == 512,
+               "100% sizing still subtracts OS reserve below the 32-bit mappable cap");
+    }
     const uint32_t over = static_cast<uint32_t>(ram / 1024 / 1024) - 2048 + 1;
     error.clear();
     expect(resolve(2048, over, ram, error) == 0 && error.find("2048 MB OS reserve") != std::string::npos,
            "An explicit window that eats into the preset's OS reserve is refused with the reason");
     error.clear();
-    expect(resolve(2048, over - 1, ram, error) == over - 1,
+    const uint32_t max_mappable_mb = static_cast<uint32_t>(
+        std::min<uint64_t>(Platform::getMaxMappableMemory(false) / 1024 / 1024, over - 1));
+    if (sizeof(size_t) == 4 && over - 1 > max_mappable_mb) {
+        expect(resolve(2048, over - 1, ram, error) == 0 &&
+                   error.find("mappable address-space limit") != std::string::npos,
+               "32-bit builds reject explicit windows above their mappable address space");
+        error.clear();
+    }
+    expect(resolve(2048, max_mappable_mb, ram, error) == max_mappable_mb,
            "A window that leaves the OS reserve free is accepted: " + error);
 }
