@@ -1,5 +1,38 @@
 # Recent Log
 
+## 2026-11-27 - Review fixes for the 2026-11-21 audit commits
+
+A code review of `5392cc7..6e1a2d6` found seven issues; all are fixed:
+- **Elevation dropped buffered startup diagnostics:** `main` shut the deferred logger
+  down before `relaunchAsPrivileged`, discarding the queued startup/config/`Sizing:`
+  lines whenever UAC was declined or `sudo` was unavailable. The new
+  `relaunchElevatedKeepingStartupLog` keeps the buffer (no file is open, so the child
+  creates the log alone), shuts down only after a successful relaunch, and refuses to
+  relaunch while a log file is attached. `Logger::isFileAttached`/`bufferedMessageCount`
+  support it. The old "deferred logger leaves the log untouched" unit assertion never
+  passed the log path to the logger (vacuous); it now checks `attachFile` after shutdown.
+- **Unlocked Windows runs aborted on working-set trims:** `checkMemoryResident` now
+  takes `locked`; unlocked chunks read trimmed pages back and fail only if they stay
+  non-resident (WARN once, then DEBUG with totals). Linux `mincore` stays strict.
+- **Config save sharing violations:** `saveConfig` reopened the closed `.tmp` with share
+  mode 0 just to flush it, so a scanner/indexer handle made the save fail. All writing
+  now goes through one handle (`writeFileDurably`). No deterministic automated test:
+  the failure needs another process to open the file between close and reopen.
+- **Hybrid LP retries:** a rejected tail `VirtualLock` no longer repeats the attempt
+  (and its LP prefix allocation plus working-set WARN) twice more.
+- **Wizard label:** `sizingBaselineNote` labels the available-RAM fallback correctly.
+- **Windows job limits:** `getProcessMemoryLimit` reads the immediate job object's
+  process/job memory limits (parent jobs not visible); covered by a CLI test that runs
+  the binary suspended in a 768 MiB job.
+- **Verification:** `python build.py --tests` passed the Windows baseline, AVX2 and x86
+  C++ runners (`All internal tests passed.`; the real `EmptyWorkingSet` probe logged the
+  strict failures and one re-fault WARN as designed) and 32 Python tests (`OK, skipped=4`,
+  Linux-only); the new job-limit CLI test asserts `85% -> 396 MB` under a 768 MiB job,
+  which host-RAM sizing cannot produce. `python build.py --lint`: clang-tidy no issues.
+  Not run this time: sanitizers, WSL Linux suites (Linux code paths only gained the
+  ignored `locked` parameter and the shared `writeFileDurably` POSIX branch, whose
+  `RLIMIT_FSIZE` test is Linux-only), and a real UAC-declined elevation run.
+
 ## 2026-11-21 - v1.11 Reliability, Sizing, and Detection Audit Fixes
 
 Verified and fixed all 12 findings reported against v1.11:

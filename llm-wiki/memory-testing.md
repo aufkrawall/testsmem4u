@@ -179,6 +179,9 @@ preparation with a counter; they never change global caches or cache-limit polic
 A hybrid tail-lock failure fixture requires every committed chunk to be released
 through the owning `MappingCleanup` (equal hook allocations/releases); a raw
 `VirtualFree` on that path previously bypassed the hook and ignored failures.
+The same fixture requires exactly one tail-lock failure: attempts retry address
+collisions only, so a rejected `VirtualLock` (a working-set quota decision) ends
+retries for that chunk size instead of re-allocating the LP prefix twice more.
 Cleanup fixtures record successful OS free/unmap calls while ownership is held,
 avoiding assumptions that freed virtual addresses remain unused afterwards.
 Actual cache flushing was not exercised on the active desktop; its request is
@@ -875,9 +878,12 @@ and [AMD family-17h CPUID reference](https://www.amd.com/content/dam/amd/en/docu
   repeats with pre-fill sentinels and exact live/final byte totals.
 - Bounded mismatch samples retain exact aggregate counts. Destructive march errors
   are unverified observations; other sampled errors can be classified by rereading.
-- Memory-lock allocation contracts are still fail-closed. On Windows the existing
-  residency check proves commitment; unlocked committed memory is not thereby
-  proven physically resident. Locked/large-page allocation remains recommended.
+- Memory-lock allocation contracts are still fail-closed. On Windows the residency
+  check (2026-11-27) fails locked chunks on any page outside the working set; for
+  unlocked chunks it reads trimmed pages back (Windows trims unlocked pages to the
+  standby/modified lists, compression store or page file as routine working-set
+  management) and fails only pages that stay non-resident, so unlocked memory is
+  best-effort resident between checks. Locked/large-page allocation remains recommended.
   [VirtualLock's contract](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtuallock)
   guarantees residency for successfully locked pages.
 
@@ -995,6 +1001,8 @@ complaint have not been reproduced or diagnosed.
   `tryAllocateStandard` prefaults native pages and
   `Platform::checkMemoryResident` (`src/PlatformMemory.cpp`) verifies actual working-set
   residency with `QueryWorkingSetEx` (`Valid != 0`) after `VirtualQuery` checks.
+  Follow-up 2026-11-27: the check takes the chunk's `is_locked`; unlocked chunks
+  re-fault trimmed pages instead of aborting the run (see the residency bullet above).
 - `detect_x86_capabilities` (`src/simd_ops.cpp` + `include/SimdCpuSupport.h`) checks
   every psABI v3/v4 CPUID feature and XCR0 state before setting `has_avx2`/`has_avx512`.
 - Verification on 2026-11-21: `python build.py --lint` clean across all 30 translation

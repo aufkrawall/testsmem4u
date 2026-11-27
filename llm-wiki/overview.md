@@ -121,8 +121,10 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   routed through `ConsoleDisplay::printLine/printError` so it coordinates with
   the status line under a single mutex. The log file never drops ERR lines
   until queue backpressure (counted + reported). Logger buffers startup/config
-  diagnostics in memory (`Logger::init("", ...)`), restarts cleanly if elevation
-  relaunch falls back without opening disk files, and only opens/truncates
+  diagnostics in memory (`Logger::init("", ...)`), keeps that buffer across a
+  declined/unavailable elevation relaunch (`relaunchElevatedKeepingStartupLog`:
+  no file is open yet, so the elevated child creates the log alone and the parent
+  logger shuts down only after the child ran), and only opens/truncates
   `testsmem4u.log` via `Logger::attachFile` when a real test run starts (preserving
   previous logs across `--dry-run`, invalid configs/presets, and privilege exits).
 - CLI exit codes (`resolveRunExitCode`): `0` only on completed runs with verified
@@ -130,19 +132,30 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
   finite runs (`--cycles` or `--duration`), or zero verified bytes; Windows second
   Ctrl+C force-termination exits with `STATUS_CONTROL_C_EXIT` instead of `0`.
 - Config persistence and crash recovery (`src/ConfigManager.cpp`): `saveConfig`
-  checks stream write/flush/close state and OS buffer flushes (`FlushFileBuffers` /
-  `fsync`) before atomic rename; `recoverOrphanedTempFile` only promotes an
+  writes, flushes (`FlushFileBuffers` / `fsync`) and closes `.tmp` through one
+  handle (`writeFileDurably`), checking every step, before atomic rename;
+  reopening the closed file only to flush it could fail with a sharing violation
+  from a virus scanner or indexer. `recoverOrphanedTempFile` only promotes an
   orphaned `.tmp` when the target is absent and all settings plus the
   `; End of configuration` marker validate through the shared parser.
-- Linux sizing and terminal relaunch: `getSizingBaselineRAM` and
-  `getProcessMemoryLimit` enforce cgroup v2 `memory.max`, cgroup v1 limits, and
-  `RLIMIT_AS`; `getTotalSystemRAM`/`getAvailableSystemRAM` multiply `sysinfo`
+- Process memory limits, 32-bit sizing and terminal relaunch: `getSizingBaselineRAM`
+  and `getProcessMemoryLimit` enforce cgroup v2 `memory.max`, cgroup v1 limits and
+  `RLIMIT_AS` on Linux, and the immediate Windows job object's
+  `JOB_OBJECT_LIMIT_PROCESS_MEMORY`/`JOB_OBJECT_LIMIT_JOB_MEMORY` commit limits
+  (enclosing parent-job limits are not visible); the wizard's `sizingBaselineNote`
+  names a baseline below total RAM as the process limit only when that limit
+  applies, else as the available-RAM fallback. `getTotalSystemRAM`/`getAvailableSystemRAM` multiply `sysinfo`
   fields in 64-bit arithmetic and `getMaxMappableMemory` enforces the `< 2 GiB`
   ILP32 mapping limit; `shouldRelaunchInTerminal` runs after CLI parsing/early exits
   only for bare graphical file-manager launches (`argc <= 1`, no stdio TTY, non-pipe stdout).
 - Windows locking and prompts: `tryAllocateVirtualLock` and the hybrid large-page tail fallback in `tryAllocateLargePagesChunked` attempt `VirtualLock` with best-effort `SetProcessWorkingSetSize` and without requiring `SeLockMemoryPrivilege` for ordinary pages (`SeLockMemoryPrivilege` is gated only for large pages),
-  `checkMemoryResident` verifies `QueryWorkingSetEx` `Valid` bits after
-  `VirtualQuery` checks while `tryAllocateStandard` prefaults native pages, and
+  `checkMemoryResident(base, size, locked)` verifies `QueryWorkingSetEx` `Valid`
+  bits after `VirtualQuery` checks: locked chunks fail on any page outside the
+  working set; unlocked chunks read trimmed pages back (data unchanged; WARN once,
+  then DEBUG with totals) and fail only if pages stay non-resident (Linux `mincore`
+  stays strict because non-residency there means swapped out);
+  `tryAllocateStandard` prefaults native pages; a rejected hybrid tail `VirtualLock`
+  ends the address-collision retries for that chunk size; and
   `promptMemoryLockPrivilegeOffer` checks `std::getline` stream state so EOF never
   grants privilege.
 - x86_64 scalar fill fallbacks (linear/xor/increment) use `_mm_stream_si64` NT
@@ -196,7 +209,12 @@ sibling variant would fit (no auto-relaunch, removed 2026-06-10 by user decision
 - `tests/test_cli.py` and `tests/test_build.py`: real configuration resolution,
   database generation, and fail-closed analysis (including zero-exit diagnostics).
 
-Last verified: 2026-11-21 for all 12 audit fixes (RowHammer min-chunk/zero-byte
+Last verified: 2026-11-27 for the review fixes (elevation keeps buffered startup
+log, unlocked Windows residency re-faults trims, single-handle config save, hybrid
+tail-lock no-retry, wizard baseline label, Windows job-object limits) on MinGW
+baseline/v3/x86 runners, the Python CLI suite and strict `clang-tidy`; sanitizers
+and WSL suites were not re-run for them (see [the recent log](log/recent.md)).
+2026-11-21 for all 12 audit fixes (RowHammer min-chunk/zero-byte
 guards, non-zero interrupted/zero-byte exit codes, Linux cgroup/`RLIMIT_AS` and
 32-bit `< 2 GiB` sizing, Windows `VirtualLock` without `SeLockMemoryPrivilege`
 plus `QueryWorkingSetEx` residency checks, `saveConfig`/`.tmp` recovery checks,
