@@ -83,6 +83,10 @@ void reportMemoryWindowAdjustment(uint32_t requested_mb, uint32_t actual_mb);
 void printConfigSummary(const ConfigResolution& resolution, const CliOptions& cli, bool automation_mode);
 Config runConfigWizard(std::istream& input_stream, std::ostream& output_stream);
 uint64_t getSizingBaselineRAM();
+// Wizard suffix explaining a sizing baseline below total RAM: the process memory
+// limit when that is what applies, otherwise the available-RAM fallback; empty
+// when sizing uses total RAM.
+std::string sizingBaselineNote(uint64_t total_ram, uint64_t process_limit, uint64_t sizing_ram);
 uint32_t normalizeWindowMBForLargePages(uint32_t memory_window_mb, bool use_large_pages);
 uint32_t computeWindowMBFromPercent(uint64_t sizing_ram, uint32_t percent, bool use_large_pages,
                                     uint32_t reserve_mb = Platform::kMinOsReserveMB);

@@ -62,6 +62,14 @@ uint64_t getSizingBaselineRAM() {
     return baseline;
 }
 
+std::string sizingBaselineNote(uint64_t total_ram, uint64_t process_limit, uint64_t sizing_ram) {
+    if (sizing_ram == 0 || sizing_ram == total_ram) return {};
+    const bool limit_applies = process_limit != std::numeric_limits<uint64_t>::max() &&
+                               sizing_ram == process_limit && (total_ram == 0 || process_limit < total_ram);
+    return " (" + std::to_string(sizing_ram / 1024 / 1024) + " MB " +
+           (limit_applies ? "effective process limit" : "currently available") + ")";
+}
+
 uint32_t normalizeWindowMBForLargePages(uint32_t memory_window_mb, bool use_large_pages) {
     return memory_pages::normalizeWindow(memory_window_mb, use_large_pages, Platform::getPreferredLargePageSize());
 }
@@ -84,11 +92,8 @@ Config runConfigWizard(std::istream& input_stream, std::ostream& output_stream) 
     if (sizing_ram == 0) sizing_ram = total_ram;
 
     output_stream << "\n--- testsmem4u Configuration Wizard ---\n";
-    output_stream << "Detected " << plat.cpu_cores << " cores, " << (total_ram / 1024 / 1024) << " MB RAM";
-    if (sizing_ram > 0 && sizing_ram != total_ram) {
-        output_stream << " (" << (sizing_ram / 1024 / 1024) << " MB effective process limit)";
-    }
-    output_stream << ".\n\n";
+    output_stream << "Detected " << plat.cpu_cores << " cores, " << (total_ram / 1024 / 1024) << " MB RAM"
+                  << sizingBaselineNote(total_ram, Platform::getProcessMemoryLimit(), sizing_ram) << ".\n\n";
 
     std::string input;
 

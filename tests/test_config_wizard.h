@@ -67,6 +67,21 @@ void testWizardExplicitSettings() {
     expect(config.cycles == 0, "Explicit infinite-cycle selection remains supported");
 }
 
+void testSizingBaselineNote() {
+    constexpr uint64_t mib = 1024ULL * 1024ULL;
+    constexpr uint64_t unlimited = std::numeric_limits<uint64_t>::max();
+    expect(sizingBaselineNote(32768 * mib, unlimited, 32768 * mib).empty(),
+           "Wizard adds no sizing note when total RAM is the baseline");
+    expect(sizingBaselineNote(32768 * mib, 768 * mib, 768 * mib) == " (768 MB effective process limit)",
+           "Wizard names an applied process memory limit");
+    expect(sizingBaselineNote(0, unlimited, 4096 * mib) == " (4096 MB currently available)",
+           "Wizard labels the available-RAM fallback when total RAM is unknown, not as a process limit");
+    expect(sizingBaselineNote(0, 768 * mib, 768 * mib) == " (768 MB effective process limit)",
+           "Wizard names the process limit when it caps the available-RAM fallback");
+    expect(sizingBaselineNote(0, 8192 * mib, 4096 * mib) == " (4096 MB currently available)",
+           "A process limit above the available-RAM fallback is not reported as the baseline");
+}
+
 // "Reserved Memory for Windows (Mb)" was parsed but sizing always reserved 256 MB.
 void testPresetOsReserveSizing() {
     const auto platform = Platform::detectPlatform();

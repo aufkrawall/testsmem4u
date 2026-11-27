@@ -728,6 +728,7 @@ int main() try {
     testMemoryAndTimeInput();
     testWizardTimeLimit();
     testPresetOsReserveSizing();
+    testSizingBaselineNote();
     testHugePageSetup();
 
     // Existing tests from original file
