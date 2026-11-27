@@ -1,5 +1,12 @@
 # Recent Log
 
+## 2026-11-27 - Release v1.12
+
+Bumped version string to `1.12` across runtime and changelog:
+- Promoted unreleased fixes to `## 1.12 - 2026-11-27` in `CHANGELOG.md` and updated `kProgramVersion` in `include/RunConfiguration.h`.
+- Built all nine release binaries (`python build.py`) and verified `--version` reports `testsmem4u 1.12`.
+- Packaged `testsmem4u-1.12-allOS.7z` and published GitHub release `1.12`.
+
 ## 2026-11-27 - Review fixes for the 2026-11-21 audit commits
 
 A code review of `5392cc7..6e1a2d6` found seven issues; all are fixed:

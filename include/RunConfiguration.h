@@ -8,7 +8,7 @@
 
 namespace testsmem4u {
 inline constexpr const char* kProgramName = "testsmem4u";
-inline constexpr const char* kProgramVersion = "1.11";
+inline constexpr const char* kProgramVersion = "1.12";
 inline constexpr const char* kDefaultConfigPath = "config.ini";
 inline constexpr const char* kDefaultPresetPath = "default.cfg";
 
