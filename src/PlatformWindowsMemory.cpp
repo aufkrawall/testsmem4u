@@ -486,6 +486,7 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size, b
             }
             reservation.count = 0;
             MappingCleanup cleanup{aligned_base, 0, aligned_chunk};
+            bool tail_lock_failed = false;
 
             if (!allow_hybrid_tail_lock) {
                 bool all_ok = true;
@@ -569,6 +570,7 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size, b
                         // and reports release failures instead of dropping them silently.
                         LOG_DEBUG("Allocation: hybrid tail lock failed chunk=%zu of %zu bytes=%zu error=%lu",
                                   i, num_chunks, aligned_chunk, GetLastError());
+                        tail_lock_failed = true;
                         hybrid_ok = false;
                         break;
                     }
@@ -598,6 +600,14 @@ bool Platform::tryAllocateLargePagesChunked(MemoryRegion& region, size_t size, b
 
             cleanup.clear();
             LOG_DEBUG("Allocation: chunk attempt failed chunk=%zu attempt=%d; committed chunks rolled back", aligned_chunk, attempt + 1);
+            if (tail_lock_failed) {
+                // Retries exist for address collisions. A rejected VirtualLock is a
+                // working-set quota decision that an immediate retry only repeats,
+                // after re-allocating (and again releasing) the large-page prefix.
+                LOG_INFO("Chunked LP: hybrid VirtualLock tail was rejected; not retrying %zu MB chunks "
+                         "(attempt %d of 3)", aligned_chunk / (size_t{1024} * 1024), attempt + 1);
+                break;
+            }
         }
     }
 

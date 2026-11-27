@@ -135,6 +135,8 @@ void testWindowsMemoryFallbacks() {
         expect(g_windows_tail_lock_failures > 0 && g_windows_chunk_allocations > 0 &&
                g_windows_hook_releases == g_windows_chunk_allocations,
                "Hybrid tail lock failure rolls back every chunk, including the unlocked one, through the owning cleanup");
+        expect(g_windows_tail_lock_failures == 1,
+               "A rejected hybrid tail VirtualLock is not retried (address-collision retries only)");
         expect(guard.valid() && guard.is_locked() && guard.size() == size && guard.large_page_bytes() == 0,
                "After hybrid rollback the strict VirtualLock fallback still provides fully locked memory");
     }
