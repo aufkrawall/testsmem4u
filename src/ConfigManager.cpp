@@ -39,6 +39,77 @@ bool parseBoolValue(const std::string& raw, bool& value) {
     return false;
 }
 
+// Creates/truncates path, writes payload and flushes it to storage through one
+// handle. Reopening the closed file just to flush it could hit a sharing
+// violation from a virus scanner or indexer that opened it in between.
+bool writeFileDurably(const std::string& path, const std::string& payload, std::string& error) {
+#ifdef _WIN32
+    HANDLE file = CreateFileA(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        error = "open failed (error " + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    size_t written_total = 0;
+    while (written_total < payload.size()) {
+        const DWORD request = static_cast<DWORD>(std::min<size_t>(payload.size() - written_total, size_t{1} << 20));
+        DWORD written = 0;
+        if (!WriteFile(file, payload.data() + written_total, request, &written, nullptr) || written == 0) {
+            error = "write failed after " + std::to_string(written_total) + " of " +
+                    std::to_string(payload.size()) + " bytes (error " + std::to_string(GetLastError()) + ")";
+            CloseHandle(file);
+            return false;
+        }
+        written_total += written;
+    }
+    if (!FlushFileBuffers(file)) {
+        error = "flush to disk failed (error " + std::to_string(GetLastError()) + ")";
+        CloseHandle(file);
+        return false;
+    }
+    if (!CloseHandle(file)) {
+        error = "close failed (error " + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    return true;
+#else
+    int flags = O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC;
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    const int fd = ::open(path.c_str(), flags, 0666);
+    if (fd < 0) {
+        error = std::string("open failed: ") + std::strerror(errno);
+        return false;
+    }
+    size_t written_total = 0;
+    while (written_total < payload.size()) {
+        const ssize_t written = ::write(fd, payload.data() + written_total, payload.size() - written_total);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) {
+            const int write_err = written < 0 ? errno : EIO;
+            error = "write failed after " + std::to_string(written_total) + " of " +
+                    std::to_string(payload.size()) + " bytes: " + std::strerror(write_err);
+            ::close(fd);
+            return false;
+        }
+        written_total += static_cast<size_t>(written);
+    }
+    if (::fsync(fd) != 0 && errno != EINVAL && errno != ENOTSUP) {
+        const int sync_err = errno;
+        ::close(fd);
+        error = std::string("fsync failed: ") + std::strerror(sync_err);
+        return false;
+    }
+    if (::close(fd) != 0) {
+        const int close_err = errno;
+        error = std::string("close failed: ") + std::strerror(close_err);
+        return false;
+    }
+    return true;
+#endif
+}
+
 constexpr const char* kConfigEndMarker = "; End of configuration";
 
 struct ParsedConfigMetadata {
@@ -268,44 +339,16 @@ bool saveConfig(const std::string& filename, const Config& config) {
     }
 
     const std::string payload = serializeConfig(config);
-    {
-        std::ofstream file(tmp_filename, std::ios::binary | std::ios::trunc);
-        if (!file.is_open()) {
-            LOG_ERROR("Failed to open config temp file for writing: %s", tmp_filename.c_str());
-            return false;
-        }
-        file.write(payload.data(), static_cast<std::streamsize>(payload.size()));
-        file.flush();
-        const bool write_ok = !file.fail() && !file.bad();
-        file.close();
-        if (!write_ok || file.fail() || file.bad()) {
-            LOG_ERROR("Failed to write or flush config temp file %s (disk full, permission, or size limit); "
-                      "previous configuration preserved.", tmp_filename.c_str());
-            std::error_code remove_ec;
-            std::filesystem::remove(tmp_filename, remove_ec);
-            return false;
-        }
+    std::string write_error;
+    if (!writeFileDurably(tmp_filename, payload, write_error)) {
+        LOG_ERROR("Failed to write config temp file %s: %s; previous configuration preserved.",
+                  tmp_filename.c_str(), write_error.c_str());
+        std::error_code remove_ec;
+        std::filesystem::remove(tmp_filename, remove_ec);
+        return false;
     }
 
 #ifdef _WIN32
-    HANDLE hFile = CreateFileA(tmp_filename.c_str(), GENERIC_WRITE, 0, nullptr,
-                                OPEN_EXISTING, FILE_FLAG_WRITE_THROUGH, nullptr);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        LOG_ERROR("Failed to open config temp file for disk flush: error %lu", GetLastError());
-        std::error_code remove_ec;
-        std::filesystem::remove(tmp_filename, remove_ec);
-        return false;
-    }
-    const bool flushed = FlushFileBuffers(hFile) != 0;
-    const DWORD flush_err = flushed ? 0 : GetLastError();
-    CloseHandle(hFile);
-    if (!flushed) {
-        LOG_ERROR("Failed to flush config temp file buffers to disk: error %lu", flush_err);
-        std::error_code remove_ec;
-        std::filesystem::remove(tmp_filename, remove_ec);
-        return false;
-    }
-
     if (!MoveFileExA(tmp_filename.c_str(), filename.c_str(), MOVEFILE_REPLACE_EXISTING)) {
         DWORD err = GetLastError();
         LOG_ERROR("Failed to rename config file: error %lu", err);
@@ -314,28 +357,6 @@ bool saveConfig(const std::string& filename, const Config& config) {
         return false;
     }
 #else
-    const int fd = ::open(tmp_filename.c_str(), O_RDWR);
-    if (fd < 0) {
-        LOG_ERROR("Failed to open config temp file for fsync: %s", std::strerror(errno));
-        std::error_code remove_ec;
-        std::filesystem::remove(tmp_filename, remove_ec);
-        return false;
-    }
-    if (::fsync(fd) != 0 && errno != EINVAL && errno != ENOTSUP) {
-        const int sync_err = errno;
-        ::close(fd);
-        LOG_ERROR("Failed to fsync config temp file: %s", std::strerror(sync_err));
-        std::error_code remove_ec;
-        std::filesystem::remove(tmp_filename, remove_ec);
-        return false;
-    }
-    if (::close(fd) != 0) {
-        LOG_ERROR("Failed to close config temp file after fsync: %s", std::strerror(errno));
-        std::error_code remove_ec;
-        std::filesystem::remove(tmp_filename, remove_ec);
-        return false;
-    }
-
     if (std::rename(tmp_filename.c_str(), filename.c_str()) != 0) {
         LOG_ERROR("Failed to rename config file: %s", std::strerror(errno));
         std::error_code remove_ec;
