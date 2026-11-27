@@ -269,6 +269,80 @@ class ConfigCliTests(unittest.TestCase):
         self.assertEqual(res_over.returncode, 2, res_over.stdout + res_over.stderr)
         self.assertIn("exceeds the safe maximum", res_over.stdout + res_over.stderr)
 
+    @unittest.skipUnless(os.name == "nt", "Windows job-object memory limit sizing check")
+    def test_windows_job_memory_limit_caps_sizing_and_rejects_excess(self):
+        from ctypes import wintypes
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", BasicLimits), ("IoInfo", ctypes.c_uint64 * 6),
+                        ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ntdll = ctypes.WinDLL("ntdll")
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+        ntdll.NtResumeProcess.restype = ctypes.c_long
+
+        limit_bytes = 768 * 1024 * 1024
+        create_suspended = 0x00000004
+        job_limit_process_memory = 0x00000100
+        job_limit_kill_on_close = 0x00002000
+        job_extended_limit_information = 9
+
+        def run_in_job(*extra):
+            job = kernel32.CreateJobObjectW(None, None)
+            self.assertTrue(job, f"CreateJobObjectW failed: {ctypes.get_last_error()}")
+            try:
+                limits = ExtendedLimits()
+                limits.BasicLimitInformation.LimitFlags = job_limit_process_memory | job_limit_kill_on_close
+                limits.ProcessMemoryLimit = limit_bytes
+                self.assertTrue(kernel32.SetInformationJobObject(job, job_extended_limit_information,
+                                                                 ctypes.byref(limits), ctypes.sizeof(limits)),
+                                f"SetInformationJobObject failed: {ctypes.get_last_error()}")
+                proc = subprocess.Popen([
+                    str(self.binary), "--dry-run", "--yes", "--no-config", "--no-elevation",
+                    "--preset", str(self.preset), *extra,
+                ], cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    creationflags=create_suspended)
+                try:
+                    # Assign before the first instruction runs so sizing sees the job limit.
+                    assigned = kernel32.AssignProcessToJobObject(job, int(proc._handle))
+                    resumed = ntdll.NtResumeProcess(int(proc._handle))
+                    if not assigned or resumed != 0:
+                        proc.kill()
+                    self.assertTrue(assigned, f"AssignProcessToJobObject failed: {ctypes.get_last_error()}")
+                    self.assertEqual(resumed, 0, "NtResumeProcess failed")
+                    stdout, stderr = proc.communicate(timeout=30)
+                except BaseException:
+                    proc.kill()
+                    proc.communicate()
+                    raise
+                return proc.returncode, stdout + stderr
+            finally:
+                kernel32.CloseHandle(job)
+
+        code, out = run_in_job("--memory", "85%")
+        self.assertEqual(code, 0, out)
+        # 85% of the 768 MiB job limit minus the 256 MiB OS reserve = 396 MiB
+        self.assertIn("Memory window:   85% -> 396 MB", out)
+
+        code, out = run_in_job("--memory", "600")
+        self.assertEqual(code, 2, out)
+        self.assertIn("exceeds the safe maximum", out)
+        self.assertIn("process memory limit", out)
+
     @unittest.skipIf(os.name == "nt", "POSIX SIGINT interruption check")
     def test_interrupted_finite_run_returns_nonzero_exit_code(self):
         self.preset.write_text("Test Sequence=0\n[Test0]\nFunction=RefreshStable\nParameter=10000\n")

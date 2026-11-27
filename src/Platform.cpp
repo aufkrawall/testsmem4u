@@ -296,7 +296,29 @@ static bool readBoundedFile(const std::string& path, std::string& content) {
 
 uint64_t Platform::getProcessMemoryLimit() {
 #ifdef _WIN32
-    return std::numeric_limits<uint64_t>::max();
+    // Job-object commit limits (Windows containers, sandboxes, CI runners). Only
+    // the immediate job is visible here; limits of enclosing parent jobs are not.
+    uint64_t limit = std::numeric_limits<uint64_t>::max();
+    BOOL in_job = FALSE;
+    if (!IsProcessInJob(GetCurrentProcess(), nullptr, &in_job)) {
+        LOG_DEBUG("Process memory limit: IsProcessInJob failed (error=%lu); assuming no job limit", GetLastError());
+        return limit;
+    }
+    if (!in_job) return limit;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+    if (!QueryInformationJobObject(nullptr, JobObjectExtendedLimitInformation, &info, sizeof(info), nullptr)) {
+        LOG_DEBUG("Process memory limit: QueryInformationJobObject failed (error=%lu); assuming no job limit",
+                  GetLastError());
+        return limit;
+    }
+    const DWORD flags = info.BasicLimitInformation.LimitFlags;
+    if ((flags & JOB_OBJECT_LIMIT_PROCESS_MEMORY) != 0) {
+        limit = std::min(limit, static_cast<uint64_t>(info.ProcessMemoryLimit));
+    }
+    if ((flags & JOB_OBJECT_LIMIT_JOB_MEMORY) != 0) {
+        limit = std::min(limit, static_cast<uint64_t>(info.JobMemoryLimit));
+    }
+    return limit;
 #else
     uint64_t limit = cgroup_limit::kUnlimitedMemory;
     std::string proc_cgroup;
