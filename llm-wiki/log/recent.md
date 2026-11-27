@@ -4,8 +4,10 @@
 
 Bumped version string to `1.12` across runtime and changelog:
 - Promoted unreleased fixes to `## 1.12 - 2026-11-27` in `CHANGELOG.md` and updated `kProgramVersion` in `include/RunConfiguration.h`.
-- Built all nine release binaries (`python build.py`) and verified `--version` reports `testsmem4u 1.12`.
-- Packaged `testsmem4u-1.12-allOS.7z` and published GitHub release `1.12`.
+- Built all nine release binaries (`python build.py`) and verified `--version` reports `testsmem4u 1.12` (Linux and Windows ARM64 images verified by embedded version string, the AVX-512 image by string only because the host lacks AVX-512).
+- Packaged `testsmem4u-1.12-allOS.7z` and published GitHub release `1.12` (asset digest matches the local archive: `sha256:057e3ea9...`).
+- Under a write/privilege-restricted sandbox the Zig targets fail with `error: AccessDenied` until `ZIG_GLOBAL_CACHE_DIR`/`ZIG_LOCAL_CACHE_DIR` point inside the repo (`build/`), because Zig's default cache is `%LOCALAPPDATA%\zig`.
+- Test suite: all internal C++ tests passed; `test_windows_locked_memory_without_large_pages` failed in that sandbox only, because `SetProcessWorkingSetSize` is denied (1314) and `VirtualLock` then hits the working-set quota (1453) for any build, including the 1.11 release binary as control. `--lint` and `--run-sanitizers` were not run for this release.
 
 ## 2026-11-27 - Review fixes for the 2026-11-21 audit commits
 
