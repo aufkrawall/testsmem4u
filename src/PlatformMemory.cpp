@@ -128,7 +128,7 @@ void Platform::freeMemory(MemoryRegion& region) {
     region.lp_chunk_size = 0;
 }
 
-bool Platform::checkMemoryResident(const uint8_t* base, size_t size) {
+bool Platform::checkMemoryResident(const uint8_t* base, size_t size, [[maybe_unused]] bool locked) {
 #ifdef _WIN32
     if (!base || size == 0) return false;
 
@@ -171,7 +171,16 @@ bool Platform::checkMemoryResident(const uint8_t* base, size_t size) {
 
     constexpr size_t kBatchPages = 4096;
     std::vector<PSAPI_WORKING_SET_EX_INFORMATION> batch(std::min(num_pages, kBatchPages));
-    size_t non_resident = 0;
+    auto queryBatch = [&batch](size_t count) {
+        if (QueryWorkingSetEx(GetCurrentProcess(), batch.data(),
+                              static_cast<DWORD>(count * sizeof(PSAPI_WORKING_SET_EX_INFORMATION)))) {
+            return true;
+        }
+        LOG_ERROR("QueryWorkingSetEx() failed (pages=%zu, error=%lu)", count, GetLastError());
+        return false;
+    };
+    size_t non_resident = 0;   // still outside the working set (after any re-fault)
+    size_t refaulted = 0;      // unlocked pages trimmed earlier and faulted back
     size_t first_missing_page = 0;
     for (size_t page_idx = 0; page_idx < num_pages; page_idx += kBatchPages) {
         const size_t count = std::min(kBatchPages, num_pages - page_idx);
@@ -179,24 +188,63 @@ bool Platform::checkMemoryResident(const uint8_t* base, size_t size) {
             batch[i].VirtualAddress = reinterpret_cast<PVOID>(aligned_start + (page_idx + i) * page_size);
             batch[i].VirtualAttributes.Flags = 0;
         }
-        if (!QueryWorkingSetEx(GetCurrentProcess(), batch.data(),
-                               static_cast<DWORD>(count * sizeof(PSAPI_WORKING_SET_EX_INFORMATION)))) {
-            LOG_ERROR("QueryWorkingSetEx() failed (pages=%zu, error=%lu)", count, GetLastError());
-            return false;
-        }
+        if (!queryBatch(count)) return false;
+        size_t batch_missing = 0;
         for (size_t i = 0; i < count; ++i) {
-            if (batch[i].VirtualAttributes.Valid == 0) {
-                if (non_resident == 0) first_missing_page = page_idx + i;
-                ++non_resident;
+            if (batch[i].VirtualAttributes.Valid == 0) ++batch_missing;
+        }
+        if (batch_missing > 0 && !locked) {
+            // Windows routinely trims unlocked pages from the working set (to the
+            // standby/modified lists, the compression store or the page file).
+            // Read each one back, without changing its data, and fail only if it
+            // still cannot be made resident.
+            for (size_t i = 0; i < count; ++i) {
+                if (batch[i].VirtualAttributes.Valid == 0) {
+                    (void)*static_cast<const volatile uint8_t*>(batch[i].VirtualAddress);
+                }
+                batch[i].VirtualAttributes.Flags = 0;
             }
+            if (!queryBatch(count)) return false;
+            size_t still_missing = 0;
+            for (size_t i = 0; i < count; ++i) {
+                if (batch[i].VirtualAttributes.Valid == 0) ++still_missing;
+            }
+            refaulted += batch_missing - still_missing;
+            batch_missing = still_missing;
+        }
+        if (batch_missing > 0) {
+            for (size_t i = 0; i < count && non_resident == 0; ++i) {
+                if (batch[i].VirtualAttributes.Valid == 0) {
+                    first_missing_page = page_idx + i;
+                    break;
+                }
+            }
+            non_resident += batch_missing;
         }
     }
 
     if (non_resident > 0) {
         const double pct = 100.0 * static_cast<double>(non_resident) / static_cast<double>(num_pages);
-        LOG_ERROR("Memory residency check: %zu of %zu pages (%.1f%%) NOT resident in working set (first-missing-page=%zu)!",
-                  non_resident, num_pages, pct, first_missing_page);
+        LOG_ERROR("Memory residency check: %zu of %zu pages (%.1f%%) NOT resident in working set "
+                  "(locked=%s, first-missing-page=%zu, re-faulted=%zu)!",
+                  non_resident, num_pages, pct, locked ? "yes" : "no", first_missing_page, refaulted);
         return false;
+    }
+    if (refaulted > 0) {
+        static std::atomic<uint64_t> refault_events{0};
+        static std::atomic<uint64_t> refault_pages{0};
+        const uint64_t events = refault_events.fetch_add(1, std::memory_order_relaxed) + 1;
+        const uint64_t pages = refault_pages.fetch_add(refaulted, std::memory_order_relaxed) + refaulted;
+        if (events == 1) {
+            LOG_WARN("Memory residency: Windows had trimmed %zu of %zu unlocked pages from the working set; "
+                     "they were faulted back in. Unlocked memory can be paged out between checks; use locked "
+                     "memory for guaranteed residency (later occurrences are logged at DEBUG).",
+                     refaulted, num_pages);
+        } else {
+            LOG_DEBUG("Memory residency: re-faulted %zu of %zu trimmed unlocked pages (events=%llu total-pages=%llu)",
+                      refaulted, num_pages, static_cast<unsigned long long>(events),
+                      static_cast<unsigned long long>(pages));
+        }
     }
     return true;
 #else

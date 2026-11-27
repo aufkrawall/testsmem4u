@@ -101,8 +101,12 @@ public:
     // Confirms the process runs at NORMAL priority (never elevates it).
     static void confirmNormalProcessPriority();
 
-    // Verify memory is still resident in physical RAM (not swapped/reclaimed)
-    static bool checkMemoryResident(const uint8_t* base, size_t size);
+    // Verify memory is still resident in physical RAM (not swapped/reclaimed).
+    // locked=true: any page outside the working set fails (lock guarantee broken).
+    // locked=false (Windows): pages Windows trimmed from the working set are read
+    // back (data unchanged) and reported; only pages that stay non-resident fail.
+    // Linux mincore() non-residency means swapped out and always fails.
+    static bool checkMemoryResident(const uint8_t* base, size_t size, bool locked);
 
     // Memory never tested so the OS keeps running: the preset's "Reserved Memory
     // for Windows (Mb)" (all platforms), but at least this much.

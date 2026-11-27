@@ -202,15 +202,26 @@ void testWindowsRealResidencyAndLock() {
     expect(raw != nullptr, "Raw VirtualAlloc probe succeeds");
     if (raw) {
         auto* bytes = static_cast<const uint8_t*>(raw);
-        expect(!Platform::checkMemoryResident(bytes, probe_size),
-               "Untouched Windows VirtualAlloc pages are rejected by checkMemoryResident");
+        expect(!Platform::checkMemoryResident(bytes, probe_size, true),
+               "Untouched Windows VirtualAlloc pages fail the strict (locked) residency check");
         auto* touch = static_cast<volatile uint8_t*>(raw);
         for (size_t off = 0; off < probe_size; off += page_size) touch[off] = 1;
-        expect(Platform::checkMemoryResident(bytes, probe_size),
+        expect(Platform::checkMemoryResident(bytes, probe_size, true),
                "Touched Windows VirtualAlloc pages pass checkMemoryResident");
         if (EmptyWorkingSet(GetCurrentProcess())) {
-            expect(!Platform::checkMemoryResident(bytes, probe_size),
-                   "Emptied Windows working-set pages fail checkMemoryResident");
+            expect(!Platform::checkMemoryResident(bytes, probe_size, true),
+                   "Pages trimmed from the working set fail the strict (locked) residency check");
+            // A routine working-set trim must not abort an unlocked run: the check
+            // faults the pages back without changing their data.
+            expect(Platform::checkMemoryResident(bytes, probe_size, false),
+                   "Trimmed unlocked pages are faulted back instead of failing the run");
+            bool data_kept = true;
+            for (size_t off = 0; off < probe_size; off += page_size) data_kept &= touch[off] == 1;
+            expect(data_kept && Platform::checkMemoryResident(bytes, probe_size, true),
+                   "Re-faulted unlocked pages keep their data and are resident again");
+        } else {
+            std::printf("[SKIP] EmptyWorkingSet unavailable (error %lu); trim re-fault check not run\n",
+                        GetLastError());
         }
         VirtualFree(raw, 0, MEM_RELEASE);
     }
@@ -218,7 +229,7 @@ void testWindowsRealResidencyAndLock() {
     expect(real_locked.valid() && real_locked.is_locked(),
            "Real 64 KiB Windows VirtualLock allocation succeeds");
     if (real_locked.valid()) {
-        expect(Platform::checkMemoryResident(real_locked.base(), real_locked.size()),
+        expect(Platform::checkMemoryResident(real_locked.base(), real_locked.size(), true),
                "Real Windows VirtualLock pages report resident");
     }
 }
@@ -319,7 +330,7 @@ void testMemoryPageContracts() {
         const auto coverage = Platform::queryLargePageCoverage(region);
         expect(coverage.known && coverage.bytes == 0 && coverage.possible_bytes == 0,
                "Explicit no-large-pages allocation has no reported huge-page coverage");
-        expect(Platform::checkMemoryResident(region.base, region.size), "Real fresh mapping is materialized before residency checks");
+        expect(Platform::checkMemoryResident(region.base, region.size, true), "Real fresh mapping is materialized before residency checks");
     }
 }
 
@@ -418,7 +429,7 @@ void testLinuxMemoryFallbacks() {
            "Failed strict allocation unmaps its entire anonymous mapping");
     auto unlocked = Platform::allocateMemoryRAII(g_fixture_huge_size, true, true, true);
     expect(unlocked.valid() && !unlocked.is_locked(), "Explicit allow-swappable fallback reports unlocked memory honestly");
-    expect(unlocked.valid() && Platform::checkMemoryResident(unlocked.base(), unlocked.size()),
+    expect(unlocked.valid() && Platform::checkMemoryResident(unlocked.base(), unlocked.size(), true),
            "Explicit pageable fallback still materializes all pages after the failed lock attempt");
     g_fixture_map_calls = 0;
     auto standard = Platform::allocateMemoryRAII(g_fixture_huge_size, false, false);

@@ -678,7 +678,7 @@ RunResult TestEngine::executeSuite(const Config& config, const MemoryRegion& reg
                         const uint64_t data_pass = enabled.pass(claim.position, claim.chunk);
                         if (enabled.startsCycle(claim.position)) {
                             testPhase(ctx, "Memory residency", chunk);
-                            if (!Platform::checkMemoryResident(chunk.base, chunk.size)) {
+                            if (!Platform::checkMemoryResident(chunk.base, chunk.size, chunk.is_locked)) {
                                 ctx.setInfrastructureFailure("Worker memory residency check failed.");
                                 break;
                             }

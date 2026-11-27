@@ -8,7 +8,8 @@ void testMemoryAllocationRoundTrip() {
            "Memory allocation: allocated size >= requested");
 
     if (guard.valid()) {
-        expect(Platform::checkMemoryResident(guard.base(), guard.size()),
+        // Strict check: the allocator's prefault must already have materialized every page.
+        expect(Platform::checkMemoryResident(guard.base(), guard.size(), true),
                "Fresh unlocked allocation is resident before the first pattern write");
         uint64_t* ptr = reinterpret_cast<uint64_t*>(guard.base());
         size_t count = guard.size() / sizeof(uint64_t);
