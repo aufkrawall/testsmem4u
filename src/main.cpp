@@ -450,15 +450,13 @@ int main(int argc, char* argv[]) {
 
     if (!cli.no_elevation && !isPrivileged()) {
         ConsoleDisplay::get().printLine("Requesting elevation... (Use --no-elevation to skip)");
-        // Close the log before the elevated child re-creates it; both processes
-        // writing the same file would interleave/truncate each other's output.
-        log.deinit();
+        // No log file is open yet, so the elevated child can create it while this
+        // process keeps its buffered startup diagnostics in case it continues.
         int elevated_exit_code = 0;
-        if (relaunchAsPrivileged(argc, argv, elevated_exit_code)) {
+        if (relaunchElevatedKeepingStartupLog(
+                log, [&](int& code) { return relaunchAsPrivileged(argc, argv, code); }, elevated_exit_code)) {
             return elevated_exit_code;
         }
-        log.init("", cli.debug ? LogLevel::DEBUG : LogLevel::INFO, true);
-        log.setErrorRateLimit(100);
         log.info("%s %s continuing without elevation...", kProgramName, kProgramVersion);
         ConsoleDisplay::get().printLine("[!] Elevation unavailable. Continuing without elevation.");
     }

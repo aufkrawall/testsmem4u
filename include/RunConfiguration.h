@@ -99,4 +99,12 @@ bool promptMemoryLockPrivilegeOffer(std::istream& input, std::ostream& output,
 bool shouldRelaunchInTerminal(int argc, const CliOptions& cli,
                               bool stdin_tty, bool stdout_tty, bool stderr_tty,
                               bool graphical_session, bool stdout_is_fifo);
+class Logger;
+// Runs the privileged relaunch while the deferred logger keeps its startup
+// diagnostics buffered. Returns true (logger shut down, child_exit_code set)
+// when the elevated child ran; false when this process continues, with the
+// buffered diagnostics still pending for the later attachFile. Refuses to
+// relaunch while a log file is attached so two processes never write it.
+bool relaunchElevatedKeepingStartupLog(Logger& log, const std::function<bool(int&)>& relaunch,
+                                       int& child_exit_code);
 } // namespace testsmem4u

@@ -72,6 +72,16 @@ bool Logger::attachFile(const std::string& filename, bool purge) {
     return true;
 }
 
+bool Logger::isFileAttached() {
+    std::lock_guard<std::mutex> lock(init_mutex_);
+    return running_ && file_handle_ != nullptr;
+}
+
+size_t Logger::bufferedMessageCount() {
+    std::lock_guard<std::mutex> qlock(queue_mutex_);
+    return log_queue_.size();
+}
+
 void Logger::setErrorRateLimit(uint32_t errors_per_second) {
     error_rate_limit_.store(errors_per_second, std::memory_order_relaxed);
 }

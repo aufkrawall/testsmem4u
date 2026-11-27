@@ -376,16 +376,57 @@ void testPrivilegePromptAndDeferredLog() {
         std::ofstream prior(log_path);
         prior << "previous results preserved\n";
     }
+    auto readLog = [&log_path]() {
+        std::ifstream in(log_path);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
     auto& log = Logger::get();
     log.init("", LogLevel::INFO, true);
     log.info("dry-run buffered diagnostic");
+    expect(!log.isFileAttached() && log.bufferedMessageCount() == 1,
+           "Deferred logger buffers startup lines without opening a file");
+    log.deinit();
+    expect(!log.attachFile(log_path, true) && readLog() == "previous results preserved\n",
+           "attachFile after a deferred shutdown neither opens nor truncates the previous log");
+
+    // Elevation: a declined/unavailable relaunch must keep the buffered startup
+    // diagnostics (shutting the logger down first discarded them).
+    log.init("", LogLevel::INFO, true);
+    log.info("startup diagnostic before elevation");
+    int child_code = -1;
+    bool relaunch_called = false;
+    expect(!relaunchElevatedKeepingStartupLog(log, [&](int&) { relaunch_called = true; return false; }, child_code) &&
+               relaunch_called,
+           "Unavailable elevation reports that this process continues");
+    expect(log.attachFile(log_path, true), "attachFile opens the log after unavailable elevation");
+    log.info("run line after unavailable elevation");
     log.deinit();
     {
-        std::ifstream after_dry(log_path);
-        std::string content((std::istreambuf_iterator<char>(after_dry)), std::istreambuf_iterator<char>());
-        expect(content == "previous results preserved\n",
-               "Deferred logger without attachFile leaves existing log file untouched");
+        const std::string content = readLog();
+        expect(content.find("startup diagnostic before elevation") != std::string::npos &&
+                   content.find("run line after unavailable elevation") != std::string::npos,
+               "Startup diagnostics buffered before an unavailable elevation reach the log");
     }
+
+    {
+        std::ofstream prior(log_path);
+        prior << "previous results preserved\n";
+    }
+    log.init("", LogLevel::INFO, true);
+    log.info("startup diagnostic before elevated child");
+    expect(relaunchElevatedKeepingStartupLog(log, [](int& code) { code = 7; return true; }, child_code) &&
+               child_code == 7,
+           "Successful elevation propagates the elevated child's exit code");
+    expect(!log.attachFile(log_path, true) && readLog() == "previous results preserved\n",
+           "Successful elevation shuts the parent logger down without touching the child's log");
+
+    log.init("", LogLevel::INFO, true);
+    expect(log.attachFile(log_path, true) && log.isFileAttached(), "attachFile reports the attached log file");
+    relaunch_called = false;
+    expect(!relaunchElevatedKeepingStartupLog(log, [&](int&) { relaunch_called = true; return true; }, child_code) &&
+               !relaunch_called,
+           "Elevation is refused while this process already writes the log file");
+    log.deinit();
 
     log.init("", LogLevel::INFO, true);
     log.info("buffered startup line");

@@ -33,6 +33,10 @@ public:
 
     void init(const std::string& filename, LogLevel level = LogLevel::DEBUG, bool purge = true);
     bool attachFile(const std::string& filename, bool purge = true);
+    // True only while running with an open log file (a deferred logger returns false).
+    bool isFileAttached();
+    // Messages queued but not yet written (deferred startup diagnostics included).
+    size_t bufferedMessageCount();
     void deinit();
     void setErrorRateLimit(uint32_t errors_per_second);
 

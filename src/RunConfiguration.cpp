@@ -212,6 +212,27 @@ bool shouldRelaunchInTerminal(int argc, const CliOptions& cli,
     return true;
 }
 
+bool relaunchElevatedKeepingStartupLog(Logger& log, const std::function<bool(int&)>& relaunch,
+                                       int& child_exit_code) {
+    // The elevated child creates testsmem4u.log itself. A deferred logger has no
+    // file open, so it need not be shut down first; shutting it down discarded
+    // the buffered startup/config/sizing diagnostics, leaving them out of the log
+    // whenever elevation was declined or unavailable and this process continued.
+    if (log.isFileAttached()) {
+        LOG_ERROR("Elevation: log file already attached; refusing privileged relaunch so two processes never write it");
+        return false;
+    }
+    LOG_DEBUG("Elevation: requesting privileged relaunch (startup log lines buffered=%zu)",
+              log.bufferedMessageCount());
+    if (relaunch && relaunch(child_exit_code)) {
+        log.deinit();
+        return true;
+    }
+    LOG_DEBUG("Elevation: relaunch unavailable; keeping %zu buffered startup log lines for this process",
+              log.bufferedMessageCount());
+    return false;
+}
+
 bool resolveConfiguration(const CliOptions& cli, bool automation_mode,
                                  ConfigResolution& resolution, std::string& error) {
     resolution.platform = Platform::detectPlatform();
